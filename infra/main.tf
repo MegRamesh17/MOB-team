@@ -29,8 +29,14 @@ resource "azurerm_storage_account" "mob_storage" {
   account_replication_type = "LRS"
 }
 
-resource "azurerm_storage_container" "training_docs" {
-  name                  = "training-docs"
+resource "azurerm_storage_container" "software_engineering_docs" {
+  name                  = "software-engineering-docs"
+  storage_account_name  = azurerm_storage_account.mob_storage.name
+  container_access_type = "private"
+}
+
+resource "azurerm_storage_container" "company_docs" {
+  name                  = "company-docs"
   storage_account_name  = azurerm_storage_account.mob_storage.name
   container_access_type = "private"
 }
