@@ -1,3 +1,20 @@
+'''
+Add content generation agent (PDFs -> readings + quizzes)
+
+Uses Azure OpenAI to turn extracted PDF text into structured JSON
+modules (readings + quiz questions) per role.
+
+Needs real values in .env (from Key Vault):
+- AZURE_OPENAI_ENDPOINT
+- AZURE_OPENAI_KEY
+- AZURE_OPENAI_CHAT_DEPLOYMENT
+
+save_reading() / save_quiz() are still stubs - no DB writes yet,
+pending Azure SQL schema. Also no company_id scoping yet since
+we're single-company for the demo; will need to be added before
+this generalizes to multiple companies.
+'''
+
 import os
 import json
 from openai import AzureOpenAI
