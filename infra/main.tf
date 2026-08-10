@@ -26,3 +26,10 @@ module "storage" {
   resource_group_name = data.azurerm_resource_group.mob_rg.name
   location             = data.azurerm_resource_group.mob_rg.location
 }
+
+module "sql" {
+  source              = "./modules/sql"
+  resource_group_name = data.azurerm_resource_group.mob_rg.name
+  location             = "southcentralus"
+  admin_password       = var.sql_admin_password
+}
