@@ -5,3 +5,5 @@ __pycache__/
 .terraform/
 *.tfstate
 *.tfstate.backup
+terraform.tfvars
+.DS_Store
