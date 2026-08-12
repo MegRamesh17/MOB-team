@@ -3,3 +3,9 @@ variable "sql_admin_password" {
   type        = string
   sensitive   = true
 }
+
+variable "environment" {
+  description = "Environment name, used for resource naming"
+  type        = string
+  default     = "dev"
+}

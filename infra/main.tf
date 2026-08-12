@@ -33,3 +33,9 @@ module "sql" {
   location             = "southcentralus"
   admin_password       = var.sql_admin_password
 }
+
+module "comms" {
+  source              = "./modules/comms"
+  environment         = var.environment
+  resource_group_name = data.azurerm_resource_group.mob_rg.name
+}
