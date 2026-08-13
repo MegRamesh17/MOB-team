@@ -3,50 +3,39 @@ on:
   push:
     branches: [ main ]
   pull_request:
-
 permissions:
   id-token: write      # needed for OIDC login
   contents: read
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - uses: hashicorp/setup-terraform@v3
-
       - run: terraform init
         working-directory: infra
-
-      - run: terraform plan -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}"
+      - run: terraform plan -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}" -var="pipeline_identity_object_id=${{ secrets.PIPELINE_IDENTITY_OBJECT_ID }}"
         working-directory: infra
-
-      - run: terraform apply -auto-approve -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}"
+      - run: terraform apply -auto-approve -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}" -var="pipeline_identity_object_id=${{ secrets.PIPELINE_IDENTITY_OBJECT_ID }}"
         working-directory: infra
-
   migrate-database:
     needs: deploy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Get runner IP
         id: ip
         run: echo "ip=$(curl -s https://api.ipify.org)" >> "$GITHUB_OUTPUT"
-
       - name: Open temporary firewall rule
         run: |
           az sql server firewall-rule create \
@@ -55,13 +44,11 @@ jobs:
             --name github-actions-temp \
             --start-ip-address ${{ steps.ip.outputs.ip }} \
             --end-ip-address ${{ steps.ip.outputs.ip }}
-
       - name: Install sqlcmd
         run: |
           sudo apt-get update
           sudo apt-get install -y mssql-tools18 unixodbc-dev
           echo "/opt/mssql-tools18/bin" >> "$GITHUB_PATH"
-
       - name: Run migrations
         run: |
           for file in db/migrations/*.sql; do
@@ -69,7 +56,6 @@ jobs:
             sqlcmd -S mob-sql-server-02.database.windows.net -d mob-training-db \
               -U mobsqladmin -P "${{ secrets.SQL_ADMIN_PASSWORD }}" -C -i "$file"
           done
-
       - name: Run seed data
         if: github.ref == 'refs/heads/main'
         run: |
@@ -78,7 +64,6 @@ jobs:
             sqlcmd -S mob-sql-server-02.database.windows.net -d mob-training-db \
               -U mobsqladmin -P "${{ secrets.SQL_ADMIN_PASSWORD }}" -C -i "$file"
           done
-
       - name: Close temporary firewall rule
         if: always()
         run: |
