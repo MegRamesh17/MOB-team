@@ -18,6 +18,26 @@ resource "azurerm_key_vault_access_policy" "pipeline_identity" {
   secret_permissions = ["Get", "List", "Set", "Delete"]
 }
 
+# Lets the Function App itself read secrets at runtime - without this,
+# its @Microsoft.KeyVault(...) references silently resolve to empty.
+resource "azurerm_key_vault_access_policy" "function_app_identity" {
+  key_vault_id = azurerm_key_vault.mob_kv.id
+  tenant_id    = data.azurerm_client_config.current.tenant_id
+  object_id    = var.function_app_principal_id
+
+  secret_permissions = ["Get", "List"]
+}
+
+# Local development access for team members' own accounts
+resource "azurerm_key_vault_access_policy" "local_dev" {
+  for_each     = toset(var.local_dev_object_ids)
+  key_vault_id = azurerm_key_vault.mob_kv.id
+  tenant_id    = data.azurerm_client_config.current.tenant_id
+  object_id    = each.value
+
+  secret_permissions = ["Get", "List", "Set", "Delete"]
+}
+
 resource "azurerm_key_vault_secret" "sql_connection_string" {
   name         = "sql-connection-string"
   value        = var.sql_connection_string
