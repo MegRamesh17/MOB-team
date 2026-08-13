@@ -61,7 +61,13 @@ def check_role_knowledge_voice(question: Question) -> Optional[str]:
 
     Returns a rejection reason, or None if the question is acceptable.
     """
-    if question.provenance_class != ProvenanceClass.ROLE_KNOWLEDGE:
+    # ExternalSource is held to the same rule: it has a real citation (a URL), but a
+    # vendor doc or a standards body is not your employer. "AWS recommends X" must
+    # never render as "company policy requires X".
+    if question.provenance_class not in (
+        ProvenanceClass.ROLE_KNOWLEDGE,
+        ProvenanceClass.EXTERNAL,
+    ):
         return None
 
     body = _text_of(question)
@@ -83,6 +89,24 @@ def check_role_knowledge_voice(question: Question) -> Optional[str]:
     return None
 
 
+def check_external_citation(question: Question) -> Optional[str]:
+    """
+    An ExternalSource question must carry a URL and a retrieval date.
+
+    Without them the question is indistinguishable from something the model invented,
+    and a learner cannot check it. The date matters as much as the URL: external pages
+    change, and an annual re-certification needs to know whether the material behind a
+    question has moved on since it was written.
+    """
+    if question.provenance_class != ProvenanceClass.EXTERNAL:
+        return None
+    if not question.source_url:
+        return "external question has no source URL"
+    if not question.source_fetched_at:
+        return "external question has no retrieval date — staleness cannot be judged"
+    return None
+
+
 def check_grounding(question: Question, chunk_text: str) -> Optional[str]:
     """
     Documented questions must quote their source verbatim.
@@ -90,7 +114,10 @@ def check_grounding(question: Question, chunk_text: str) -> Optional[str]:
     Normalised comparison only — whitespace and case differ constantly between what a
     model echoes back and what the extractor produced.
     """
-    if question.provenance_class != ProvenanceClass.DOCUMENTED:
+    # Grounding applies to anything with a retrieved source — a web page is checked the
+    # same way a PDF is. Only ROLE_KNOWLEDGE is exempt, because by definition it has no
+    # passage behind it.
+    if question.provenance_class == ProvenanceClass.ROLE_KNOWLEDGE:
         return None
     if not question.source_quote:
         return "documented question has no source quote"
@@ -252,6 +279,7 @@ def validate(
         check_structure(question),
         check_grounding(question, chunk_text) if chunk_text else None,
         check_role_knowledge_voice(question),
+        check_external_citation(question),
     ):
         if check:
             return False, [check]

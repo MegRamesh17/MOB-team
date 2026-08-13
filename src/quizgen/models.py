@@ -49,6 +49,16 @@ class ProvenanceClass(str, Enum):
     DOCUMENTED = "Documented"
     ROLE_KNOWLEDGE = "RoleKnowledge"
 
+    # Sourced from outside the company: vendor docs, standards bodies, framework
+    # documentation. Has a real citation (a URL, retrieved on a date) but is NOT
+    # company policy, and must never be phrased as if it were.
+    #
+    # This becomes the primary class once course material is assembled mainly from
+    # online sources rather than internal PDFs. The company documents then define
+    # which roles exist and what they must cover; the external sources supply the
+    # substance.
+    EXTERNAL = "ExternalSource"
+
 
 class ReviewStatus(str, Enum):
     """
@@ -89,6 +99,17 @@ class Chunk:
     container: str = ""
     role_scope: str = "ALL"
 
+    # Where this passage came from. "document" today; "web" once online sourcing is
+    # wired up. Kept on the chunk rather than inferred later, because a question's
+    # citation and its staleness both depend on it.
+    source_type: str = "document"
+    source_url: str = ""
+
+    # When the source was retrieved. Meaningless for a static PDF, essential for the
+    # web: an external page can change under you, and a certification that has to be
+    # renewed annually needs to know whether the material behind it has moved on.
+    fetched_at: str = ""
+
     def to_row(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -121,6 +142,8 @@ class Question:
     source_doc_title: str = ""
     source_page: int = 0
     source_quote: str = ""
+    source_url: str = ""       # populated for EXTERNAL questions
+    source_fetched_at: str = ""
 
     generator: str = "mock"  # which provider produced it
     review_status: ReviewStatus = ReviewStatus.PENDING

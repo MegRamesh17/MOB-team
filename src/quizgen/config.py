@@ -106,6 +106,14 @@ class Config:
     search_key: str = _first("AISearchAPIKEY", "AISearchAPIKey", "AZURE_SEARCH_API_KEY")
     search_index: str = _first("AISearchIndexName", default="training-chunks")
 
+    # --- Azure SQL (target for the loader and the API) ---
+    # SQL auth to match the team's GitHub Actions workflow. SQL_PASSWORD is the same
+    # value as its SQL_ADMIN_PASSWORD secret.
+    sql_server: str = _first("SQL_SERVER", default="mob-sql-server-02.database.windows.net")
+    sql_database: str = _first("SQL_DATABASE", default="mob-training-db")
+    sql_user: str = _first("SQL_USER", default="mobsqladmin")
+    sql_password: str = _first("SQL_PASSWORD", "SQL_ADMIN_PASSWORD")
+
     # --- Blob storage (used by src/pdf_extractor.py) ---
     storage_connection_string: str = _first("AZURE_STORAGE_CONNECTION_STRING")
 

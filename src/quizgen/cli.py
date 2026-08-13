@@ -177,6 +177,46 @@ def cmd_generate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_push(args: argparse.Namespace) -> int:
+    """Copy the local bank into Azure SQL."""
+    from .loader import load, verify
+
+    try:
+        counts = load(dry_run=args.dry_run)
+    except RuntimeError as exc:
+        print("\n{}".format(exc), file=sys.stderr)
+        return 1
+
+    if args.dry_run:
+        print("Would push:")
+        for k, v in counts.items():
+            print("   {:<12} {}".format(k, v))
+        print("\nRun without --dry-run to actually write.")
+        return 0
+
+    print("Pushed to Azure SQL:")
+    for k, v in counts.items():
+        print("   {:<12} {}".format(k, v))
+
+    print("\nVerifying what landed...")
+    try:
+        state = verify()
+    except Exception as exc:  # noqa: BLE001
+        print("   could not verify: {}".format(exc), file=sys.stderr)
+        return 1
+
+    for k in ("chunks", "questions", "options", "answer_keys", "approved", "pending"):
+        print("   {:<12} {}".format(k, state.get(k)))
+
+    broken = state.get("broken_questions", 0)
+    if broken:
+        print("\n   WARNING: {} question(s) have no single correct answer.".format(broken))
+        print("   Those grade every learner to zero. Investigate before approving.")
+        return 1
+    print("   {:<12} {}  (every question has exactly one correct answer)".format("broken", 0))
+    return 0
+
+
 def cmd_roles(args: argparse.Namespace) -> int:
     with _bank() as bank:
         chunks = bank.all_chunks()
@@ -415,6 +455,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--regenerate", action="store_true",
                    help="re-generate chunks that already have questions")
     p.set_defaults(func=cmd_generate)
+
+    p = sub.add_parser("push", help="copy the local bank into Azure SQL")
+    p.add_argument("--dry-run", action="store_true", help="count rows without writing")
+    p.set_defaults(func=cmd_push)
 
     p = sub.add_parser("doctor", help="check .env credentials and deployment names")
     p.set_defaults(func=lambda a: __import__("quizgen.doctor", fromlist=["run"]).run())
