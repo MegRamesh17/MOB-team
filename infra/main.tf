@@ -35,12 +35,6 @@ module "network" {
   resource_group_name = var.resource_group_name
   location            = var.location
 }
-module "openai" {
-  source              = "./modules/openai"
-  environment         = var.environment
-  resource_group_name = var.resource_group_name
-  location            = var.location
-}
 module "keyvault" {
   source                       = "./modules/keyvault"
   environment                  = var.environment
@@ -48,7 +42,7 @@ module "keyvault" {
   location                     = var.location
   pipeline_identity_object_id  = var.pipeline_identity_object_id
   sql_connection_string        = module.sql.connection_string
-  openai_api_key                = module.openai.primary_key
+  openai_api_key                = var.openai_api_key
   function_app_principal_id    = module.functions.function_app_identity_principal_id
   local_dev_object_ids         = var.local_dev_object_ids
 }

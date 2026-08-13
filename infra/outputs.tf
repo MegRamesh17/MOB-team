@@ -29,6 +29,3 @@ output "chatbot_url" {
   value = module.appservice.chatbot_app_url
 }
 
-output "openai_endpoint" {
-  value = module.openai.endpoint
-}
