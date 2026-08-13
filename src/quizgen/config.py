@@ -31,12 +31,67 @@ OUTPUT_DIR = DATA_DIR / "output"
 PLACEHOLDER = "REPLACE_ME"
 
 
+# ---------------------------------------------------------------------------
+# Key Vault
+# ---------------------------------------------------------------------------
+# Deployed code gets secrets through Key Vault references resolved by the Function
+# App's managed identity — no file, no app setting holding a real value.
+#
+# Locally there is no managed identity, so the options are a .env file or fetching
+# from the vault with your own `az login` identity. The second is better: nothing is
+# written to disk, so nothing can be committed, screenshotted or left stale after a
+# rotation. A storage key was exposed exactly that way earlier in this project.
+#
+# Set QUIZGEN_USE_KEYVAULT=true (and QUIZGEN_VAULT_NAME) to use it.
+
+_VAULT_CACHE: dict = {}
+
+
+def _vault_secret(name: str) -> str:
+    """Fetch one secret using the developer's own Azure login. Cached per process."""
+    if name in _VAULT_CACHE:
+        return _VAULT_CACHE[name]
+
+    vault = os.getenv("QUIZGEN_VAULT_NAME", "Group7-8")
+    try:
+        from azure.identity import DefaultAzureCredential
+        from azure.keyvault.secrets import SecretClient
+
+        client = SecretClient(
+            vault_url="https://{}.vault.azure.net".format(vault),
+            credential=DefaultAzureCredential(),
+        )
+        value = client.get_secret(name).value or ""
+    except Exception:  # noqa: BLE001
+        # Vault unreachable or secret absent: fall through to the environment rather
+        # than crashing. Missing values surface in `quizgen doctor` as "(unset)".
+        value = ""
+
+    _VAULT_CACHE[name] = value
+    return value
+
+
+_USE_VAULT = (os.getenv("QUIZGEN_USE_KEYVAULT", "false") or "").lower() == "true"
+
+
 def _first(*names: str, default: str = "") -> str:
-    """First env var that is set and not a placeholder."""
+    """
+    First value that is set and not a placeholder.
+
+    Order: environment (.env) first, then Key Vault if enabled. Environment wins so a
+    developer can override one value locally without touching the vault.
+    """
     for name in names:
         value = (os.getenv(name) or "").strip()
         if value and value != PLACEHOLDER:
             return value
+
+    if _USE_VAULT:
+        for name in names:
+            value = _vault_secret(name).strip()
+            if value and value != PLACEHOLDER:
+                return value
+
     return default
 
 

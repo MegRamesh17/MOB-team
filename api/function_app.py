@@ -40,19 +40,64 @@ MIN_ANSWERS = int(os.getenv("QUIZGEN_MIN_ANSWERS", "3"))
 # plumbing
 # --------------------------------------------------------------------------
 
+def _odbc_from_ado(value: str) -> str:
+    """
+    Convert an ADO.NET connection string to ODBC.
+
+    The infra module supplies SQL_CONNECTION_STRING from Key Vault, and whoever wrote
+    the secret may have used either format. ADO.NET ("Server=tcp:...;User ID=...") is
+    what the Azure portal shows by default and is NOT understood by pyodbc, so it would
+    fail with an unhelpful driver error.
+    """
+    parts = {}
+    for piece in value.split(";"):
+        if "=" not in piece:
+            continue
+        k, v = piece.split("=", 1)
+        parts[k.strip().lower()] = v.strip()
+
+    server = parts.get("server") or parts.get("data source", "")
+    server = server.replace("tcp:", "").split(",")[0]
+    database = parts.get("initial catalog") or parts.get("database", "")
+    user = parts.get("user id") or parts.get("uid", "")
+    password = parts.get("password") or parts.get("pwd", "")
+
+    return (
+        "DRIVER={{ODBC Driver 18 for SQL Server}};"
+        "SERVER=tcp:{},1433;DATABASE={};UID={};PWD={};"
+        "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=60;"
+    ).format(server, database, user, password)
+
+
+def _connection_string() -> str:
+    """
+    Deployed: SQL_CONNECTION_STRING, supplied by the infra module as a Key Vault
+    reference — the secret is resolved by the Function App's managed identity and never
+    exists as a file or a plain app setting.
+
+    Local: the four separate parts, so development works without Key Vault access.
+    """
+    conn = (os.getenv("SQL_CONNECTION_STRING") or "").strip()
+    if conn:
+        # Already ODBC? Use as-is. Otherwise it is ADO.NET and needs converting.
+        return conn if "driver=" in conn.lower() else _odbc_from_ado(conn)
+
+    return (
+        "DRIVER={{ODBC Driver 18 for SQL Server}};"
+        "SERVER=tcp:{},1433;DATABASE={};UID={};PWD={};"
+        "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=60;"
+    ).format(
+        os.getenv("SQL_SERVER", "mob-sql-server-02.database.windows.net"),
+        os.getenv("SQL_DATABASE", "mob-training-db"),
+        os.getenv("SQL_USER", "mobsqladmin"),
+        os.getenv("SQL_PASSWORD", ""),
+    )
+
+
 def _conn():
     import pyodbc
 
-    return pyodbc.connect(
-        "DRIVER={{ODBC Driver 18 for SQL Server}};"
-        "SERVER=tcp:{},1433;DATABASE={};UID={};PWD={};"
-        "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=60;".format(
-            os.getenv("SQL_SERVER", "mob-sql-server-02.database.windows.net"),
-            os.getenv("SQL_DATABASE", "mob-training-db"),
-            os.getenv("SQL_USER", "mobsqladmin"),
-            os.getenv("SQL_PASSWORD", ""),
-        )
-    )
+    return pyodbc.connect(_connection_string())
 
 
 def _rows(cur) -> List[Dict[str, Any]]:
