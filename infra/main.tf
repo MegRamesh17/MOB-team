@@ -51,11 +51,16 @@ module "keyvault" {
   openai_api_key                = var.openai_api_key
 }
 
-module "comms" {
-  source              = "./modules/comms"
-  environment         = var.environment
-  resource_group_name = var.resource_group_name
-}
+# TEMPORARILY DISABLED: blocked on Microsoft.Communication provider
+# registration - subscription lacks permission, admin request pending.
+# Re-enable once registered; also switch functions' comms_connection_string
+# back to module.comms.comms_connection_string when this comes back.
+#
+# module "comms" {
+#   source              = "./modules/comms"
+#   environment         = var.environment
+#   resource_group_name = var.resource_group_name
+# }
 
 module "functions" {
   source                     = "./modules/functions"
@@ -63,7 +68,7 @@ module "functions" {
   resource_group_name        = var.resource_group_name
   location                   = var.location
   key_vault_uri               = module.keyvault.key_vault_uri
-  comms_connection_string    = module.comms.comms_connection_string
+  comms_connection_string    = "placeholder-until-comms-unblocked"
   app_integration_subnet_id  = module.network.app_integration_subnet_id
 }
 

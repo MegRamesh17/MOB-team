@@ -13,7 +13,7 @@ resource "azurerm_service_plan" "func_plan" {
   resource_group_name = var.resource_group_name
   location            = var.location
   os_type             = "Linux"
-  sku_name            = var.environment == "prod" ? "EP1" : "Y1" # Y1 = consumption for dev/staging
+  sku_name            = var.environment == "prod" ? "EP1" : "B1" # B1 = basic
 }
 
 resource "azurerm_linux_function_app" "mob_functions" {

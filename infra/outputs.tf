@@ -14,15 +14,17 @@ output "key_vault_uri" {
   value = module.keyvault.key_vault_uri
 }
 
-output "comms_connection_string" {
-  value     = module.comms.comms_connection_string
-  sensitive = true
-}
+# comms output disabled along with the module - blocked on
+# Microsoft.Communication provider registration
+# output "comms_connection_string" {
+#   value     = module.comms.comms_connection_string
+#   sensitive = true
+# }
 
-output "function_app_hostname" {
-  value = module.functions.function_app_hostname
+output "function_app_name" {
+  value = module.functions.function_app_name
 }
 
 output "chatbot_url" {
-  value = module.appservice.chatbot_url
+  value = module.appservice.chatbot_app_url
 }

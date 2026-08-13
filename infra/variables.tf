@@ -12,6 +12,7 @@ variable "pipeline_identity_object_id" {
 variable "openai_api_key" {
   type      = string
   sensitive = true
+  default   = ""
 }
 
 variable "environment" {
