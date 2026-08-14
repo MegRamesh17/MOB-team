@@ -130,9 +130,20 @@ def utcnow() -> str:
 class Bank:
     def __init__(self, db_path: Path) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(db_path))
+        # timeout raises the busy wait well above the 5s default. Question generation
+        # writes after every chunk while learners are taking quizzes on the same
+        # database; measured, a write held past 5s made a learner's quiz submit fail
+        # outright with "database is locked" — losing an attempt they had finished.
+        self.conn = sqlite3.connect(str(db_path), timeout=30.0)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
+        # WAL lets readers carry on while a writer holds the lock, so a learner can
+        # still load a quiz while a manager's upload is generating. Not supported on
+        # some network filesystems, where the default journal is the correct fallback.
+        try:
+            self.conn.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.DatabaseError:
+            pass
         self.conn.executescript(SCHEMA)
         self.conn.commit()
 

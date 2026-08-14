@@ -111,12 +111,39 @@ def _pages(pdf_path: Path) -> List[str]:
     return out
 
 
+# Letterhead lines: the same on every document a company produces, so using one as
+# a title merges unrelated documents into a single training.
+_LETTERHEAD = re.compile(
+    r"internal use|confidential|proprietary|all rights reserved|^page\b|"
+    r"^document\b|^\s*\d{1,2}/\d{1,2}/\d{2,4}\s*$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_letterhead(line: str) -> bool:
+    """A banner, not a title: company header, classification stamp, or a date line."""
+    s = line.strip()
+    if _LETTERHEAD.search(s):
+        return True
+    # "LatticePeak Systems | Internal Use Only", "Role Brief | August 2026" — a
+    # pipe-separated banner is a letterhead, never a document title.
+    return "|" in s
+
+
 def _title_from(pdf_path: Path, pages: List[str]) -> str:
-    """First non-heading-ish line of page 1, else a prettified filename."""
+    """
+    The document's title, from the first substantive line of page 1.
+
+    Letterhead lines are skipped. A real corpus of role briefs all began
+    "LatticePeak Systems | Internal Use Only", so every one of them derived the SAME
+    title and merged into one training — sixteen roles in a single module, with
+    sections from different roles sitting side by side. The filename is the fallback
+    because it is the one thing guaranteed to differ between two uploads.
+    """
     if pages:
         for line in pages[0].split("\n"):
             s = line.strip()
-            if len(s) > 4:
+            if len(s) > 4 and not _looks_like_letterhead(s):
                 return s
     return pdf_path.stem.replace("-", " ").replace("_", " ").title()
 

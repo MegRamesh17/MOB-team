@@ -46,6 +46,14 @@ jobs:
           PYTHONPATH: src
         run: python -m unittest discover -s tests -v
 
+      - name: Build the frontend
+        # The React app is a deployable artefact. Without this a syntax error or a
+        # bad import merges green and only fails when someone runs npm run dev.
+        working-directory: web-app
+        run: |
+          npm ci
+          npm run build
+
       - name: Check migrations are readable
         # Catches a migration saved as UTF-16 by a Windows redirect, which breaks
         # sqlcmd in the deploy workflow with an unhelpful error.

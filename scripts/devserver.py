@@ -67,6 +67,26 @@ _JOBS: dict = {}
 _JOB_LOCK = threading.Lock()
 
 
+def _read_failure_reason(exc: Exception) -> str:
+    """
+    Translate a PDF library error into something a manager can act on.
+
+    "startxref not found" tells a training coordinator nothing. What they need to
+    know is whether to re-export the file, remove a password, or run OCR.
+    """
+    text = str(exc).lower()
+    if "decrypt" in text or "password" in text:
+        return ("This PDF is password-protected. Remove the password (open it and "
+                "re-save / export without encryption) and upload it again.")
+    if "startxref" in text or "eof marker" in text or "invalid" in text:
+        return ("This file is not a readable PDF — it may be truncated or corrupted. "
+                "Try re-exporting it from the original document.")
+    if "scan" in text or "no extractable text" in text:
+        return ("No text could be extracted, so this is probably a scan. This pipeline "
+                "does not run OCR — export a text-based PDF instead.")
+    return str(exc)[:280]
+
+
 def _human_size(n: int) -> str:
     return "{:.1f} MB".format(n / (1024 * 1024)) if n >= 1024 * 1024 else "{} KB".format(n // 1024)
 
@@ -522,7 +542,7 @@ class Handler(BaseHTTPRequestHandler):
             # A file we cannot read is not kept — it would otherwise be retried on
             # every future ingest and fail the same way each time.
             target.unlink(missing_ok=True)
-            return self._error(422, "Could not read this document", str(exc)[:300])
+            return self._error(422, "Could not read this document", _read_failure_reason(exc))
 
         if not chunks:
             target.unlink(missing_ok=True)
@@ -532,6 +552,19 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         doc_title = chunks[0].doc_title
+        # Two different documents must never share a title: they would merge into one
+        # training, mixing roles and letting set_chunk_roles tag the wrong sections.
+        # A real pack of 16 role briefs all began with the same letterhead and would
+        # have collapsed into a single module.
+        with Bank(DB) as bank:
+            existing_ids = {
+                c.doc_title: c.doc_id for c in bank.all_chunks()
+            }
+        if doc_title in existing_ids and existing_ids[doc_title] != chunks[0].doc_id:
+            doc_title = "{} ({})".format(doc_title, Path(safe).stem.replace("_", " "))
+            for c in chunks:
+                c.doc_title = doc_title
+
         topics = sorted({c.topic for c in chunks})
 
         # Chunks are saved now (so nothing is lost), but NOT tagged with roles and

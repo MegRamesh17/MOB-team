@@ -669,3 +669,92 @@ class TestRenewalWindow(unittest.TestCase):
         self.assertTrue(dev._plus_one_year("2024-02-29T10:00:00+00:00")
                         .startswith("2025-02-28"))
         self.assertEqual(dev._plus_one_year("garbage"), "")
+
+
+class TestLetterheadTitles(unittest.TestCase):
+    """
+    Document titles must distinguish documents.
+
+    A real pack of 16 role briefs each began "LatticePeak Systems | Internal Use
+    Only", so every one derived the SAME title and merged into a single training —
+    sixteen roles in one module with sections from different roles side by side, and
+    role tagging writing to the wrong rows.
+    """
+
+    def test_letterhead_lines_are_not_titles(self):
+        from quizgen.ingest import _looks_like_letterhead
+
+        self.assertTrue(_looks_like_letterhead("LatticePeak Systems | Internal Use Only"))
+        self.assertTrue(_looks_like_letterhead("Role Operations Brief | August 2026"))
+        self.assertTrue(_looks_like_letterhead("CONFIDENTIAL"))
+        self.assertTrue(_looks_like_letterhead("Document"))
+        self.assertFalse(_looks_like_letterhead("VP of Revenue Operations"))
+        self.assertFalse(_looks_like_letterhead("Refund Authority Limits"))
+
+    def test_title_skips_the_letterhead_and_finds_the_real_title(self):
+        from quizgen.ingest import _title_from
+
+        pages = ["LatticePeak Systems | Internal Use Only\n"
+                 "Role Operations Brief | August 2026\n"
+                 "VP of Revenue Operations\n"
+                 "Focused operating area: Pipeline Coverage\n"]
+        self.assertEqual(_title_from(Path("VP_of_Revenue_Operations.pdf"), pages),
+                         "VP of Revenue Operations")
+
+    def test_two_briefs_with_the_same_letterhead_get_different_titles(self):
+        from quizgen.ingest import _title_from
+
+        head = "LatticePeak Systems | Internal Use Only\nRole Brief | August 2026\n"
+        a = _title_from(Path("a.pdf"), [head + "Sales Manager\nOwns the pipeline.\n"])
+        b = _title_from(Path("b.pdf"), [head + "Cloud DevOps Engineer\nOwns infra.\n"])
+        self.assertNotEqual(a, b, "same-letterhead documents must not merge")
+
+    def test_falls_back_to_the_filename_when_everything_is_letterhead(self):
+        from quizgen.ingest import _title_from
+
+        title = _title_from(Path("Sales_Manager_Role_Brief.pdf"),
+                            ["ACME Corp | Confidential\nCONFIDENTIAL\n"])
+        self.assertEqual(title, "Sales Manager Role Brief")
+
+
+class TestConcurrentAccess(unittest.TestCase):
+    def test_a_long_write_does_not_fail_a_concurrent_write(self):
+        """
+        Regression: generation writes after every chunk while learners take quizzes on
+        the same database. Measured, a write held past the 5s default busy timeout made
+        a learner's quiz submit fail with "database is locked" — losing a finished
+        attempt. WAL plus a 30s busy timeout fixes it.
+        """
+        import threading
+        import time
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "c.db"
+            Bank(path).close()
+            errors = []
+
+            def long_writer():
+                b = Bank(path)
+                b.conn.execute("BEGIN IMMEDIATE")
+                b.conn.execute("INSERT OR REPLACE INTO roles VALUES ('X','X','','now')")
+                time.sleep(6)
+                b.conn.commit()
+                b.close()
+
+            def concurrent_writer():
+                time.sleep(0.3)
+                try:
+                    b = Bank(path)
+                    b.conn.execute("INSERT OR REPLACE INTO roles VALUES ('Y','Y','','now')")
+                    b.conn.commit()
+                    b.close()
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=long_writer),
+                       threading.Thread(target=concurrent_writer)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            self.assertEqual(errors, [], "a concurrent write must wait, not fail")
