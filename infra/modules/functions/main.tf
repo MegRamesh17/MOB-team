@@ -34,7 +34,8 @@ resource "azurerm_linux_function_app" "mob_functions" {
     "FUNCTIONS_WORKER_RUNTIME" = "python"
     "ENVIRONMENT"              = var.environment
     "SQL_CONNECTION_STRING"    = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/sql-connection-string/)"
-    "COMMS_CONNECTION_STRING"  = var.comms_connection_string
+    "RESEND_API_KEY"           = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/resend-api-key/)"
+    "RESEND_FROM_ADDRESS"      = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/resend-from-address/)"
   }
 
   identity {

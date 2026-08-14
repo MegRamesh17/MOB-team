@@ -18,15 +18,13 @@ resource "azurerm_key_vault_access_policy" "pipeline_identity" {
   secret_permissions = ["Get", "List", "Set", "Delete"]
 }
 
-# Lets the Function App itself read secrets at runtime - without this,
-# its @Microsoft.KeyVault(...) references silently resolve to empty.
-resource "azurerm_key_vault_access_policy" "function_app_identity" {
-  key_vault_id = azurerm_key_vault.mob_kv.id
-  tenant_id    = data.azurerm_client_config.current.tenant_id
-  object_id    = var.function_app_principal_id
-
-  secret_permissions = ["Get", "List"]
-}
+# NOTE: the Function App's own access policy used to live here, but that
+# created a circular module dependency -- this module needed the Function
+# App's principal_id (module.functions.function_app_identity_principal_id),
+# while the functions module needs this module's key_vault_uri. Terraform
+# can't resolve module.keyvault -> module.functions -> module.keyvault.
+# That policy now lives in the ROOT infra/main.tf instead, declared after
+# both modules exist, which breaks the cycle. See infra/main.tf.
 
 # Local development access for team members' own accounts
 resource "azurerm_key_vault_access_policy" "local_dev" {

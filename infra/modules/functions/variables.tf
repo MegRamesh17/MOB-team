@@ -15,11 +15,6 @@ variable "key_vault_uri" {
   type = string
 }
 
-variable "comms_connection_string" {
-  type      = string
-  sensitive = true
-}
-
 variable "app_integration_subnet_id" {
   type = string
 }

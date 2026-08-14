@@ -15,6 +15,12 @@ variable "openai_api_key" {
   default   = ""
 }
 
+variable "resend_api_key" {
+  description = "API key from resend.com, used for expiry-reminder emails"
+  type        = string
+  sensitive   = true
+}
+
 variable "environment" {
   description = "Environment name, used for resource naming (e.g. dev, prod)"
   type        = string
