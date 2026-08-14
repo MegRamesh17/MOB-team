@@ -137,3 +137,64 @@ withhold, it fails. Start a quiz with no role selected, or add sources approved 
 role in `src/quizgen/registry.py`.
 
 **Port 8000 in use** — `PORT=8080 python scripts/devserver.py`.
+
+---
+
+## Running the React UI
+
+Two servers: the Python API, and Vite for the frontend.
+
+```bash
+python scripts/devserver.py
+```
+
+```bash
+cd web-app && npm install && npm run dev
+```
+
+Then open **http://localhost:5173**. Vite proxies `/api` to the Python server on 8000,
+so the browser only ever makes same-origin requests.
+
+`web/index.html` is still there — a dependency-free reference UI served by the Python
+server at http://localhost:8000. Useful when you want to check the API without Node.
+
+### The frontend has no keys and needs none
+
+Azure credentials live server-side. The browser calls its own origin; the API talks to
+Azure. There is no `.env` in `web-app/`, and nothing there should ever need one.
+
+To point at deployed Azure instead of the local server:
+
+```bash
+VITE_API_BASE=https://<your-function-app>.azurewebsites.net npm run dev
+```
+
+Every call goes through `web-app/src/api.js`, so that is the only thing that changes.
+
+### What's real and what isn't
+
+**Real** — driven by the question bank and this learner's actual answers:
+trainings, modules, lesson text, quiz questions, grading, scores, certificates,
+Q score, mastery breakdown.
+
+**Still mock** — no backend exists for these yet, and each is tagged in the UI so a
+demo cannot mistake them for measurements: badges, the companion pet, focus timer,
+teammates, and the manager's team view.
+
+### Grading is a round trip, on purpose
+
+`/api/quiz/start` sends option ids and text — no `is_correct`, no explanations. When a
+learner answers, the UI calls `POST /api/quiz/answer`, which grades that one question
+server-side and returns the verdict. That is what makes immediate feedback possible
+without the answer key ever reaching the browser.
+
+If you rebuild the quiz screen, keep this. A key in the client is a key in devtools,
+and no score is trustworthy after that.
+
+### Sign-in is not real
+
+Both personas are demo stand-ins; no password is checked. The learner is passed as the
+`x-learner-id` header, which the deployed API ignores in favour of the
+platform-injected Entra principal. Signing in as each persona keeps their quiz
+histories separate, which is the quickest way to watch adaptive targeting diverge
+between two people against the same bank.
