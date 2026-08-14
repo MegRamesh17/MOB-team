@@ -19,3 +19,7 @@ data/documents/*.pdf
 .env.bak
 .env.*
 !.env.example
+
+# frontend build artefacts
+node_modules/
+web-app/dist/

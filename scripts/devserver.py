@@ -130,6 +130,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._topics()
             if route == "/api/questions":
                 return self._questions(query)
+            if route == "/api/trainings":
+                return self._trainings()
+            if route == "/api/lesson":
+                return self._lesson(query)
+            if route == "/api/certificates":
+                return self._certificates()
         except Exception as exc:  # noqa: BLE001
             return self._error(500, type(exc).__name__, str(exc)[:300])
         self._error(404, "Not found", route)
@@ -139,6 +145,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if route == "/api/quiz/start":
                 return self._start()
+            if route == "/api/quiz/answer":
+                return self._answer()
             if route == "/api/quiz/submit":
                 return self._submit()
         except Exception as exc:  # noqa: BLE001
@@ -236,14 +244,208 @@ class Handler(BaseHTTPRequestHandler):
             } for q in items[:limit]],
         })
 
+    # ------------------------------------------------------------------
+    # endpoints backing the React UI
+    # ------------------------------------------------------------------
+
+    def _trainings(self):
+        """
+        Source documents, presented as the UI's "trainings".
+
+        The mapping the frontend assumes:
+            training = source document       (Behavioral Compliance for Employees)
+            module   = section heading in it (Recognising Phishing Attempts)
+
+        This is the same grain mastery is measured on, so the progress ring on a
+        training card and the weak-topic targeting in the quiz engine agree with each
+        other. Deriving it any other way would let the UI show 90% on a subject the
+        engine considers weak.
+        """
+        learner = self._learner()
+        with Bank(DB) as bank:
+            approved = bank.questions(status=ReviewStatus.APPROVED)
+            mastery = bank.mastery(learner)
+            chunks = bank.all_chunks()
+
+        modules_by_doc: Dict[str, list] = {}
+        for c in chunks:
+            modules_by_doc.setdefault(c.doc_title, [])
+            if c.topic not in modules_by_doc[c.doc_title]:
+                modules_by_doc[c.doc_title].append(c.topic)
+
+        counts: Dict[str, int] = {}
+        for q in approved:
+            key = q.source_doc_title or q.topic
+            counts[key] = counts.get(key, 0) + 1
+
+        out = []
+        for doc, n in sorted(counts.items()):
+            m = mastery.get(doc)
+            answered = m.answered if m else 0
+            accuracy = round(m.accuracy * 100, 1) if m else 0
+            # Status is derived from evidence, not from a stored flag: a learner who
+            # has answered nothing has not started, and one at/above the pass mark
+            # has completed it.
+            if answered == 0:
+                status = "not-started"
+            elif accuracy >= PASSING_SCORE:
+                status = "completed"
+            else:
+                status = "in-progress"
+            out.append({
+                "id": doc,
+                "title": doc,
+                "status": status,
+                "mastery": int(accuracy),
+                "answered": answered,
+                "questionCount": n,
+                "modules": modules_by_doc.get(doc, []),
+            })
+        return self._send({"trainings": out})
+
+    def _lesson(self, query):
+        """
+        The reading a learner sees before the quiz — the actual indexed source text.
+
+        This is not filler. Questions are generated from these chunks, so the lesson a
+        learner reads and the questions they are asked come from the same passages. If
+        this returned anything else, the UI would promise "the questions come straight
+        from it" and be lying.
+        """
+        training = (query.get("training") or [""])[0]
+        with Bank(DB) as bank:
+            chunks = [c for c in bank.all_chunks() if c.doc_title == training]
+
+        if not chunks:
+            return self._error(404, "No lesson content", "Nothing indexed for {!r}.".format(training))
+
+        sections, seen = [], set()
+        for c in chunks:
+            if c.topic in seen:
+                continue
+            seen.add(c.topic)
+            sections.append({
+                "heading": c.topic,
+                "body": c.text,
+                "sourceUrl": c.source_url or "",
+                "page": c.page_start,
+            })
+
+        words = sum(len(s["body"].split()) for s in sections)
+        return self._send({
+            "title": training,
+            # 200wpm, floored at a minute so a short doc never reads "0 min".
+            "readTime": "{} min read".format(max(1, round(words / 200))),
+            "sections": sections,
+        })
+
+    def _certificates(self):
+        """Passed attempts. A certificate is a passed attempt, not a separate record."""
+        learner = self._learner()
+        with Bank(DB) as bank:
+            rows = bank.conn.execute(
+                """SELECT attempt_id, submitted_at, score_percent
+                   FROM attempts
+                   WHERE learner_id = ? AND passed = 1 AND submitted_at IS NOT NULL
+                   ORDER BY submitted_at DESC""",
+                (learner,),
+            ).fetchall()
+            certs = []
+            for r in rows:
+                # Name the certificate after whatever the attempt actually covered.
+                topics = bank.conn.execute(
+                    """SELECT q.source_doc_title AS doc, COUNT(*) AS n
+                       FROM responses r JOIN questions q ON q.question_id = r.question_id
+                       WHERE r.attempt_id = ? AND q.source_doc_title != ''
+                       GROUP BY doc ORDER BY n DESC LIMIT 1""",
+                    (r["attempt_id"],),
+                ).fetchone()
+                certs.append({
+                    "title": topics["doc"] if topics else "General Compliance",
+                    "date": (r["submitted_at"] or "")[:10],
+                    "score": round(r["score_percent"], 1),
+                })
+        return self._send({"certificates": certs})
+
+    def _answer(self):
+        """
+        Grade ONE question, mid-quiz, so the UI can give immediate feedback.
+
+        This endpoint exists because the alternative was worse. The React UI checks
+        answers as they are given and shows an explanation straight away — good design,
+        but it was doing that against a `correct` index held in the browser. Shipping
+        the key to the client puts every answer one devtools panel away.
+
+        So the browser sends what was picked and gets back a verdict. The key is
+        revealed for THAT question only, and only after an answer was committed, which
+        is exactly what the UI needs to render its correct/incorrect states and nothing
+        more.
+
+        Grading here is identical to the arithmetic in _submit; the final score is
+        still computed server-side at submit and never trusted from the client.
+        """
+        body = self._body()
+        attempt_id = body.get("attemptId", "")
+        question_id = body.get("questionId", "")
+
+        served = _IN_FLIGHT.get(attempt_id)
+        if served is None:
+            return self._error(404, "Unknown attempt", "Start a quiz first.")
+        # Only a question actually served in this attempt may be graded, or this
+        # becomes an oracle for reading the answer to any question in the bank.
+        if question_id not in served:
+            return self._error(403, "Not part of this attempt", question_id)
+
+        with Bank(DB) as bank:
+            question = bank.get_question(question_id)
+        if question is None:
+            return self._error(404, "Unknown question", question_id)
+
+        if question.question_type == QuestionType.FILL_IN_BLANK:
+            typed = str(body.get("textAnswer", "")).strip().lower()
+            accepted = {a.strip().lower() for a in question.accepted_answers}
+            correct = bool(typed) and typed in accepted
+        else:
+            selected = set(body.get("selectedOptionIds") or [])
+            key = {o.option_id for o in question.options if o.is_correct}
+            correct = bool(key) and selected == key
+
+        return self._send({
+            "questionId": question_id,
+            "correct": correct,
+            "correctOptionIds": [o.option_id for o in question.options if o.is_correct],
+            "acceptedAnswers": question.accepted_answers,
+            "explanation": question.explanation,
+            "sourceTitle": question.source_doc_title,
+            "sourceUrl": question.source_url,
+            "sourceQuote": question.source_quote,
+            "provenance": question.provenance_class.value,
+        })
+
     def _start(self):
         body = self._body()
         learner = body.get("learnerId") or self._learner()
         length = int(body.get("length") or QUIZ_LENGTH)
         role = body.get("role", "")
 
+        training = body.get("training", "")
+
         with Bank(DB) as bank:
             plan = build_quiz(bank, learner_id=learner, length=length, role=role)
+
+            # Scoping to one training happens after assembly rather than inside
+            # build_quiz: the adaptive engine still decides which topics within the
+            # document are worth asking about, and only the document is constrained.
+            if training:
+                scoped = [q for q in plan.questions if (q.source_doc_title or q.topic) == training]
+                if len(scoped) < length:
+                    pool = [
+                        q for q in bank.questions(status=ReviewStatus.APPROVED)
+                        if (q.source_doc_title or q.topic) == training
+                        and q.question_id not in {s.question_id for s in scoped}
+                    ]
+                    scoped.extend(pool[: length - len(scoped)])
+                plan.questions = scoped
 
         if not plan.questions:
             return self._error(
