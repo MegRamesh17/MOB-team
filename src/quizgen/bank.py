@@ -29,6 +29,15 @@ from .models import (
 )
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS roles (
+    -- The company's role list. Managers own it: the AI maps documents onto these
+    -- roles but never invents one the company didn't ask for.
+    role_code   TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS chunks (
     chunk_id    TEXT PRIMARY KEY,
     doc_id      TEXT NOT NULL,
@@ -275,6 +284,64 @@ class Bank:
             "SELECT * FROM questions WHERE question_id = ?", (question_id,)
         ).fetchone()
         return self._hydrate(row) if row else None
+
+    # ------------------------------------------------------------------
+    # roles
+    # ------------------------------------------------------------------
+
+    def roles(self) -> List[Dict[str, str]]:
+        rows = self.conn.execute(
+            "SELECT role_code, title, description FROM roles ORDER BY title"
+        )
+        return [dict(r) for r in rows]
+
+    def add_role(self, role_code: str, title: str, description: str = "") -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO roles (role_code, title, description, created_at) "
+            "VALUES (?,?,?,?)",
+            (role_code.upper(), title, description, utcnow()),
+        )
+        self.conn.commit()
+
+    def remove_role(self, role_code: str) -> int:
+        cur = self.conn.execute("DELETE FROM roles WHERE role_code = ?", (role_code.upper(),))
+        self.conn.commit()
+        return cur.rowcount
+
+    def set_chunk_roles(self, doc_title: str, mapping: Dict[str, str]) -> int:
+        """
+        Apply a topic -> role_code mapping to one document's chunks.
+
+        This is where the manager's confirmed role assignment lands. Questions
+        generated afterwards inherit role_code from their chunk, which is what the
+        serving-side isolation filters on — so a Sales Manager can never be served
+        Cloud DevOps material.
+        """
+        n = 0
+        for topic, role in mapping.items():
+            cur = self.conn.execute(
+                "UPDATE chunks SET role_scope = ? WHERE doc_title = ? AND topic = ?",
+                ((role or "ALL").upper(), doc_title, topic),
+            )
+            n += cur.rowcount
+        self.conn.commit()
+        return n
+
+    def retire_document_questions(self, doc_title: str) -> int:
+        """
+        Stop serving a superseded document's questions.
+
+        Used when the AI judges a new upload to be an update of an existing module.
+        Attempts and passes already earned are untouched — a certificate holds until
+        its normal one-year expiry — but no NEW quiz will contain these questions,
+        because serving only ever selects Approved ones.
+        """
+        cur = self.conn.execute(
+            "UPDATE questions SET review_status = ? WHERE source_doc_title = ?",
+            (ReviewStatus.REJECTED.value, doc_title),
+        )
+        self.conn.commit()
+        return cur.rowcount
 
     def set_review_status(self, question_ids: Sequence[str], status: ReviewStatus) -> int:
         self.conn.executemany(

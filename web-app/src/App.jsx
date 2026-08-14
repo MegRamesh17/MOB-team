@@ -296,7 +296,13 @@ function Button({ children, onClick, variant = "primary", disabled, className = 
 // ---------- Login ----------
 function Login({ onLogin }) {
   const [role, setRole] = useState("employee");
+  // The employee declares their company role at sign-in. Self-declared for now;
+  // the team has parked verifying it until real identity exists. Everything the
+  // employee sees is filtered server-side to this role plus the everyone-modules.
+  const [companyRole, setCompanyRole] = useState("");
   const { data: h } = useAsync(() => api.health().catch(() => null), []);
+  const rolesQ = useAsync(() => api.roles().catch(() => ({ roles: [] })), []);
+  const companyRoles = rolesQ.data?.roles || [];
 
   return (
     <div className="min-h-screen flex items-center justify-center" style={{ ...font, background: `linear-gradient(160deg, ${C.violet900} 0%, ${C.violet700} 45%, ${C.violet500} 100%)` }}>
@@ -324,6 +330,22 @@ function Login({ onLogin }) {
             ))}
           </div>
 
+          {role === "employee" && (
+            <div className="mb-4">
+              <label style={{ color: C.ink }} className="text-sm font-semibold block mb-2">Your role</label>
+              <select value={companyRole} onChange={(e) => setCompanyRole(e.target.value)}
+                style={{ borderColor: C.line, color: C.ink }}
+                className="w-full border rounded-xl px-3 py-2.5 text-sm bg-white">
+                <option value="">— select your role —</option>
+                {companyRoles.map((r) => (
+                  <option key={r.role_code} value={r.role_code}>{r.title}</option>
+                ))}
+              </select>
+              <p style={{ color: C.sub }} className="text-xs mt-1.5">
+                You'll only see training for this role, plus the modules everyone takes.
+              </p>
+            </div>
+          )}
           <div className="mb-4">
             <label style={{ color: C.ink }} className="text-sm font-semibold block mb-2">Email</label>
             <input readOnly value={PROFILES[role].email}
@@ -333,7 +355,10 @@ function Login({ onLogin }) {
             <label style={{ color: C.ink }} className="text-sm font-semibold block mb-2">Password</label>
             <input readOnly type="password" value="••••••••" style={{ borderColor: C.line, color: C.ink }} className="w-full border rounded-xl px-3 py-2.5 text-sm bg-gray-50" />
           </div>
-          <Button className="w-full" onClick={() => onLogin(role)}>Sign in</Button>
+          <Button className="w-full" onClick={() => onLogin(role, companyRole)}
+            disabled={role === "employee" && !companyRole}>
+            {role === "employee" && !companyRole ? "Select your role to sign in" : "Sign in"}
+          </Button>
 
           {/* Sign-in is not implemented; the backend takes the learner from a header.
               Saying so here beats letting a reviewer assume auth exists. */}
@@ -566,10 +591,21 @@ function Dashboard({ name, onOpenPath, onOpenTraining }) {
                     : <Circle size={16} color={C.violet500} className="shrink-0" />}
                   <div className="min-w-0">
                     <p style={{ color: C.ink }} className="text-sm font-semibold truncate">{t.title}</p>
-                    <p style={{ color: C.sub }} className="text-xs">{t.modules.length} modules · {t.questionCount} questions</p>
+                    <p style={{ color: C.sub }} className="text-xs">
+                      {t.modules.length} modules · {t.questionCount} questions
+                      {t.compliant && t.expiresAt ? ` · renews ${String(t.expiresAt).slice(0, 10)}` : ""}
+                    </p>
                   </div>
                 </div>
-                <StatusPill status={t.status} />
+                {t.expired ? (
+                  <span style={{ background: C.dangerBg, color: C.danger, fontWeight: 600 }}
+                    className="text-xs px-2.5 py-1 rounded-full whitespace-nowrap">Expired — retake</span>
+                ) : t.compliant ? (
+                  <span style={{ background: C.successBg, color: C.success, fontWeight: 600 }}
+                    className="text-xs px-2.5 py-1 rounded-full whitespace-nowrap">Compliant</span>
+                ) : (
+                  <StatusPill status={t.status} />
+                )}
               </button>
             ))}
           </div>
@@ -1027,6 +1063,11 @@ function Certificates() {
             </div>
             <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">{c.title}</p>
             <p style={{ color: C.sub }} className="text-xs">Completed {c.date} · Score {c.score}%</p>
+            {c.expiresAt && (
+              <p style={{ color: c.expired ? C.danger : C.sub }} className="text-xs font-semibold mt-1">
+                {c.expired ? `Expired ${c.expiresAt} — retake required` : `Valid until ${c.expiresAt}`}
+              </p>
+            )}
           </div>
         ))}
       </div>
@@ -1034,44 +1075,204 @@ function Certificates() {
   );
 }
 
-// ---------- Documents: upload PDFs that become quizzes ----------
+// ---------- Documents: upload PDFs that become role-scoped training ----------
 
 /**
- * The step that was only ever possible from a terminal.
+ * Manager flow: upload -> AI proposes section->role mapping -> manager confirms ->
+ * questions generate -> employees in those roles owe the module.
  *
- * Upload -> extract -> generate -> the document appears as a training. Extraction is
- * synchronous so problems (a scanned PDF with no text layer, the most common one) are
- * reported straight away. Generation is a background job because it takes tens of
- * seconds per section against a real model, so this polls for progress.
+ * The AI only proposes. Sections it cannot place land as "unknown roles" for the
+ * manager to resolve — assign to an existing role, or add a new role to the company
+ * list first. Nothing is fetched online; a section too thin to teach from is flagged
+ * for the manager to fix with more material.
  */
+function RoleManager({ roles, onChanged }) {
+  const [open, setOpen] = useState(false);
+  const [code, setCode] = useState("");
+  const [title, setTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const add = async () => {
+    setBusy(true); setErr(null);
+    try {
+      await api.addRole({ roleCode: code, title: title || code, description: "" });
+      setCode(""); setTitle(""); onChanged();
+    } catch (e) { setErr(e); } finally { setBusy(false); }
+  };
+  const remove = async (rc) => {
+    if (!window.confirm(`Remove role ${rc}? Employees with this role will only see the everyone-modules.`)) return;
+    try { await api.removeRole(rc); onChanged(); } catch (e) { setErr(e); }
+  };
+
+  return (
+    <div style={{ borderColor: C.line }} className="border rounded-xl bg-white mb-5">
+      <button onClick={() => setOpen(!open)} className="w-full flex items-center justify-between p-4">
+        <span style={{ ...display, color: C.ink }} className="font-bold text-sm">
+          Company roles ({roles.length})
+        </span>
+        <ChevronRight size={15} color={C.sub} style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 120ms" }} />
+      </button>
+      {open && (
+        <div className="px-4 pb-4">
+          <p style={{ color: C.sub }} className="text-xs mb-3">
+            The AI maps documents onto this list and never invents a role. Adding and removing is yours.
+          </p>
+          <div className="flex flex-wrap gap-2 mb-3">
+            {roles.map((r) => (
+              <span key={r.role_code} style={{ background: C.lavender, color: C.violet700 }}
+                className="text-xs font-semibold px-2.5 py-1 rounded-full flex items-center gap-1.5">
+                {r.title}
+                <button onClick={() => remove(r.role_code)} title="Remove role"><X size={11} /></button>
+              </span>
+            ))}
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="ROLE_CODE"
+              style={{ borderColor: C.line, color: C.ink }} className="border rounded-lg px-3 py-2 text-xs w-40" />
+            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Display name"
+              style={{ borderColor: C.line, color: C.ink }} className="border rounded-lg px-3 py-2 text-xs flex-1 min-w-[160px]" />
+            <Button onClick={add} disabled={!code.trim() || busy} className="!py-2 text-xs">Add role</Button>
+          </div>
+          {err && <ErrorBox error={err} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The manager reviews the AI's proposed mapping before anything is generated. */
+function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
+  const knownCodes = new Set(roles.map((r) => r.role_code));
+  const [assignments, setAssignments] = useState(() => {
+    const init = {};
+    for (const [topic, role] of Object.entries(analysis.proposedRoles || {})) {
+      // Proposals naming a role the company hasn't defined start unresolved: the
+      // manager must place them before confirm unlocks.
+      init[topic] = knownCodes.has(String(role).toUpperCase()) || role === "ALL"
+        ? String(role).toUpperCase() : "";
+    }
+    return init;
+  });
+  const [newRoles, setNewRoles] = useState([]); // roles the manager adds inline
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const allCodes = [...roles.map((r) => r.role_code), ...newRoles.map((r) => r.roleCode)];
+  const unresolved = Object.entries(assignments).filter(([, v]) => !v);
+
+  const addInlineRole = (name) => {
+    const roleCode = name.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "");
+    if (!roleCode || allCodes.includes(roleCode)) return roleCode;
+    setNewRoles((n) => [...n, { roleCode, title: name, description: "" }]);
+    return roleCode;
+  };
+
+  const confirm = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const result = await api.confirmDocument({
+        title: analysis.title, assignments, newRoles, supersede: "",
+      });
+      onConfirmed(result);
+    } catch (e) { setErr(e); } finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ borderColor: C.violet300 }} className="border-2 rounded-xl p-5 bg-white mb-5">
+      <h3 style={{ ...display, color: C.ink }} className="font-bold mb-1">Confirm who trains on what</h3>
+      <p style={{ color: C.sub }} className="text-xs mb-1">
+        The AI read “{analysis.title}” and proposed this. Nothing is generated until you confirm.
+      </p>
+      {analysis.summary && <p style={{ color: C.sub }} className="text-xs italic mb-4">“{analysis.summary}”</p>}
+
+      {analysis.thinTopics?.length > 0 && (
+        <div style={{ background: C.amberBg, color: C.amber }} className="rounded-lg px-3 py-2.5 text-xs mb-4">
+          <strong>Too thin to teach from:</strong> {analysis.thinTopics.join(", ")}.
+          These sections don't have enough material for real questions — consider
+          uploading a fuller document for them. (Nothing is pulled from the internet.)
+        </div>
+      )}
+
+      <div className="space-y-2 mb-4">
+        {Object.entries(analysis.proposedRoles || {}).map(([topic, proposed]) => {
+          const isUnknown = !knownCodes.has(String(proposed).toUpperCase()) && proposed !== "ALL";
+          return (
+            <div key={topic} className="flex items-center gap-3 flex-wrap">
+              <span style={{ color: C.ink }} className="text-sm font-medium flex-1 min-w-[200px]">{topic}</span>
+              {isUnknown && !assignments[topic] && (
+                <span style={{ background: C.dangerBg, color: C.danger }} className="text-[11px] font-semibold px-2 py-0.5 rounded-full">
+                  document says “{proposed}” — not a company role
+                </span>
+              )}
+              <select
+                value={assignments[topic] || ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "__new__") {
+                    const name = window.prompt("New role name:", String(proposed));
+                    if (name) {
+                      const code = addInlineRole(name);
+                      setAssignments((a) => ({ ...a, [topic]: code }));
+                    }
+                    return;
+                  }
+                  setAssignments((a) => ({ ...a, [topic]: v }));
+                }}
+                style={{ borderColor: assignments[topic] ? C.line : C.danger, color: C.ink }}
+                className="border rounded-lg px-2.5 py-1.5 text-xs"
+              >
+                <option value="">— choose role —</option>
+                <option value="ALL">Everyone (miscellaneous)</option>
+                {roles.map((r) => <option key={r.role_code} value={r.role_code}>{r.title}</option>)}
+                {newRoles.map((r) => <option key={r.roleCode} value={r.roleCode}>{r.title} (new)</option>)}
+                <option value="__new__">+ Add as new role…</option>
+              </select>
+            </div>
+          );
+        })}
+      </div>
+
+      {newRoles.length > 0 && (
+        <p style={{ color: C.violet700 }} className="text-xs font-semibold mb-3">
+          Will be added to the company list: {newRoles.map((r) => r.title).join(", ")}
+        </p>
+      )}
+      {err && <ErrorBox error={err} />}
+      <div className="flex gap-2">
+        <Button onClick={confirm} disabled={busy || unresolved.length > 0}>
+          {busy ? "Starting generation…" : unresolved.length > 0
+            ? `Resolve ${unresolved.length} section(s) first` : "Confirm & generate"}
+        </Button>
+        <Button variant="ghost" onClick={onCancel}>Cancel</Button>
+      </div>
+    </div>
+  );
+}
+
 function DocumentsScreen({ onDone }) {
   const { data, loading, error, reload } = useAsync(() => api.documents(), []);
+  const rolesQ = useAsync(() => api.roles(), []);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState(null);
+  const [analysis, setAnalysis] = useState(null);   // awaiting manager confirmation
   const [job, setJob] = useState(null);
-  const [justAdded, setJustAdded] = useState(null);
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef(null);
   const pollRef = useRef(null);
 
   const generator = data?.generator || "mock";
   const billed = generator !== "mock";
+  const roles = rolesQ.data?.roles || [];
 
-  // Poll while a generation job is running. Cleared on unmount so navigating away
-  // mid-generation does not leave a timer running against a dead component.
   useEffect(() => {
     if (!job || job.state !== "running") return;
     pollRef.current = setInterval(async () => {
       try {
         const next = await api.jobStatus(job.jobId);
         setJob(next);
-        if (next.state !== "running") {
-          clearInterval(pollRef.current);
-          reload();
-        }
-      } catch {
-        clearInterval(pollRef.current);
-      }
+        if (next.state !== "running") { clearInterval(pollRef.current); reload(); }
+      } catch { clearInterval(pollRef.current); }
     }, 1200);
     return () => clearInterval(pollRef.current);
   }, [job, reload]);
@@ -1079,20 +1280,12 @@ function DocumentsScreen({ onDone }) {
   const handleFiles = async (files) => {
     const file = files?.[0];
     if (!file) return;
-    setUploading(true);
-    setUploadError(null);
-    setJustAdded(null);
-    setJob(null);
+    setUploading(true); setUploadError(null); setAnalysis(null); setJob(null);
     try {
       const res = await api.uploadDocument(file);
-      setJustAdded(res);
-      if (res.jobId) setJob({ jobId: res.jobId, state: "running", done: 0, total: res.chunks, kept: 0, message: "Starting…" });
-      reload();
-    } catch (e) {
-      setUploadError(e);
-    } finally {
-      setUploading(false);
-    }
+      setAnalysis(res);          // manager confirms before anything generates
+      rolesQ.reload();
+    } catch (e) { setUploadError(e); } finally { setUploading(false); }
   };
 
   const pct = job && job.total ? Math.round((job.done / job.total) * 100) : 0;
@@ -1101,37 +1294,29 @@ function DocumentsScreen({ onDone }) {
     <div className="p-8 max-w-3xl">
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Documents</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">
-        Upload a policy or training document and it becomes a quiz. Questions are generated
-        from its sections, so headings matter.
+        Upload a training document. The AI maps each section to the role it trains,
+        you confirm, and employees in those roles owe the module — renewed yearly.
       </p>
 
-      {/* Which generator will run. Real generation costs money per question, and
-          finding that out from a bill rather than the screen is not acceptable. */}
+      <RoleManager roles={roles} onChanged={rolesQ.reload} />
+
       <div style={{ background: billed ? C.amberBg : C.lavender, borderColor: billed ? C.amber : C.line }}
         className="border rounded-xl px-4 py-3 mb-5 flex items-start gap-2.5">
         <AlertCircle size={16} color={billed ? C.amber : C.violet700} className="shrink-0 mt-0.5" />
         <div>
           <p style={{ color: billed ? C.amber : C.violet700 }} className="text-sm font-semibold">
-            {billed ? `Generating with ${generator} — this is billed` : "Generating with the mock provider — free"}
-          </p>
-          <p style={{ color: C.ink }} className="text-xs opacity-80 mt-0.5">
-            {billed
-              ? "Roughly a cent per question, and tens of seconds per section. Set QUIZGEN_PROVIDER=mock to test the flow without spending anything."
-              : "Pattern-matched questions, no API key and no network. Unset QUIZGEN_PROVIDER to use the real model for better questions."}
+            Role mapping uses gpt-5 (a few cents per upload).
+            {billed ? ` Question generation also uses ${generator} — billed.` : " Question generation is on the free mock provider."}
           </p>
         </div>
       </div>
 
-      {/* drop zone */}
       <div
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
         onDrop={(e) => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files); }}
         onClick={() => fileRef.current?.click()}
-        style={{
-          borderColor: dragging ? C.violet700 : C.line,
-          background: dragging ? C.lavender : "#fff",
-        }}
+        style={{ borderColor: dragging ? C.violet700 : C.line, background: dragging ? C.lavender : "#fff" }}
         className="border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition-colors mb-5"
       >
         <input ref={fileRef} type="file" accept=".pdf,.txt,.md" className="hidden"
@@ -1140,28 +1325,24 @@ function DocumentsScreen({ onDone }) {
           {uploading ? <Loader2 size={20} color={C.violet700} className="animate-spin" /> : <Upload size={20} color={C.violet700} />}
         </div>
         <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">
-          {uploading ? "Reading your document…" : "Drop a PDF here, or click to choose"}
+          {uploading ? "Reading and mapping roles… (~10-30s)" : "Drop a PDF here, or click to choose"}
         </p>
         <p style={{ color: C.sub }} className="text-xs">PDF, TXT or MD · up to 25 MB</p>
       </div>
 
       {uploadError && <ErrorBox error={uploadError} />}
 
-      {justAdded && (
-        <div style={{ background: C.successBg, borderColor: C.success }} className="border rounded-xl p-4 mb-5">
-          <div className="flex items-start gap-2.5">
-            <CheckCircle2 size={17} color={C.success} className="shrink-0 mt-0.5" />
-            <div className="min-w-0">
-              <p style={{ color: C.success }} className="text-sm font-semibold mb-0.5">
-                Read “{justAdded.title}” — {justAdded.chunks} section{justAdded.chunks === 1 ? "" : "s"}
-              </p>
-              <p style={{ color: C.ink }} className="text-xs opacity-80">
-                {justAdded.topics.slice(0, 6).join(" · ")}
-                {justAdded.topics.length > 6 ? ` · +${justAdded.topics.length - 6} more` : ""}
-              </p>
-            </div>
-          </div>
-        </div>
+      {analysis && (
+        <MappingReview
+          analysis={analysis}
+          roles={roles}
+          onCancel={() => setAnalysis(null)}
+          onConfirmed={(result) => {
+            setAnalysis(null);
+            if (result.jobId) setJob({ jobId: result.jobId, state: "running", done: 0, total: 0, kept: 0, message: "Starting…" });
+            rolesQ.reload();
+          }}
+        />
       )}
 
       {job && (
@@ -1169,9 +1350,7 @@ function DocumentsScreen({ onDone }) {
           <div className="flex items-center justify-between gap-3 mb-2">
             <p style={{ color: C.ink }} className="text-sm font-semibold flex items-center gap-2">
               {job.state === "running" && <Loader2 size={14} className="animate-spin" />}
-              {job.state === "running" ? "Writing questions…"
-                : job.state === "error" ? "Generation failed"
-                : "Questions ready"}
+              {job.state === "running" ? "Writing questions…" : job.state === "error" ? "Generation failed" : "Questions ready"}
             </p>
             <span style={{ color: C.sub }} className="text-xs font-semibold">
               {job.total ? `${job.done}/${job.total} sections` : ""}
@@ -1184,16 +1363,8 @@ function DocumentsScreen({ onDone }) {
             }} className="h-full rounded-full transition-all" />
           </div>
           <p style={{ color: job.state === "error" ? C.danger : C.sub }} className="text-xs">{job.message}</p>
-
           {job.state === "done" && (
-            <div className="flex items-center gap-3 mt-3 flex-wrap">
-              <Button onClick={onDone}>Go take the quiz</Button>
-              {job.rejected > 0 && (
-                <span style={{ color: C.sub }} className="text-xs">
-                  {job.rejected} rejected by validation before storage
-                </span>
-              )}
-            </div>
+            <div className="mt-3"><Button onClick={onDone}>Done</Button></div>
           )}
         </div>
       )}
@@ -1207,13 +1378,6 @@ function DocumentsScreen({ onDone }) {
 
       {loading && <Loading />}
       {error && <ErrorBox error={error} onRetry={reload} />}
-
-      {!loading && !error && (data?.documents || []).length === 0 && (
-        <div style={{ borderColor: C.line }} className="border rounded-xl p-6 bg-white text-center">
-          <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">Nothing uploaded yet</p>
-          <p style={{ color: C.sub }} className="text-xs">Drop a document above to create your first quiz.</p>
-        </div>
-      )}
 
       <div className="space-y-2">
         {(data?.documents || []).map((d) => (
@@ -1232,15 +1396,6 @@ function DocumentsScreen({ onDone }) {
             <StatusPill status={d.ready ? "completed" : "in-progress"} />
           </div>
         ))}
-      </div>
-
-      <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white mt-6">
-        <p style={{ color: C.ink }} className="text-sm font-semibold mb-1.5">If a document produces poor questions</p>
-        <ul style={{ color: C.sub }} className="text-xs space-y-1 list-disc pl-4">
-          <li>Headings become topics. A document whose headings didn't survive PDF conversion collapses into one section, and targeting gets much coarser.</li>
-          <li>Bullet-point syllabi produce shallow recall questions — there's nothing to build a real question from. Prose works far better.</li>
-          <li>Scanned PDFs have no text layer and are rejected. They'd need OCR, which this pipeline doesn't do.</li>
-        </ul>
       </div>
     </div>
   );
@@ -1824,12 +1979,13 @@ export default function App() {
   if (!auth) {
     return (
       <Login
-        onLogin={(role) => {
+        onLogin={(role, companyRole) => {
           const profile = PROFILES[role];
-          // Each demo persona is its own learner, so their histories stay separate
-          // and the adaptive engine treats them independently.
-          api.setLearner(profile.email);
-          setAuth({ role, name: profile.name });
+          // Each persona+role is its own learner so histories stay separate and
+          // switching roles at login demonstrates the isolation cleanly.
+          api.setLearner(companyRole ? `${profile.email}:${companyRole}` : profile.email);
+          api.setLearnerRole(role === "employee" ? companyRole : "");
+          setAuth({ role, name: profile.name, companyRole });
           setView(role === "manager" ? "team" : "dashboard");
         }}
       />

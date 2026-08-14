@@ -203,6 +203,7 @@ class MockGenerator:
             source_chunk_id=chunk.chunk_id,
             source_doc_title=chunk.doc_title,
             source_page=chunk.page_start,
+            role_code=chunk.role_scope or "",
             source_quote=sentence,
             generator=self.name,
         )
@@ -238,6 +239,7 @@ class MockGenerator:
             source_chunk_id=chunk.chunk_id,
             source_doc_title=chunk.doc_title,
             source_page=chunk.page_start,
+            role_code=chunk.role_scope or "",
             source_quote=sentence,
             generator=self.name,
         )
@@ -260,6 +262,7 @@ class MockGenerator:
             source_chunk_id=chunk.chunk_id,
             source_doc_title=chunk.doc_title,
             source_page=chunk.page_start,
+            role_code=chunk.role_scope or "",
             source_quote=sentence,
             generator=self.name,
         )
@@ -311,6 +314,7 @@ class MockGenerator:
             source_chunk_id=chunk.chunk_id,
             source_doc_title=chunk.doc_title,
             source_page=chunk.page_start,
+            role_code=chunk.role_scope or "",
             source_quote=sentence,
             generator=self.name,
         )

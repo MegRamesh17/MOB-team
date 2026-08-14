@@ -21,13 +21,22 @@ const BASE = import.meta.env.VITE_API_BASE || "";
 // reads the platform-injected x-ms-client-principal header instead, and this header
 // is ignored there.
 let learnerId = "demo-learner";
+let learnerRole = "";
 export const setLearner = (id) => { learnerId = id || "demo-learner"; };
 export const getLearner = () => learnerId;
+// Self-declared for now (the team has parked role verification until Entra).
+// Serving-side filtering keys on this header: employees only ever see their own
+// role's modules plus the ALL/miscellaneous ones.
+export const setLearnerRole = (role) => { learnerRole = (role || "").toUpperCase(); };
 
 async function call(path, { method = "GET", body } = {}) {
   const res = await fetch(BASE + "/api" + path, {
     method,
-    headers: { "Content-Type": "application/json", "x-learner-id": learnerId },
+    headers: {
+      "Content-Type": "application/json",
+      "x-learner-id": learnerId,
+      ...(learnerRole ? { "x-learner-role": learnerRole } : {}),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
@@ -82,7 +91,7 @@ export async function uploadDocument(file) {
 
   const res = await fetch(BASE + "/api/documents", {
     method: "POST",
-    headers: { "x-learner-id": learnerId },
+    headers: { "x-learner-id": learnerId, ...(learnerRole ? { "x-learner-role": learnerRole } : {}) },
     body: form,
   });
 
@@ -96,3 +105,20 @@ export async function uploadDocument(file) {
   }
   return payload;
 }
+
+export const roles = () => call("/roles");
+export const addRole = ({ roleCode, title, description }) =>
+  call("/roles", { method: "POST", body: { roleCode, title, description } });
+export const removeRole = (roleCode) =>
+  call(`/roles/${encodeURIComponent(roleCode)}/delete`, { method: "POST" });
+
+/**
+ * The manager's decision on an upload: the confirmed section->role mapping, any
+ * roles they chose to create, and (if the AI judged this an update) which existing
+ * module it supersedes. Generation starts only after this call.
+ */
+export const confirmDocument = ({ title, assignments, newRoles, supersede }) =>
+  call("/documents/confirm", {
+    method: "POST",
+    body: { title, assignments, newRoles: newRoles || [], supersede: supersede || "" },
+  });

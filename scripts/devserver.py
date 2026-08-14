@@ -188,6 +188,33 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _plus_one_year(iso: str) -> str:
+    """Renewal window: every pass expires one year after it was earned."""
+    try:
+        dt = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return ""
+    try:
+        return dt.replace(year=dt.year + 1).isoformat(timespec="seconds")
+    except ValueError:  # Feb 29
+        return dt.replace(year=dt.year + 1, day=28).isoformat(timespec="seconds")
+
+
+def _latest_passes(bank, learner: str) -> dict:
+    """doc_title -> most recent passing submitted_at for this learner."""
+    rows = bank.conn.execute(
+        """SELECT q.source_doc_title AS doc, MAX(a.submitted_at) AS passed_at
+           FROM attempts a
+           JOIN responses r ON r.attempt_id = a.attempt_id
+           JOIN questions q ON q.question_id = r.question_id
+           WHERE a.learner_id = ? AND a.passed = 1 AND a.submitted_at IS NOT NULL
+                 AND q.source_doc_title != ''
+           GROUP BY doc""",
+        (learner,),
+    ).fetchall()
+    return {r["doc"]: r["passed_at"] for r in rows}
+
+
 def _mastery_band(accuracy: float) -> str:
     if accuracy >= 90:
         return "Strong"
@@ -228,6 +255,16 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return {}
 
+    def _learner_role(self) -> str:
+        """
+        The signed-in employee's role, from a header the demo login sets.
+
+        Self-declared for now — the team knows an employee could lie and has parked
+        that until real identity (Entra) exists. What matters today is the serving
+        side: everything the employee sees is filtered to this role plus ALL.
+        """
+        return self.headers.get("x-learner-role", "").strip().upper()
+
     def _learner(self) -> str:
         return self.headers.get("x-learner-id", "demo-learner")
 
@@ -264,6 +301,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._certificates()
             if route == "/api/documents":
                 return self._list_documents()
+            if route == "/api/roles":
+                return self._list_roles()
             if route.startswith("/api/jobs/"):
                 return self._job_status(route.rsplit("/", 1)[-1])
         except Exception as exc:  # noqa: BLE001
@@ -275,6 +314,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if route == "/api/documents":
                 return self._upload()
+            if route == "/api/documents/confirm":
+                return self._confirm_document()
+            if route == "/api/roles":
+                return self._add_role()
+            if route.startswith("/api/roles/") and route.endswith("/delete"):
+                return self._remove_role(route.split("/")[3])
             if route == "/api/quiz/start":
                 return self._start()
             if route == "/api/quiz/answer":
@@ -486,21 +531,139 @@ class Handler(BaseHTTPRequestHandler):
                 "Text was extracted but nothing usable was found in it.",
             )
 
-        with Bank(DB) as bank:
-            bank.save_chunks(chunks)
-
         doc_title = chunks[0].doc_title
         topics = sorted({c.topic for c in chunks})
-        job_id = _start_generation_job(doc_title)
+
+        # Chunks are saved now (so nothing is lost), but NOT tagged with roles and
+        # NOT generated from. gpt-5 proposes a section->role mapping; the manager
+        # confirms it in the UI; only then does /api/documents/confirm tag chunks
+        # and start generation. The AI proposes, the manager decides.
+        with Bank(DB) as bank:
+            bank.save_chunks(chunks)
+            from quizgen.rolemap import analyze_document, seed_roles
+            seed_roles(bank)
+            known_roles = bank.roles()
+
+        sections = {}
+        for c in chunks:
+            sections.setdefault(c.topic, c.text)
+
+        try:
+            mapping = analyze_document(doc_title, sections, known_roles)
+        except RuntimeError as exc:
+            # No credentials. The chunks stay saved; the error says exactly what is
+            # missing rather than degrading to a silent guess.
+            return self._error(503, "Role mapping needs the real model", str(exc)[:300])
+        except Exception as exc:  # noqa: BLE001
+            return self._error(502, "Role analysis failed", "{}: {}".format(
+                type(exc).__name__, str(exc)[:250]))
 
         return self._send({
             "file": safe,
             "title": doc_title,
             "chunks": len(chunks),
             "topics": topics,
-            "jobId": job_id,
+            "summary": mapping.summary,
+            # topic -> proposed role ("ALL", a known code, or the document's own
+            # words for a role the company hasn't defined)
+            "proposedRoles": mapping.assignments,
+            "unknownRoles": mapping.unknown_roles,
+            # Sections too thin to build a module from. Per the team's rule this is
+            # the manager's problem to solve with more material — never the web's.
+            "thinTopics": mapping.thin_topics,
+            "knownRoles": known_roles,
             "generator": _generator_label(),
+            "needsConfirmation": True,
         }, 201)
+
+    def _confirm_document(self):
+        """
+        The manager has reviewed the proposed mapping. Apply it and generate.
+
+        Body: { title, assignments: {topic: role_code|ALL}, newRoles: [{roleCode,
+        title, description}], supersede: "<existing title>"|"" }
+
+        newRoles here are roles the MANAGER chose to add after seeing the document's
+        unknown-role flags — the AI only ever surfaced them.
+        """
+        body = self._body()
+        doc_title = str(body.get("title", "")).strip()
+        assignments = body.get("assignments") or {}
+        if not doc_title or not isinstance(assignments, dict):
+            return self._error(400, "Missing title or assignments")
+
+        with Bank(DB) as bank:
+            for r in body.get("newRoles") or []:
+                code = str(r.get("roleCode", "")).strip().upper().replace(" ", "_")
+                if code:
+                    bank.add_role(code, str(r.get("title", code)),
+                                  str(r.get("description", "")))
+
+            known = {r["role_code"] for r in bank.roles()} | {"ALL"}
+            bad = {t: r for t, r in assignments.items()
+                   if str(r).upper().replace(" ", "_") not in known}
+            if bad:
+                return self._error(
+                    422, "Unknown role in assignments",
+                    "Not in the company role list: {}. Add the role first or map "
+                    "these sections to an existing one.".format(
+                        ", ".join(sorted({str(v) for v in bad.values()}))),
+                )
+
+            normalized = {t: str(r).upper().replace(" ", "_")
+                          for t, r in assignments.items()}
+            tagged = bank.set_chunk_roles(doc_title, normalized)
+
+            # Update-vs-add was decided by gpt-5 and shown to the manager before
+            # this call; supersede arrives here already reviewed. Old questions stop
+            # being served; passes already earned hold until their one-year expiry.
+            retired = 0
+            supersede = str(body.get("supersede", "")).strip()
+            if supersede and supersede != doc_title:
+                retired = bank.retire_document_questions(supersede)
+
+        job_id = _start_generation_job(doc_title)
+        return self._send({
+            "title": doc_title,
+            "taggedChunks": tagged,
+            "retiredQuestions": retired,
+            "superseded": supersede,
+            "jobId": job_id,
+        })
+
+    def _list_roles(self):
+        with Bank(DB) as bank:
+            from quizgen.rolemap import seed_roles
+            seed_roles(bank)
+            roles = bank.roles()
+            # Which roles actually have servable material, for the login picker.
+            counts = {}
+            for q in bank.questions(status=ReviewStatus.APPROVED):
+                for code in (q.role_code or "ALL").split(","):
+                    counts[code.strip().upper()] = counts.get(code.strip().upper(), 0) + 1
+        return self._send({
+            "roles": [
+                {**r, "questionCount": counts.get(r["role_code"], 0) + counts.get("ALL", 0)}
+                for r in roles
+            ],
+        })
+
+    def _add_role(self):
+        body = self._body()
+        code = str(body.get("roleCode", "")).strip().upper().replace(" ", "_")
+        title = str(body.get("title", "")).strip()
+        if not code or not title:
+            return self._error(400, "roleCode and title are required")
+        with Bank(DB) as bank:
+            bank.add_role(code, title, str(body.get("description", "")))
+        return self._send({"roleCode": code, "title": title}, 201)
+
+    def _remove_role(self, code: str):
+        with Bank(DB) as bank:
+            removed = bank.remove_role(code)
+        if not removed:
+            return self._error(404, "No such role", code)
+        return self._send({"removed": code})
 
     def _job_status(self, job_id: str):
         job = _JOBS.get(job_id)
@@ -526,13 +689,26 @@ class Handler(BaseHTTPRequestHandler):
         engine considers weak.
         """
         learner = self._learner()
+        role = self._learner_role()
         with Bank(DB) as bank:
             approved = bank.questions(status=ReviewStatus.APPROVED)
             mastery = bank.mastery(learner)
             chunks = bank.all_chunks()
+            passes = _latest_passes(bank, learner)
+
+        # Role isolation happens HERE, on the serving side. A Sales Manager must not
+        # even see that Cloud DevOps modules exist, let alone take them. A document
+        # counts for this learner if any of its questions is in scope for their role
+        # (or scoped ALL — the miscellaneous-everyone material).
+        from quizgen.adaptive import scope_matches
+        if role:
+            approved = [q for q in approved if scope_matches(q.role_code, role)]
 
         modules_by_doc: Dict[str, list] = {}
+        visible_docs = {q.source_doc_title or q.topic for q in approved}
         for c in chunks:
+            if c.doc_title not in visible_docs:
+                continue
             modules_by_doc.setdefault(c.doc_title, [])
             if c.topic not in modules_by_doc[c.doc_title]:
                 modules_by_doc[c.doc_title].append(c.topic)
@@ -556,10 +732,19 @@ class Handler(BaseHTTPRequestHandler):
                 status = "completed"
             else:
                 status = "in-progress"
+            passed_at = passes.get(doc)
+            expires_at = _plus_one_year(passed_at) if passed_at else None
+            expired = bool(expires_at and expires_at < _now())
             out.append({
                 "id": doc,
                 "title": doc,
                 "status": status,
+                # Compliance is passed-within-a-year: a pass older than the renewal
+                # window no longer counts, and the module owes a retake.
+                "compliant": bool(passed_at) and not expired,
+                "passedAt": passed_at,
+                "expiresAt": expires_at,
+                "expired": expired,
                 "mastery": int(accuracy),
                 "answered": answered,
                 "questionCount": n,
@@ -624,10 +809,15 @@ class Handler(BaseHTTPRequestHandler):
                        GROUP BY doc ORDER BY n DESC LIMIT 1""",
                     (r["attempt_id"],),
                 ).fetchone()
+                expires = _plus_one_year(r["submitted_at"] or "")
                 certs.append({
                     "title": topics["doc"] if topics else "General Compliance",
                     "date": (r["submitted_at"] or "")[:10],
                     "score": round(r["score_percent"], 1),
+                    # Certificates renew yearly; an expired one is shown, marked, and
+                    # owed again — not silently dropped from the list.
+                    "expiresAt": expires[:10],
+                    "expired": bool(expires and expires < _now()),
                 })
         return self._send({"certificates": certs})
 
@@ -693,6 +883,9 @@ class Handler(BaseHTTPRequestHandler):
         role = body.get("role", "")
 
         training = body.get("training", "")
+        # The header wins over the body: an employee cannot request another role's
+        # quiz by editing the POST payload in devtools.
+        role = self._learner_role() or role
 
         with Bank(DB) as bank:
             plan = build_quiz(bank, learner_id=learner, length=length, role=role)
@@ -701,11 +894,17 @@ class Handler(BaseHTTPRequestHandler):
             # build_quiz: the adaptive engine still decides which topics within the
             # document are worth asking about, and only the document is constrained.
             if training:
+                from quizgen.adaptive import scope_matches
                 scoped = [q for q in plan.questions if (q.source_doc_title or q.topic) == training]
                 if len(scoped) < length:
+                    # The top-up pool must apply the SAME role filter build_quiz did.
+                    # It once refilled from the whole bank unfiltered, which handed a
+                    # Customer Service rep a Sales Manager question — the exact leak
+                    # the role scope exists to prevent.
                     pool = [
                         q for q in bank.questions(status=ReviewStatus.APPROVED)
                         if (q.source_doc_title or q.topic) == training
+                        and (not role or scope_matches(q.role_code, role))
                         and q.question_id not in {s.question_id for s in scoped}
                     ]
                     scoped.extend(pool[: length - len(scoped)])

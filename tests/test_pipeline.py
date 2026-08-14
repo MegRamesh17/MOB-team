@@ -602,3 +602,70 @@ class TestGenerationPipeline(unittest.TestCase):
             # The second chunk still ran and was stored.
             self.assertGreater(result.written, 0)
             bank.close()
+
+
+class TestRoleManagement(unittest.TestCase):
+    """Roles are the manager's list; chunks and questions inherit from it."""
+
+    def test_roles_crud_and_chunk_tagging(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bank = Bank(Path(tmp) / "r.db")
+            bank.add_role("sales_manager", "Sales Manager", "desc")
+            self.assertEqual(bank.roles()[0]["role_code"], "SALES_MANAGER")
+
+            chunk = sample_chunk()
+            chunk.doc_title = "Mixed Doc"
+            bank.save_chunks([chunk])
+            n = bank.set_chunk_roles("Mixed Doc", {chunk.topic: "sales_manager"})
+            self.assertEqual(n, 1)
+            self.assertEqual(bank.all_chunks()[0].role_scope, "SALES_MANAGER")
+
+            self.assertEqual(bank.remove_role("SALES_MANAGER"), 1)
+            self.assertEqual(bank.roles(), [])
+            bank.close()
+
+    def test_superseded_document_stops_serving_but_keeps_history(self):
+        """An update retires the old module's questions without touching attempts."""
+        from quizgen import config
+
+        config.CONFIG.auto_approve = True
+        with tempfile.TemporaryDirectory() as tmp:
+            bank = Bank(Path(tmp) / "s.db")
+            q = Question(
+                question_id="old1", topic="T", question_type=QuestionType.TRUE_FALSE,
+                difficulty=Difficulty.EASY, prompt="?", source_doc_title="Policy v1",
+                options=[Option("a", "True", True), Option("b", "False", False)],
+            )
+            bank.save_questions([q])
+            self.assertEqual(len(bank.questions(status=ReviewStatus.APPROVED)), 1)
+
+            bank.retire_document_questions("Policy v1")
+            self.assertEqual(bank.questions(status=ReviewStatus.APPROVED), [],
+                             "retired questions must never be served again")
+            # The question row still exists — history and citations survive.
+            self.assertIsNotNone(bank.get_question("old1"))
+            bank.close()
+
+    def test_mock_generator_propagates_role_scope(self):
+        """
+        Regression: the mock generator dropped chunk.role_scope, producing questions
+        with role_code='' — which scope_matches treats as unrestricted. Every question
+        it made leaked to every role.
+        """
+        chunk = sample_chunk()
+        chunk.role_scope = "SALES_MANAGER"
+        for q in MockGenerator([chunk], seed=3).generate(chunk, count=4):
+            self.assertEqual(q.role_code, "SALES_MANAGER", q.prompt)
+
+
+class TestRenewalWindow(unittest.TestCase):
+    def test_plus_one_year(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        import importlib
+        dev = importlib.import_module("devserver")
+        self.assertTrue(dev._plus_one_year("2026-08-14T10:00:00+00:00")
+                        .startswith("2027-08-14"))
+        # Feb 29 has no anniversary in a non-leap year; clamp, don't crash.
+        self.assertTrue(dev._plus_one_year("2024-02-29T10:00:00+00:00")
+                        .startswith("2025-02-28"))
+        self.assertEqual(dev._plus_one_year("garbage"), "")
