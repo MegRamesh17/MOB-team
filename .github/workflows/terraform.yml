@@ -23,8 +23,10 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
       - run: terraform init
         working-directory: infra
-      - run: terraform plan -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}" -var="pipeline_identity_object_id=${{ secrets.PIPELINE_IDENTITY_OBJECT_ID }}" -var='local_dev_object_ids=${{ secrets.LOCAL_DEV_OBJECT_IDS }}'
+      - run: terraform plan -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}" -var="pipeline_identity_object_id=${{ secrets.PIPELINE_IDENTITY_OBJECT_ID }}"
         working-directory: infra
+        env:
+          TF_VAR_local_dev_object_ids: ${{ secrets.LOCAL_DEV_OBJECT_IDS }}
 
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -39,5 +41,7 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
       - run: terraform init
         working-directory: infra
-      - run: terraform apply -auto-approve -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}" -var="pipeline_identity_object_id=${{ secrets.PIPELINE_IDENTITY_OBJECT_ID }}" -var='local_dev_object_ids=${{ secrets.LOCAL_DEV_OBJECT_IDS }}'
+      - run: terraform apply -auto-approve -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}" -var="pipeline_identity_object_id=${{ secrets.PIPELINE_IDENTITY_OBJECT_ID }}"
         working-directory: infra
+        env:
+          TF_VAR_local_dev_object_ids: ${{ secrets.LOCAL_DEV_OBJECT_IDS }}
