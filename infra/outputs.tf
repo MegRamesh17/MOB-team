@@ -28,3 +28,4 @@ output "function_app_name" {
 output "chatbot_url" {
   value = module.appservice.chatbot_app_url
 }
+

@@ -32,3 +32,9 @@ variable "location" {
   type        = string
   default     = "eastus"
 }
+
+variable "local_dev_object_ids" {
+  description = "Object IDs of team members who need local Key Vault access"
+  type        = list(string)
+  default     = []
+}
