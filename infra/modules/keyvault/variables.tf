@@ -24,4 +24,16 @@ variable "sql_connection_string" {
 variable "openai_api_key" {
   type      = string
   sensitive = true
+  default   = ""
+}
+
+variable "function_app_principal_id" {
+  description = "Principal ID of the Function App's managed identity"
+  type        = string
+}
+
+variable "local_dev_object_ids" {
+  description = "Object IDs of team members who need local Key Vault access"
+  type        = list(string)
+  default     = []
 }
