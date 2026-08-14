@@ -243,6 +243,21 @@ class Config:
     target_success_rate: float = _float("QUIZGEN_TARGET_SUCCESS", 0.70)
     repeat_cooldown_attempts: int = _int("QUIZGEN_COOLDOWN", 2)
 
+    # What "a topic" means for mastery and weak-topic targeting: "subject" (the source
+    # document) or "topic" (the section heading within it).
+    #
+    # Defaults to subject because topic does not work with real documents. Section
+    # headings produced 112 topics from 6 documents — 2.1 questions per topic against
+    # an evidence floor of 3 answers, so most topics could never accumulate enough
+    # evidence to be judged weak, and adaptive targeting never engaged at all. Measured
+    # over six rounds: zero topics targeted, learner never rose above one answer per
+    # topic. Grouping by document gives 32-44 questions per subject, which clears the
+    # floor in a single quiz.
+    #
+    # Set QUIZGEN_MASTERY_GRAIN=topic for fine-grained targeting once there are enough
+    # questions per section to support it (roughly 6+ each).
+    mastery_grain: str = _first("QUIZGEN_MASTERY_GRAIN", default="subject").lower()
+
     # --- storage ---
     db_path: Path = Path(os.getenv("QUIZGEN_DB", str(OUTPUT_DIR / "quizgen.db")))
 

@@ -263,6 +263,7 @@ def build_quiz(
     learner_id: str,
     length: Optional[int] = None,
     seed: Optional[int] = None,
+    role: str = "",
 ) -> QuizPlan:
     """
     Assemble the next quiz for a learner.
@@ -270,6 +271,12 @@ def build_quiz(
     Only Approved questions are ever considered. Pending and Rejected questions are
     invisible here by construction, so an unreviewed generated question cannot reach a
     learner even by accident.
+
+    `role` applies the same scoping guarantee the search index applies at retrieval
+    time. A question inherits role_scope from the chunk it came from, so material
+    approved only for SDE1-3 must not be served to a Director — and filtering only at
+    the index was not enough, because the bank also holds questions generated before
+    that filter existed. A question with no role_code applies to everyone.
     """
     length = length or CONFIG.quiz_length
     rng = random.Random(seed if seed is not None else "{}-{}".format(CONFIG.seed, learner_id))
@@ -281,11 +288,34 @@ def build_quiz(
             "(quizgen review --approve-all for a dry run)."
         )
 
+    if role:
+        in_scope = [q for q in approved if scope_matches(q.role_code, role)]
+        # Refusing to fall back is the point. Silently widening to every question when
+        # a role has none of its own would serve exactly the material the scope exists
+        # to withhold, and it would look like it worked.
+        if not in_scope:
+            raise RuntimeError(
+                "No approved questions are in scope for role {}. Generate questions "
+                "from sources approved for that role, or start a quiz with no role "
+                "selected.".format(role)
+            )
+        approved = in_scope
+
+    # Questions must be grouped by the SAME key mastery is measured on, or allocation
+    # asks for a group that the pool has no bucket for and every plan silently falls
+    # through to the top-up path — which is untargeted, so the quiz looks like it
+    # worked while being no better than random.
+    grain = CONFIG.mastery_grain
+    group_of = (
+        (lambda q: q.source_doc_title or q.topic) if grain == "subject"
+        else (lambda q: q.topic)
+    )
+
     by_topic: Dict[str, List[Question]] = {}
     for q in approved:
-        by_topic.setdefault(q.topic, []).append(q)
+        by_topic.setdefault(group_of(q), []).append(q)
 
-    mastery = bank.mastery(learner_id)
+    mastery = bank.mastery(learner_id, grain)
     weak = weak_topics(mastery)
     # Only target weak topics we can actually serve questions for.
     weak = [m for m in weak if m.topic in by_topic]

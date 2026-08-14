@@ -19,8 +19,8 @@ from quizgen.grading import grade_one, score_attempt  # noqa: E402
 from quizgen.ingest import ingest_directory, looks_like_heading, split_sentences  # noqa: E402
 from quizgen.llm.mock import LexicalJudge, MockGenerator  # noqa: E402
 from quizgen.models import (  # noqa: E402
-    Chunk, Difficulty, Option, ProvenanceClass, Question, QuestionType, ReviewStatus,
-    TopicMastery,
+    Attempt, Chunk, Difficulty, Option, ProvenanceClass, Question, QuestionType,
+    Response, ReviewStatus, TopicMastery,
 )
 from quizgen.validators import check_role_knowledge_voice, validate  # noqa: E402
 
@@ -332,3 +332,148 @@ class TestBank(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestRoleScoping(unittest.TestCase):
+    """
+    A source approved for a subset of roles must not reach another role.
+
+    This was enforced at the search index but nowhere else: build_quiz had no role
+    parameter at all, so the bank happily served SDE-only questions to a Director.
+    scope_matches existed for exactly this and was never called.
+    """
+
+    def _bank_with_roles(self, tmp):
+        from quizgen import config
+
+        config.CONFIG.auto_approve = True
+        bank = Bank(Path(tmp) / "roles.db")
+        bank.save_questions([
+            Question(
+                question_id="q_sde", topic="Git", question_type=QuestionType.TRUE_FALSE,
+                difficulty=Difficulty.EASY, prompt="SDE only?",
+                options=[Option("a", "True", True), Option("b", "False", False)],
+                role_code="SDE1,SDE2,SDE3", source_doc_title="Git Workflows",
+            ),
+            Question(
+                question_id="q_all", topic="Security", question_type=QuestionType.TRUE_FALSE,
+                difficulty=Difficulty.EASY, prompt="Everyone?",
+                options=[Option("c", "True", True), Option("d", "False", False)],
+                role_code="", source_doc_title="Security Basics",
+            ),
+        ])
+        return bank
+
+    def test_scope_matches_honours_multi_role_scopes(self):
+        from quizgen.adaptive import scope_matches
+
+        self.assertTrue(scope_matches("SDE1,SDE2,SDE3", "SDE2"))
+        self.assertFalse(scope_matches("SDE1,SDE2,SDE3", "SWE_DIRECTOR"))
+        self.assertTrue(scope_matches("ALL", "SWE_DIRECTOR"))
+        # No scope recorded means unrestricted, not restricted.
+        self.assertTrue(scope_matches("", "SWE_DIRECTOR"))
+
+    def test_director_never_receives_sde_only_questions(self):
+        from quizgen.adaptive import build_quiz
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bank = self._bank_with_roles(tmp)
+            plan = build_quiz(bank, "d1", length=5, role="SWE_DIRECTOR")
+            served = {q.question_id for q in plan.questions}
+            self.assertNotIn("q_sde", served)
+            self.assertIn("q_all", served)
+            bank.close()
+
+    def test_sde_receives_both_scoped_and_universal(self):
+        from quizgen.adaptive import build_quiz
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bank = self._bank_with_roles(tmp)
+            plan = build_quiz(bank, "s1", length=5, role="SDE2")
+            served = {q.question_id for q in plan.questions}
+            self.assertEqual(served, {"q_sde", "q_all"})
+            bank.close()
+
+    def test_empty_scope_refuses_rather_than_widening(self):
+        """
+        Falling back to the whole bank when a role has no questions of its own would
+        serve exactly the material the scope exists to withhold — and would look like
+        it worked. It must fail loudly instead.
+        """
+        from quizgen.adaptive import build_quiz
+
+        with tempfile.TemporaryDirectory() as tmp:
+            from quizgen import config
+
+            config.CONFIG.auto_approve = True
+            bank = Bank(Path(tmp) / "narrow.db")
+            bank.save_questions([Question(
+                question_id="q_sde", topic="Git", question_type=QuestionType.TRUE_FALSE,
+                difficulty=Difficulty.EASY, prompt="SDE only?",
+                options=[Option("a", "True", True), Option("b", "False", False)],
+                role_code="SDE1", source_doc_title="Git",
+            )])
+            with self.assertRaises(RuntimeError):
+                build_quiz(bank, "d1", length=5, role="SWE_DIRECTOR")
+            bank.close()
+
+
+class TestMasteryGrain(unittest.TestCase):
+    """
+    Mastery has to be measured on a grain coarse enough to accumulate evidence.
+
+    Measured on the real bank: 235 questions across 112 section-level topics is 2.1
+    questions per topic against an evidence floor of 3 answers, so most topics could
+    never be judged weak and adaptive targeting never engaged over six rounds. Grouping
+    by source document gives 32-44 questions per subject.
+    """
+
+    def _bank(self, tmp):
+        from quizgen import config
+
+        config.CONFIG.auto_approve = True
+        bank = Bank(Path(tmp) / "grain.db")
+        questions = []
+        for i in range(4):
+            questions.append(Question(
+                question_id="q{}".format(i),
+                topic="Section {}".format(i),          # a different topic each
+                source_doc_title="Handbook",           # but the same document
+                question_type=QuestionType.TRUE_FALSE,
+                difficulty=Difficulty.EASY, prompt="q{}?".format(i),
+                options=[Option("a{}".format(i), "True", True),
+                         Option("b{}".format(i), "False", False)],
+            ))
+        bank.save_questions(questions)
+
+        responses = [Response(
+            response_id="r{}".format(i), attempt_id="a1", learner_id="L",
+            question_id="q{}".format(i), topic="Section {}".format(i),
+            is_correct=False, points_awarded=0,
+        ) for i in range(4)]
+        bank.save_attempt(Attempt(
+            attempt_id="a1", learner_id="L", started_at="2026-01-01T00:00:00+00:00",
+            submitted_at="2026-01-01T00:10:00+00:00", score_percent=0.0,
+            points_awarded=0, points_possible=4, passed=False, responses=responses,
+        ))
+        return bank
+
+    def test_topic_grain_cannot_reach_the_evidence_floor(self):
+        """Four answers spread over four sections is one answer each — never judgeable."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bank = self._bank(tmp)
+            mastery = bank.mastery("L", grain="topic")
+            self.assertEqual(len(mastery), 4)
+            self.assertTrue(all(m.answered == 1 for m in mastery.values()))
+            self.assertEqual(weak_topics(mastery), [])
+            bank.close()
+
+    def test_subject_grain_accumulates_enough_evidence(self):
+        """The same four answers, grouped by document, are judgeable immediately."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bank = self._bank(tmp)
+            mastery = bank.mastery("L", grain="subject")
+            self.assertEqual(set(mastery), {"Handbook"})
+            self.assertEqual(mastery["Handbook"].answered, 4)
+            self.assertEqual([m.topic for m in weak_topics(mastery)], ["Handbook"])
+            bank.close()

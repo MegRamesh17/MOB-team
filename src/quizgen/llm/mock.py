@@ -179,13 +179,19 @@ class MockGenerator:
         if len(distractors) < 2:
             return None
 
-        options = [Option(stable_id("opt", chunk.chunk_id, correct), correct, True)] + [
-            Option(stable_id("opt", chunk.chunk_id, d), d, False) for d in distractors
+        # Option ids hang off the QUESTION id, not the chunk id. Two questions built
+        # from the same chunk routinely share a distractor, and keying on the chunk made
+        # those two options collide on one id — which the bank's plain INSERT now
+        # rejects outright rather than silently moving the row and leaving a question
+        # with no correct answer.
+        question_id = stable_id("q", chunk.chunk_id, "def", term)
+        options = [Option(stable_id("opt", question_id, correct), correct, True)] + [
+            Option(stable_id("opt", question_id, d), d, False) for d in distractors
         ]
         rng.shuffle(options)
 
         return Question(
-            question_id=stable_id("q", chunk.chunk_id, "def", term),
+            question_id=question_id,
             topic=chunk.topic,
             question_type=QuestionType.MULTIPLE_CHOICE,
             difficulty=Difficulty.MEDIUM,
@@ -215,13 +221,14 @@ class MockGenerator:
         # Blank the quantity out of the sentence so the stem reads naturally.
         stem = sentence[: m.start()] + "______" + sentence[m.end() :]
 
-        options = [Option(stable_id("opt", chunk.chunk_id, correct), correct, True)] + [
-            Option(stable_id("opt", chunk.chunk_id, d), d, False) for d in distractors
+        question_id = stable_id("q", chunk.chunk_id, "qty", correct, sentence[:40])
+        options = [Option(stable_id("opt", question_id, correct), correct, True)] + [
+            Option(stable_id("opt", question_id, d), d, False) for d in distractors
         ]
         rng.shuffle(options)
 
         return Question(
-            question_id=stable_id("q", chunk.chunk_id, "qty", correct, sentence[:40]),
+            question_id=question_id,
             topic=chunk.topic,
             question_type=QuestionType.MULTIPLE_CHOICE,
             difficulty=Difficulty.MEDIUM,
@@ -287,13 +294,14 @@ class MockGenerator:
             statement = sentence
             answer_is_true = True
 
+        question_id = stable_id("q", chunk.chunk_id, "tf", sentence[:60])
         opts = [
-            Option(stable_id("opt", chunk.chunk_id, "true", statement[:30]), "True", answer_is_true),
-            Option(stable_id("opt", chunk.chunk_id, "false", statement[:30]), "False", not answer_is_true),
+            Option(stable_id("opt", question_id, "true"), "True", answer_is_true),
+            Option(stable_id("opt", question_id, "false"), "False", not answer_is_true),
         ]
 
         return Question(
-            question_id=stable_id("q", chunk.chunk_id, "tf", sentence[:60]),
+            question_id=question_id,
             topic=chunk.topic,
             question_type=QuestionType.TRUE_FALSE,
             difficulty=Difficulty.EASY,

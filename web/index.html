@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Employee Training</title>
+<!--
+  Working reference UI.
+
+  Deliberately one file with no build step, no framework and no dependencies: it exists
+  to prove the API contract end to end and to be replaced. Every call goes through
+  api() below, so pointing this at the deployed Azure Functions API is a one-line change
+  to API_BASE.
+
+  It never receives an answer key. /api/quiz/start returns option ids and text only;
+  which one is correct is known to the server alone until the attempt is submitted. If
+  you rebuild this screen in React, keep that property — it is the reason grading is
+  trustworthy.
+-->
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --ink: #14181f; --muted: #5b6472;
+    --line: #e3e6ea; --accent: #2b5cd9; --accent-ink: #fff;
+    --ok: #17794a; --ok-bg: #e7f5ed; --bad: #b3261e; --bad-bg: #fdeceb;
+    --warn: #8a5a00; --warn-bg: #fdf3e0; --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c; --card: #1c2027; --ink: #eef1f5; --muted: #9aa4b2;
+      --line: #2c323b; --accent: #6f95ef; --accent-ink: #10131a;
+      --ok: #6ede9f; --ok-bg: #16301f; --bad: #f2837a; --bad-bg: #331917;
+      --warn: #e8bd6b; --warn-bg: #322613;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 28px 20px 80px; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+  h1 { font-size: 21px; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 18px; margin-top: 16px;
+  }
+  h2 { font-size: 15px; margin: 0 0 12px; letter-spacing: -0.01em; }
+  button {
+    font: inherit; font-weight: 550; cursor: pointer; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--card); color: var(--ink);
+    padding: 9px 15px;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .spacer { flex: 1; }
+  input, select {
+    font: inherit; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--card); color: var(--ink);
+  }
+  .pill {
+    display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 9px;
+    border-radius: 99px; border: 1px solid var(--line); color: var(--muted);
+    white-space: nowrap;
+  }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
+  .pill.bad { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+  .bar { height: 6px; background: var(--line); border-radius: 99px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+  .topic { display: grid; grid-template-columns: 1fr 60px 92px; gap: 10px;
+           align-items: center; padding: 9px 0; border-bottom: 1px solid var(--line); }
+  .topic:last-child { border-bottom: 0; }
+  .topic .name { font-size: 14px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  .tiny { font-size: 12px; }
+  label.opt {
+    display: flex; gap: 11px; align-items: flex-start; padding: 11px 13px;
+    border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; cursor: pointer;
+  }
+  label.opt:hover { border-color: var(--accent); }
+  label.opt.sel { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  label.opt.correct { border-color: var(--ok); background: var(--ok-bg); }
+  label.opt.wrong { border-color: var(--bad); background: var(--bad-bg); }
+  .cite {
+    margin-top: 10px; padding: 9px 12px; border-left: 3px solid var(--line);
+    background: var(--bg); border-radius: 0 6px 6px 0; font-size: 12.5px; color: var(--muted);
+  }
+  .cite a { color: var(--accent); }
+  .banner { padding: 11px 14px; border-radius: 8px; font-size: 13px; margin-top: 14px; }
+  .banner.bad { background: var(--bad-bg); color: var(--bad); }
+  .banner.warn { background: var(--warn-bg); color: var(--warn); }
+  .score { font-size: 40px; font-weight: 680; letter-spacing: -0.02em; line-height: 1.1; }
+  .hide { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Employee Training</h1>
+    <span class="sub" id="health">connecting…</span>
+    <span class="spacer"></span>
+    <input id="learner" value="demo-learner" size="14" aria-label="Learner id" title="Learner id">
+  </header>
+
+  <!-- dashboard ------------------------------------------------------------->
+  <section id="dash">
+    <div class="card">
+      <div class="row">
+        <h2 style="margin:0">Start a quiz</h2>
+        <span class="spacer"></span>
+        <select id="role" aria-label="Role">
+          <option value="">All roles</option>
+          <option>SDE1</option><option>SDE2</option><option>SDE3</option>
+          <option>SWE_MANAGER</option><option>SWE_DIRECTOR</option>
+        </select>
+        <select id="length" aria-label="Number of questions">
+          <option value="5">5 questions</option>
+          <option value="8" selected>8 questions</option>
+          <option value="12">12 questions</option>
+        </select>
+        <button class="primary" id="start">Start</button>
+      </div>
+      <p class="small muted" style="margin:12px 0 0">
+        Questions are chosen for this learner: weak topics first, then topics with too
+        little evidence to judge, then everything else. Recently seen questions are held back.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>Your topics</h2>
+      <div id="mastery" class="small muted">loading…</div>
+    </div>
+  </section>
+
+  <!-- quiz ------------------------------------------------------------------>
+  <section id="quiz" class="hide">
+    <div class="card">
+      <div class="row">
+        <strong id="qcount" class="small"></strong>
+        <span class="pill" id="qtopic"></span>
+        <span class="pill" id="qdiff"></span>
+        <span class="spacer"></span>
+        <button id="quit" class="tiny">Abandon</button>
+      </div>
+      <div class="bar" style="margin-top:12px"><i id="qbar" style="width:0"></i></div>
+      <p id="qprompt" style="font-size:16.5px; margin:18px 0 4px"></p>
+      <div id="qopts"></div>
+      <input id="qtext" class="hide" style="width:100%; margin-top:10px" placeholder="Type your answer">
+      <div class="row" style="margin-top:16px">
+        <button id="prev">Back</button>
+        <span class="spacer"></span>
+        <button class="primary" id="next">Next</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- results --------------------------------------------------------------->
+  <section id="results" class="hide">
+    <div class="card">
+      <div class="row">
+        <div>
+          <div class="score" id="rscore"></div>
+          <div class="small muted" id="rdetail"></div>
+        </div>
+        <span class="spacer"></span>
+        <span class="pill" id="rpass"></span>
+      </div>
+      <div id="rweak"></div>
+      <div class="row" style="margin-top:16px">
+        <button class="primary" id="again">Take another</button>
+        <button id="home">Back to dashboard</button>
+      </div>
+    </div>
+    <div id="rlist"></div>
+  </section>
+
+  <div id="err"></div>
+</div>
+
+<script>
+// Same origin in the dev server. Point at the Functions host to use the real API.
+const API_BASE = "";
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g,
+  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+let quiz = null;   // the attempt in progress
+let idx = 0;       // which question is on screen
+let answers = {};  // questionId -> { selectedOptionIds } | { textAnswer }
+
+async function api(path, options) {
+  const res = await fetch(API_BASE + path, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      "x-learner-id": $("learner").value.trim() || "demo-learner",
+      ...(options && options.headers),
+    },
+  });
+  const body = await res.json().catch(() => ({}));
+  // Surface the server's own message rather than a generic failure — the API returns
+  // an actionable one (which CLI command to run) when the bank is empty.
+  if (!res.ok) throw new Error(body.detail || body.title || ("HTTP " + res.status));
+  return body;
+}
+
+function fail(message) {
+  $("err").innerHTML = '<div class="banner bad">' + esc(message) + "</div>";
+}
+function clearFail() { $("err").innerHTML = ""; }
+
+function show(name) {
+  for (const s of ["dash", "quiz", "results"]) $(s).classList.toggle("hide", s !== name);
+  window.scrollTo(0, 0);
+}
+
+// -- dashboard ---------------------------------------------------------------
+
+async function loadHealth() {
+  try {
+    const h = await api("/api/health");
+    $("health").textContent =
+      h.questionsApproved + " questions ready · " + h.database +
+      (h.mode === "local-dev" ? " · local dev" : "");
+    if (!h.servable) {
+      fail("No approved questions in the bank, so no quiz can start. " +
+           "Run: quizgen generate, then quizgen review --approve-all");
+      $("start").disabled = true;
+    }
+  } catch (e) {
+    $("health").textContent = "API unreachable";
+    fail("Cannot reach the API. Is the dev server running? " + e.message);
+  }
+}
+
+async function loadMastery() {
+  try {
+    const me = await api("/api/me");
+    if (!me.topics.length) {
+      $("mastery").innerHTML =
+        "No attempts yet. Your first quiz covers a spread of topics; " +
+        "after that it targets what you get wrong.";
+      return;
+    }
+    const weak = new Set(me.weakTopics);
+    $("mastery").innerHTML = me.topics.map(t => {
+      const cls = weak.has(t.topic) ? "bad" : t.accuracyPercent >= 90 ? "ok" : "warn";
+      return '<div class="topic">' +
+        '<div class="name">' + esc(t.topic) +
+          '<div class="bar" style="margin-top:5px"><i style="width:' +
+            t.accuracyPercent + '%"></i></div></div>' +
+        '<div class="tiny muted">' + t.correct + "/" + t.answered + "</div>" +
+        '<div><span class="pill ' + cls + '">' + t.accuracyPercent + "% " +
+          esc(t.masteryLevel) + "</span></div></div>";
+    }).join("");
+  } catch (e) {
+    $("mastery").textContent = "Could not load: " + e.message;
+  }
+}
+
+// -- quiz --------------------------------------------------------------------
+
+async function startQuiz() {
+  clearFail();
+  $("start").disabled = true;
+  try {
+    quiz = await api("/api/quiz/start", {
+      method: "POST",
+      body: JSON.stringify({
+        learnerId: $("learner").value.trim() || "demo-learner",
+        length: Number($("length").value),
+        role: $("role").value,
+      }),
+    });
+    idx = 0; answers = {};
+    show("quiz");
+    render();
+  } catch (e) {
+    fail(e.message);
+  } finally {
+    $("start").disabled = false;
+  }
+}
+
+function render() {
+  const q = quiz.questions[idx];
+  $("qcount").textContent = "Question " + (idx + 1) + " of " + quiz.questions.length;
+  $("qtopic").textContent = q.topic;
+  $("qdiff").textContent = q.difficulty;
+  $("qbar").style.width = ((idx) / quiz.questions.length * 100) + "%";
+  $("qprompt").textContent = q.prompt;
+  $("prev").disabled = idx === 0;
+  $("next").textContent = idx === quiz.questions.length - 1 ? "Submit" : "Next";
+
+  const free = q.type === "FillInBlank";
+  $("qtext").classList.toggle("hide", !free);
+  $("qopts").classList.toggle("hide", free);
+
+  if (free) {
+    $("qtext").value = (answers[q.questionId] || {}).textAnswer || "";
+    $("qtext").focus();
+    return;
+  }
+
+  const chosen = new Set((answers[q.questionId] || {}).selectedOptionIds || []);
+  $("qopts").innerHTML = q.options.map(o =>
+    '<label class="opt' + (chosen.has(o.optionId) ? " sel" : "") + '">' +
+      '<input type="radio" name="opt" value="' + esc(o.optionId) + '"' +
+        (chosen.has(o.optionId) ? " checked" : "") + ">" +
+      "<span>" + esc(o.text) + "</span></label>").join("");
+
+  for (const input of $("qopts").querySelectorAll("input")) {
+    input.onchange = () => {
+      answers[q.questionId] = { selectedOptionIds: [input.value] };
+      for (const l of $("qopts").querySelectorAll("label")) l.classList.remove("sel");
+      input.closest("label").classList.add("sel");
+    };
+  }
+}
+
+function stashFreeText() {
+  const q = quiz.questions[idx];
+  if (q.type === "FillInBlank") answers[q.questionId] = { textAnswer: $("qtext").value };
+}
+
+async function submit() {
+  stashFreeText();
+  $("next").disabled = true;
+  try {
+    const result = await api("/api/quiz/submit", {
+      method: "POST",
+      body: JSON.stringify({
+        attemptId: quiz.attemptId,
+        learnerId: quiz.learnerId,
+        answers: quiz.questions.map(q => ({ questionId: q.questionId, ...(answers[q.questionId] || {}) })),
+      }),
+    });
+    renderResults(result);
+    show("results");
+    loadMastery();
+  } catch (e) {
+    fail(e.message);
+  } finally {
+    $("next").disabled = false;
+  }
+}
+
+// -- results -----------------------------------------------------------------
+
+function renderResults(r) {
+  const right = r.results.filter(x => x.correct).length;
+  $("rscore").textContent = r.scorePercent + "%";
+  $("rdetail").textContent = right + " of " + r.results.length +
+    " correct · pass mark " + r.passingScore + "%";
+  $("rpass").textContent = r.passed ? "Passed" : "Not yet";
+  $("rpass").className = "pill " + (r.passed ? "ok" : "bad");
+
+  $("rweak").innerHTML = r.weakTopics.length
+    ? '<div class="banner warn">Weakest so far: ' +
+      r.weakTopics.map(w => esc(w.topic) + " (" + w.accuracyPercent + "%)").join(", ") +
+      ". The next quiz will weight these more heavily.</div>"
+    : "";
+
+  const answered = {};
+  for (const q of quiz.questions) answered[q.questionId] = q;
+
+  $("rlist").innerHTML = r.results.map(res => {
+    const q = answered[res.questionId] || { options: [] };
+    const chosen = new Set((answers[res.questionId] || {}).selectedOptionIds || []);
+    const key = new Set(res.correctOptionIds || []);
+
+    const opts = (q.options || []).map(o => {
+      const cls = key.has(o.optionId) ? "correct" : chosen.has(o.optionId) ? "wrong" : "";
+      const mark = key.has(o.optionId) ? " ✓" : (chosen.has(o.optionId) && !key.has(o.optionId)) ? " ✗" : "";
+      return '<label class="opt ' + cls + '"><span>' + esc(o.text) + esc(mark) + "</span></label>";
+    }).join("");
+
+    const typed = (answers[res.questionId] || {}).textAnswer;
+    let free = "";
+    if (typed !== undefined) {
+      const accepted = res.acceptedAnswers || [];
+      free = '<p class="small muted">You answered: <strong>' + esc(typed) + "</strong>" +
+        (accepted.length ? " · accepted: " + esc(accepted.join(", ")) : "") + "</p>";
+    }
+
+    // Provenance is shown, not hidden. A learner disputing a question should be able
+    // to see where it came from, and whether it is quoting a document or a vetted
+    // external source, without asking anyone.
+    const cite = res.sourceUrl
+      ? 'Source: <a href="' + esc(res.sourceUrl) + '" target="_blank" rel="noopener">' +
+        esc(res.sourceTitle || res.sourceUrl) + "</a>"
+      : res.sourceTitle ? "Source: " + esc(res.sourceTitle) : "";
+    const quote = res.sourceQuote ? "<br>“" + esc(res.sourceQuote) + "”" : "";
+
+    return '<div class="card"><div class="row">' +
+      '<span class="pill ' + (res.correct ? "ok" : "bad") + '">' +
+        (res.correct ? "Correct" : "Incorrect") + "</span>" +
+      '<span class="pill">' + esc(res.topic) + "</span>" +
+      '<span class="spacer"></span>' +
+      '<span class="pill">' + esc(res.provenance || "") + "</span></div>" +
+      "<p style='margin:12px 0 2px'>" + esc(res.prompt) + "</p>" +
+      opts + free +
+      (res.explanation ? '<p class="small muted" style="margin-top:10px">' +
+        esc(res.explanation) + "</p>" : "") +
+      (cite || quote ? '<div class="cite">' + cite + quote + "</div>" : "") +
+      "</div>";
+  }).join("");
+}
+
+// -- wiring ------------------------------------------------------------------
+
+$("start").onclick = startQuiz;
+$("again").onclick = () => { show("dash"); startQuiz(); };
+$("home").onclick = () => { show("dash"); loadMastery(); };
+$("quit").onclick = () => { quiz = null; show("dash"); };
+$("prev").onclick = () => { stashFreeText(); if (idx > 0) { idx--; render(); } };
+$("next").onclick = () => {
+  stashFreeText();
+  if (idx < quiz.questions.length - 1) { idx++; render(); } else submit();
+};
+$("learner").onchange = loadMastery;
+
+loadHealth();
+loadMastery();
+</script>
+</body>
+</html>

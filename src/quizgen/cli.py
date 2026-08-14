@@ -172,8 +172,16 @@ def cmd_generate(args: argparse.Namespace) -> int:
             for f in failed[:8]:
                 print("   - {}".format(f))
 
-        print("\nAll new questions are PendingReview — they cannot be served to a learner")
-        print("until approved. Run:  quizgen review")
+        # Report what actually happened. This used to claim PendingReview
+        # unconditionally, which stopped being true when auto-approve became the
+        # default — telling someone to go and approve questions that were already
+        # servable.
+        if CONFIG.auto_approve:
+            print("\nApproved on save (QUIZGEN_AUTO_APPROVE=true) — servable now.")
+            print("The mechanical checks in validators.py were the only gate.")
+        else:
+            print("\nAll new questions are PendingReview — they cannot be served to a")
+            print("learner until approved. Run:  quizgen review")
     return 0
 
 

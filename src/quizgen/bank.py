@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
+from .config import CONFIG
 from .models import (
     Attempt,
     ProvenanceClass,
@@ -332,18 +333,37 @@ class Bank:
             )
         self.conn.commit()
 
-    def mastery(self, learner_id: str) -> Dict[str, TopicMastery]:
-        rows = self.conn.execute(
-            """SELECT topic,
-                      COUNT(*)          AS answered,
-                      SUM(is_correct)   AS correct
-               FROM responses
-               WHERE learner_id = ?
-               GROUP BY topic""",
-            (learner_id,),
-        )
+    def mastery(self, learner_id: str, grain: str = "") -> Dict[str, TopicMastery]:
+        """
+        Accuracy per topic for one learner.
+
+        `grain` selects what a "topic" is — see CONFIG.mastery_grain. At subject grain
+        the response is attributed to its source document rather than its section
+        heading, which is joined from questions because responses only stores the
+        fine-grained topic. Responses whose question has since been deleted fall back
+        to the stored topic rather than vanishing from the learner's record.
+        """
+        grain = (grain or CONFIG.mastery_grain).lower()
+
+        if grain == "subject":
+            sql = """SELECT COALESCE(NULLIF(q.source_doc_title, ''), r.topic) AS grp,
+                            COUNT(*)            AS answered,
+                            SUM(r.is_correct)   AS correct
+                     FROM responses r
+                     LEFT JOIN questions q ON q.question_id = r.question_id
+                     WHERE r.learner_id = ?
+                     GROUP BY grp"""
+        else:
+            sql = """SELECT topic AS grp,
+                            COUNT(*)          AS answered,
+                            SUM(is_correct)   AS correct
+                     FROM responses
+                     WHERE learner_id = ?
+                     GROUP BY grp"""
+
+        rows = self.conn.execute(sql, (learner_id,))
         return {
-            r["topic"]: TopicMastery(r["topic"], r["answered"], r["correct"] or 0)
+            r["grp"]: TopicMastery(r["grp"], r["answered"], r["correct"] or 0)
             for r in rows
         }
 
