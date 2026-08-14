@@ -12,6 +12,8 @@ terraform.tfvars
 .venv/
 data/output/
 data/documents/*.pdf
+data/documents/*.txt
+data/documents/*.md
 !data/documents/.gitkeep
 *.egg-info/
 
