@@ -25,10 +25,15 @@ from .config import CONFIG, DOCUMENT_DIR
 from .ingest import chunks_from_text, ingest_directory
 from .models import Chunk
 
-# pdf_extractor.py sits in src/ alongside the quizgen package.
-_SRC = Path(__file__).resolve().parents[1]
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
+# pdf_extractor.py has moved around as the repo was restructured (src/ -> quizgen/).
+# Search the likely locations rather than hard-coding one, so a future move does not
+# silently break blob ingestion again — the tests stub the module, so a broken import
+# here would pass CI and only fail against real Azure.
+_REPO = Path(__file__).resolve().parents[2]
+for _candidate in (_REPO / "quizgen", _REPO / "src", _REPO / "backend", _REPO):
+    if (_candidate / "pdf_extractor.py").exists() and str(_candidate) not in sys.path:
+        sys.path.insert(0, str(_candidate))
+        break
 
 
 def _require_storage() -> None:
@@ -47,8 +52,9 @@ def _extractor():
         from pdf_extractor import extract_text_from_blob_pdf, list_pdfs_in_container
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "Could not import src/pdf_extractor.py ({}). Run from the repo root, or "
-            "install azure-storage-blob.".format(exc)
+            "Could not import pdf_extractor.py ({}). Looked in quizgen/, src/, "
+            "backend/ and the repo root. Run from the repo root, or install "
+            "azure-storage-blob.".format(exc)
         )
     return list_pdfs_in_container, extract_text_from_blob_pdf
 

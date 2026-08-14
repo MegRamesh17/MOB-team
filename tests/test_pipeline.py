@@ -296,13 +296,37 @@ class TestBank(unittest.TestCase):
             self.assertEqual(bank.get_question("q1").review_status, ReviewStatus.REJECTED)
             bank.close()
 
-    def test_only_approved_questions_are_servable(self):
+    def test_auto_approve_makes_questions_servable(self):
+        """
+        The team has no reviewer, so QUIZGEN_AUTO_APPROVE defaults to true and generated
+        questions go straight to Approved. The mechanical checks in validators.py are
+        then the only thing between a generated question and a learner.
+        """
+        from quizgen import config
+
         with tempfile.TemporaryDirectory() as tmp:
             bank = Bank(Path(tmp) / "t.db")
             gen = MockGenerator([sample_chunk()], seed=2)
+            config.CONFIG.auto_approve = True
             bank.save_questions(gen.generate(sample_chunk(), count=3))
-            self.assertEqual(bank.questions(status=ReviewStatus.APPROVED), [])
-            self.assertGreater(len(bank.questions(status=ReviewStatus.PENDING)), 0)
+            self.assertGreater(len(bank.questions(status=ReviewStatus.APPROVED)), 0)
+            self.assertEqual(bank.questions(status=ReviewStatus.PENDING), [])
+            bank.close()
+
+    def test_review_gate_can_be_reinstated(self):
+        """Setting auto_approve false restores the hold-for-review behaviour."""
+        from quizgen import config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bank = Bank(Path(tmp) / "t.db")
+            gen = MockGenerator([sample_chunk()], seed=2)
+            config.CONFIG.auto_approve = False
+            try:
+                bank.save_questions(gen.generate(sample_chunk(), count=3))
+                self.assertGreater(len(bank.questions(status=ReviewStatus.PENDING)), 0)
+                self.assertEqual(bank.questions(status=ReviewStatus.APPROVED), [])
+            finally:
+                config.CONFIG.auto_approve = True
             bank.close()
 
 

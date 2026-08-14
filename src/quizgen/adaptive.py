@@ -27,6 +27,19 @@ from .bank import Bank
 from .config import CONFIG
 from .models import Difficulty, Question, ReviewStatus, TopicMastery
 
+
+def scope_matches(chunk_scope: str, role: str) -> bool:
+    """
+    Whether a chunk's role scope covers a given role.
+
+    A scope is "ALL", one role code, or several comma-separated — a vetted source can
+    be approved for SDE1, SDE2 and SDE3 but not for a Director.
+    """
+    scope = (chunk_scope or "ALL").upper()
+    if scope == "ALL" or not role:
+        return True
+    return role.upper() in {s.strip() for s in scope.split(",")}
+
 # Probability a learner of "average" standing answers a question of each measured
 # difficulty correctly. Used to steer a quiz toward the target success rate.
 _EXPECTED_SUCCESS = {

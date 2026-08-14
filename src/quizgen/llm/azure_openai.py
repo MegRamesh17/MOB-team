@@ -5,12 +5,20 @@ Verified against the shared Foundry resource: gpt-5 for chat, text-embedding-3-l
 for embeddings. See _chat_kwargs for the gpt-5 parameter differences, which fail in
 non-obvious ways if you assume 4.x behaviour.
 
-Two properties are enforced regardless of what the model returns:
+Two generation modes, set by QUIZGEN_MODE:
 
-  * **Grounding.** The prompt supplies one passage and forbids outside knowledge. Any
-    generated question whose answer is not traceable to that passage is dropped.
-  * **Review.** Output is always ReviewStatus.PENDING. There is no code path that
-    publishes a model-written question without a human approving it.
+  * **augmented** (default) — the passage is the topic, and the model teaches the
+    subject from its own knowledge. Output is RoleKnowledge and may not state any
+    company-specific rule.
+  * **grounded** — every answer must quote the passage verbatim. Output is Documented
+    and may state company policy, because a document says it.
+
+What holds in BOTH modes, and is the only thing standing between a generated question
+and a learner now that human review has been dropped:
+
+  * exactly one correct answer, or the question is discarded
+  * no fabricated company rule, deadline or threshold — enforced in validators.py
+  * conflicts with other documents are flagged on the stored question
 """
 
 from __future__ import annotations
@@ -21,13 +29,31 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..config import CONFIG
 from ..models import Chunk, Difficulty, Option, Question, QuestionType, stable_id
 
-_SYSTEM = (
+_SYSTEM_GROUNDED = (
     "You write assessment questions for mandatory workplace compliance training. "
     "You are given ONE passage from a company policy document. "
     "Every question and every answer must be answerable from that passage alone. "
     "Never use outside knowledge. Never invent a policy, a number, or a deadline. "
     "If the passage does not support a good question, return fewer questions or none. "
     "Distractors must be plausible but clearly wrong to someone who has read the passage."
+)
+
+_SYSTEM_AUGMENTED = (
+    "You write assessment questions for professional training at a technology company. "
+    "You are given a passage from an internal training outline. Treat it as the TOPIC to "
+    "examine, not as the limit of what you may ask. These outlines are bullet-point "
+    "syllabi, not teaching material, so relying on them alone produces shallow "
+    "recall questions.\n\n"
+    "Draw on your own knowledge of the subject to write questions a competent "
+    "practitioner should be able to answer. Prefer applied and situational questions "
+    "over recall: what someone should DO in a situation, why one approach beats another, "
+    "what a symptom indicates.\n\n"
+    "ONE HARD RULE: never state, imply or invent a company-specific policy, rule, "
+    "deadline, threshold, tool choice or internal procedure. You do not know this "
+    "company's internal rules. Write about the profession, not about their handbook. "
+    "Say 'a common practice is' or 'generally', never 'the company requires'.\n\n"
+    "Distractors must be plausible to someone with partial knowledge and clearly wrong "
+    "to someone competent."
 )
 
 _SCHEMA_HINT = """Return ONLY a JSON object of this exact shape:
@@ -50,7 +76,8 @@ Rules:
 - MultipleChoice: exactly 4 options, exactly 1 correct. Leave accepted_answers empty.
 - TrueFalse: exactly 2 options, "True" and "False", exactly 1 correct.
 - FillInBlank: options empty; accepted_answers lists every acceptable spelling.
-- source_quote must appear verbatim in the passage."""
+- source_quote: in grounded mode it MUST appear verbatim in the passage. In augmented
+  mode leave it empty when the answer comes from your own knowledge of the subject."""
 
 
 def _client():
@@ -109,16 +136,25 @@ class AzureOpenAIGenerator:
         difficulty: Optional[Difficulty] = None,
     ) -> List[Question]:
         want = "" if difficulty is None else " Target difficulty: {}.".format(difficulty.value)
+        augmented = CONFIG.generation_mode == "augmented"
+        system = _SYSTEM_AUGMENTED if augmented else _SYSTEM_GROUNDED
+        instruction = (
+            "Write {} question(s) examining this topic. Go beyond what the passage "
+            "literally states — test whether someone actually understands the subject.{}"
+            if augmented else
+            "Write {} question(s) from this passage.{}"
+        ).format(count, want)
+
         user = (
-            "Document: {}\nSection: {}\nTopic: {}\n\n"
-            "PASSAGE:\n\"\"\"\n{}\n\"\"\"\n\n"
-            "Write {} question(s) from this passage.{}\n\n{}"
-        ).format(chunk.doc_title, chunk.section, chunk.topic, chunk.text, count, want, _SCHEMA_HINT)
+            "Document: {}\nSection: {}\nTopic: {}\nRole: {}\n\n"
+            "PASSAGE:\n\"\"\"\n{}\n\"\"\"\n\n{}\n\n{}"
+        ).format(chunk.doc_title, chunk.section, chunk.topic,
+                 chunk.role_scope or "ALL", chunk.text, instruction, _SCHEMA_HINT)
 
         response = self._client.chat.completions.create(
             model=self._deployment,
             messages=[
-                {"role": "system", "content": _SYSTEM},
+                {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
             response_format={"type": "json_object"},
@@ -157,10 +193,16 @@ class AzureOpenAIGenerator:
         # the row between questions, leaving one with no correct answer at all.
         question_id = stable_id("q", chunk.chunk_id, prompt)
 
-        # Grounding check. A quote that is not in the passage means the model drifted,
-        # and a question we cannot trace to source is one we cannot defend.
+        augmented = CONFIG.generation_mode == "augmented"
+
+        # In grounded mode a quote that is not in the passage means the model drifted,
+        # and the question is dropped. In augmented mode the model is expected to go
+        # beyond the passage, so an unverifiable quote is simply discarded rather than
+        # taking the question with it — a false citation is worse than no citation.
         if quote and _normalise(quote) not in _normalise(chunk.text):
-            return None
+            if not augmented:
+                return None
+            quote = ""
 
         options: List[Option] = []
         for opt in item.get("options", []) or []:
@@ -192,7 +234,24 @@ class AzureOpenAIGenerator:
         except ValueError:
             level = Difficulty.MEDIUM
 
+        # Provenance follows the MODE, not whether a quote happened to match.
+        #
+        # In augmented mode the model was told to teach the subject from its own
+        # knowledge, so the substance is its own even when it also quotes a bullet from
+        # the passage. Marking such a question Documented would grant it permission to
+        # state company policy — observed in testing: a distributed-systems question
+        # about message queues and leader-follower replication came back Documented
+        # because the model had quoted "Load balancing: distribute traffic across
+        # servers" from the outline. The quote was real; the answer was not from it.
+        from ..models import ProvenanceClass
+
+        provenance = (
+            ProvenanceClass.ROLE_KNOWLEDGE if augmented else ProvenanceClass.DOCUMENTED
+        )
+
         return Question(
+            provenance_class=provenance,
+            role_code=chunk.role_scope or "",
             question_id=question_id,
             topic=chunk.topic,
             question_type=qtype,

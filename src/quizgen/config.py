@@ -213,6 +213,27 @@ class Config:
     questions_per_chunk: int = _int("QUIZGEN_QUESTIONS_PER_CHUNK", 2)
     seed: int = _int("QUIZGEN_SEED", 1337)
 
+    # How much the model may draw on its own knowledge.
+    #
+    # "augmented" (default): the passage sets the TOPIC, and the model teaches the
+    #   subject properly using what it knows about the field. A question about CI/CD
+    #   can cover things the internal document never mentions. Output is tagged
+    #   RoleKnowledge and may NOT state company-specific rules.
+    #
+    # "grounded": every answer must be traceable to a verbatim sentence in the passage.
+    #   Safer, but limited to what the documents happen to say — and these documents are
+    #   bullet-point course outlines, not comprehensive teaching material.
+    #
+    # The company-policy ban holds in BOTH modes. That is the load-bearing rule: the
+    # model may teach the subject freely, and may never invent an internal rule.
+    generation_mode: str = _first("QUIZGEN_MODE", default="augmented")
+
+    # Auto-approve generated questions instead of holding them for human review.
+    # True because the team has no reviewer capacity. The mechanical checks still run
+    # (exactly one correct answer, no fabricated company rules, cross-document
+    # contradiction flags) — what is lost is a person reading each question.
+    auto_approve: bool = (_first("QUIZGEN_AUTO_APPROVE", default="true").lower() == "true")
+
     # --- quiz assembly / adaptivity ---
     quiz_length: int = _int("QUIZGEN_QUIZ_LENGTH", 8)
     passing_score: float = _float("QUIZGEN_PASSING_SCORE", 80.0)

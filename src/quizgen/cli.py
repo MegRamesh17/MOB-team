@@ -177,6 +177,53 @@ def cmd_generate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_corpus(args: argparse.Namespace) -> int:
+    """Fetch the vetted sources and index them in Azure AI Search."""
+    from .registry import SEED_SOURCES, load_registry, write_registry
+    from .search_index import create_index, stats, upload
+    from .web import build_corpus
+
+    path = OUTPUT_DIR / "vetted_sources.yaml"
+    if not path.exists():
+        write_registry(SEED_SOURCES, path)
+        print("Seeded a starter registry at {}".format(path))
+        print("These are SUGGESTIONS — review and edit before relying on them.\n")
+
+    sources = load_registry(path)
+    print("{} vetted source(s) in the registry.\n".format(len(sources)))
+
+    if args.list:
+        for s in sources:
+            roles = ", ".join(s.roles) if s.roles else "all roles"
+            print("  {:<46} {}".format(s.title[:46], roles))
+            print("      {}".format(s.url))
+        return 0
+
+    print("Fetching...")
+    chunks = build_corpus(sources, limit=args.limit)
+    if not chunks:
+        print("\nNothing fetched.", file=sys.stderr)
+        return 1
+    print("\n{} chunk(s) from {} source(s).".format(len(chunks), len(sources)))
+
+    if args.no_index:
+        print("--no-index: not uploading.")
+        return 0
+
+    try:
+        name = create_index(recreate=args.recreate)
+        print("\nIndex {!r} ready. Embedding and uploading...".format(name))
+        count = upload(chunks)
+        print("Uploaded {} document(s).".format(count))
+        current = stats()
+        print("\nIndex now holds {} document(s) across {} topic(s).".format(
+            current["documents"], len(current["topics"])))
+    except Exception as exc:  # noqa: BLE001
+        print("\nIndexing failed: {}: {}".format(type(exc).__name__, exc), file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_push(args: argparse.Namespace) -> int:
     """Copy the local bank into Azure SQL."""
     from .loader import load, verify
@@ -455,6 +502,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--regenerate", action="store_true",
                    help="re-generate chunks that already have questions")
     p.set_defaults(func=cmd_generate)
+
+    p = sub.add_parser("corpus", help="fetch vetted sources into Azure AI Search")
+    p.add_argument("--list", action="store_true", help="show the registry and stop")
+    p.add_argument("--limit", type=int, help="only the first N sources")
+    p.add_argument("--no-index", action="store_true", help="fetch but do not upload")
+    p.add_argument("--recreate", action="store_true", help="delete and rebuild the index")
+    p.set_defaults(func=cmd_corpus)
 
     p = sub.add_parser("push", help="copy the local bank into Azure SQL")
     p.add_argument("--dry-run", action="store_true", help="count rows without writing")

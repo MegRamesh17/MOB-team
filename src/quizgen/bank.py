@@ -169,6 +169,11 @@ class Bank:
     ) -> int:
         """`notes` carries per-question contradiction findings for the reviewer."""
         notes = notes or {}
+        # No reviewer capacity on this team, so generated questions go live once the
+        # mechanical checks pass. Set QUIZGEN_AUTO_APPROVE=false to reinstate the gate.
+        from .config import CONFIG
+
+        auto = CONFIG.auto_approve
         written = 0
         for q in questions:
             # Do not clobber an existing review decision or accumulated statistics on
@@ -190,7 +195,10 @@ class Bank:
                 (
                     q.question_id, q.topic, q.question_type.value, q.difficulty.value, q.prompt,
                     q.explanation, q.points, q.source_chunk_id, q.source_doc_title,
-                    q.source_page, q.source_quote, q.generator, q.review_status.value,
+                    q.source_page, q.source_quote, q.generator,
+                    # Auto-approved when no reviewer is available; the mechanical
+                    # checks in validators.py are then the only gate.
+                    ReviewStatus.APPROVED.value if auto else q.review_status.value,
                     q.provenance_class.value, q.role_code, q.role_requirement,
                     "; ".join(notes.get(q.question_id, [])), utcnow(),
                 ),
