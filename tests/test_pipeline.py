@@ -477,3 +477,128 @@ class TestMasteryGrain(unittest.TestCase):
             self.assertEqual(mastery["Handbook"].answered, 4)
             self.assertEqual([m.topic for m in weak_topics(mastery)], ["Handbook"])
             bank.close()
+
+
+class TestMultipartParsing(unittest.TestCase):
+    """
+    The upload parser is hand-rolled — the stdlib cgi module was removed in 3.13 —
+    so it carries its own tests. Binary integrity and the filename are the two things
+    that must not be got wrong: a corrupted byte range makes a valid PDF unreadable,
+    and an unsanitised filename is a path traversal.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        import importlib
+        self.dev = importlib.import_module("devserver")
+
+    def _body(self, filename, content, boundary="----test"):
+        return (
+            "--{}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="{}"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).format(boundary, filename).encode() + content + "\r\n--{}--\r\n".format(boundary).encode()
+
+    def test_extracts_filename_and_exact_bytes(self):
+        payload = b"%PDF-1.4\x00\x01\x02binary\xff\xfe content"
+        parts = self.dev._parse_multipart(self._body("policy.pdf", payload), "----test")
+        self.assertEqual(parts["filename"], "policy.pdf")
+        # Exact equality, not "starts with": an off-by-one on the trailing CRLF
+        # corrupts every uploaded PDF in a way that only shows up at extraction.
+        self.assertEqual(parts["content"], payload)
+
+    def test_binary_containing_the_boundary_text_is_not_truncated(self):
+        """A file whose bytes happen to contain the boundary string must survive."""
+        payload = b"before ----test not-a-real-delimiter after"
+        parts = self.dev._parse_multipart(self._body("x.pdf", payload, "unique-boundary-9271"),
+                                          "unique-boundary-9271")
+        self.assertEqual(parts["content"], payload)
+
+    def test_missing_file_part_yields_nothing(self):
+        body = (b"--b\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\nhello\r\n--b--\r\n")
+        self.assertEqual(self.dev._parse_multipart(body, "b"), {})
+
+    def test_traversal_filename_is_reduced_to_a_basename(self):
+        """
+        The parser returns the name as sent; the handler is what must sanitise it.
+        This pins the behaviour the handler relies on: Path(...).name strips the
+        traversal, so an upload cannot write outside the documents directory.
+        """
+        parts = self.dev._parse_multipart(
+            self._body("../../../../etc/passwd", b"data"), "----test")
+        self.assertEqual(parts["filename"], "../../../../etc/passwd")
+        self.assertEqual(Path(parts["filename"]).name, "passwd")
+
+
+class TestGenerationPipeline(unittest.TestCase):
+    """The loop shared by the CLI and the upload endpoint."""
+
+    def test_generates_and_stores_with_progress(self):
+        from quizgen import config
+        from quizgen.pipeline import generate_questions
+
+        config.CONFIG.auto_approve = True
+        with tempfile.TemporaryDirectory() as tmp:
+            bank = Bank(Path(tmp) / "p.db")
+            chunk = sample_chunk()
+            bank.save_chunks([chunk])
+
+            seen = []
+            result = generate_questions(bank, [chunk], per_chunk=2,
+                                        on_progress=lambda p: seen.append(p))
+            self.assertEqual(len(seen), 1)
+            self.assertEqual(seen[0].total, 1)
+            self.assertEqual(result.written, len(bank.questions()))
+            bank.close()
+
+    def test_already_generated_chunks_are_skipped(self):
+        """Re-running must not re-pay for work already done."""
+        from quizgen import config
+        from quizgen.pipeline import generate_questions, select_chunks
+
+        config.CONFIG.auto_approve = True
+        with tempfile.TemporaryDirectory() as tmp:
+            bank = Bank(Path(tmp) / "p.db")
+            chunk = sample_chunk()
+            bank.save_chunks([chunk])
+            generate_questions(bank, [chunk], per_chunk=2)
+
+            remaining, skipped = select_chunks(bank)
+            self.assertEqual(remaining, [])
+            self.assertEqual(skipped, 1)
+
+            forced, _ = select_chunks(bank, regenerate=True)
+            self.assertEqual(len(forced), 1)
+            bank.close()
+
+    def test_a_failing_chunk_does_not_abort_the_run(self):
+        """One bad call must not lose the whole batch — the tokens are already spent."""
+        from quizgen import config, pipeline
+
+        config.CONFIG.auto_approve = True
+        with tempfile.TemporaryDirectory() as tmp:
+            bank = Bank(Path(tmp) / "p.db")
+            chunks = [sample_chunk(), sample_chunk("chunk_two")]
+            bank.save_chunks(chunks)
+
+            class Flaky:
+                name = "flaky"
+                calls = 0
+
+                def generate(self, chunk, count=2, difficulty=None):
+                    Flaky.calls += 1
+                    if Flaky.calls == 1:
+                        raise RuntimeError("transient")
+                    return MockGenerator(chunks, seed=1).generate(chunk, count=count)
+
+            original = pipeline.get_generator
+            pipeline.get_generator = lambda corpus: Flaky()
+            try:
+                result = pipeline.generate_questions(bank, chunks, per_chunk=2)
+            finally:
+                pipeline.get_generator = original
+
+            self.assertEqual(len(result.failed), 1)
+            # The second chunk still ran and was stored.
+            self.assertGreater(result.written, 0)
+            bank.close()

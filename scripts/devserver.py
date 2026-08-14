@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -56,6 +57,131 @@ MIN_ANSWERS = int(os.getenv("QUIZGEN_MIN_ANSWERS", "3"))
 # has to remember what it asked; restarting the server abandons quizzes in progress,
 # which for a dev server is the right trade against persisting half-finished state.
 _IN_FLIGHT: dict = {}
+
+DOCUMENTS = Path(os.getenv("QUIZGEN_DOCUMENTS", REPO / "data" / "documents"))
+MAX_UPLOAD = int(os.getenv("QUIZGEN_MAX_UPLOAD_MB", "25")) * 1024 * 1024
+
+# Generation jobs, keyed by id. In memory, like in-flight quizzes: a dev server that
+# restarts abandons them, which is the right trade against persisting job state.
+_JOBS: dict = {}
+_JOB_LOCK = threading.Lock()
+
+
+def _human_size(n: int) -> str:
+    return "{:.1f} MB".format(n / (1024 * 1024)) if n >= 1024 * 1024 else "{} KB".format(n // 1024)
+
+
+def _generator_label() -> str:
+    """Which provider will actually run — the UI warns about cost when it is not mock."""
+    from quizgen.config import CONFIG as QC
+
+    provider = (QC.provider or "mock").lower()
+    return "mock" if provider == "mock" else provider
+
+
+def _parse_multipart(raw: bytes, boundary: str) -> dict:
+    """
+    Pull the first file part out of a multipart body.
+
+    Hand-rolled because the stdlib's cgi module was removed in Python 3.13 and
+    email.parser mangles binary payloads unless the message is assembled carefully.
+    Only what is needed is parsed: the first part carrying a filename.
+    """
+    delim = ("--" + boundary).encode()
+    out: dict = {}
+
+    for segment in raw.split(delim):
+        if not segment or segment in (b"--", b"--\r\n", b"\r\n"):
+            continue
+        # Headers and body are separated by a blank line.
+        split_at = segment.find(b"\r\n\r\n")
+        if split_at == -1:
+            continue
+        head = segment[:split_at].decode("utf-8", "replace")
+        body = segment[split_at + 4:]
+        # The trailing CRLF belongs to the delimiter, not to the file.
+        if body.endswith(b"\r\n"):
+            body = body[:-2]
+
+        if "filename=" not in head:
+            continue
+        filename = head.split("filename=", 1)[1].split("\r\n", 1)[0].strip().strip('"')
+        if not filename:
+            continue
+        out["filename"] = filename
+        out["content"] = body
+        break
+    return out
+
+
+def _start_generation_job(doc_title: str) -> str:
+    """Generate questions for one document on a background thread."""
+    job_id = "job_" + uuid.uuid4().hex[:12]
+    with _JOB_LOCK:
+        _JOBS[job_id] = {
+            "jobId": job_id,
+            "title": doc_title,
+            "state": "running",
+            "done": 0,
+            "total": 0,
+            "kept": 0,
+            "rejected": 0,
+            "failed": 0,
+            "generator": _generator_label(),
+            "message": "Starting…",
+            "startedAt": _now(),
+        }
+
+    def work():
+        from quizgen.pipeline import generate_questions, select_chunks
+
+        try:
+            with Bank(DB) as bank:
+                chunks, _ = select_chunks(bank, doc_title=doc_title)
+                with _JOB_LOCK:
+                    _JOBS[job_id]["total"] = len(chunks)
+                    _JOBS[job_id]["message"] = (
+                        "Reading {} section(s)…".format(len(chunks)) if chunks
+                        else "Already generated for this document."
+                    )
+                if not chunks:
+                    with _JOB_LOCK:
+                        _JOBS[job_id].update(state="done", message="Already generated.")
+                    return
+
+                def report(p):
+                    with _JOB_LOCK:
+                        j = _JOBS[job_id]
+                        j["done"] = p.index
+                        j["kept"] += p.kept_in_batch
+                        j["rejected"] = p.rejected_total
+                        if p.error:
+                            j["failed"] += 1
+                        j["message"] = "{} ({}/{})".format(p.chunk.topic[:44], p.index, p.total)
+
+                result = generate_questions(bank, chunks, per_chunk=2, on_progress=report)
+
+            with _JOB_LOCK:
+                _JOBS[job_id].update(
+                    state="done",
+                    kept=len(result.kept),
+                    written=result.written,
+                    rejected=len(result.rejected),
+                    failed=len(result.failed),
+                    message="{} question(s) ready.".format(result.written),
+                    finishedAt=_now(),
+                )
+        except Exception as exc:  # noqa: BLE001
+            # The job must always reach a terminal state, or the UI polls forever.
+            with _JOB_LOCK:
+                _JOBS[job_id].update(
+                    state="error",
+                    message="{}: {}".format(type(exc).__name__, str(exc)[:200]),
+                    finishedAt=_now(),
+                )
+
+    threading.Thread(target=work, daemon=True, name=job_id).start()
+    return job_id
 
 
 def _now() -> str:
@@ -136,6 +262,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._lesson(query)
             if route == "/api/certificates":
                 return self._certificates()
+            if route == "/api/documents":
+                return self._list_documents()
+            if route.startswith("/api/jobs/"):
+                return self._job_status(route.rsplit("/", 1)[-1])
         except Exception as exc:  # noqa: BLE001
             return self._error(500, type(exc).__name__, str(exc)[:300])
         self._error(404, "Not found", route)
@@ -143,6 +273,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         route = urlparse(self.path).path.rstrip("/")
         try:
+            if route == "/api/documents":
+                return self._upload()
             if route == "/api/quiz/start":
                 return self._start()
             if route == "/api/quiz/answer":
@@ -243,6 +375,138 @@ class Handler(BaseHTTPRequestHandler):
                 "timesServed": q.times_served,
             } for q in items[:limit]],
         })
+
+    # ------------------------------------------------------------------
+    # document upload
+    # ------------------------------------------------------------------
+
+    def _list_documents(self):
+        """What has been uploaded, and how far each one got."""
+        with Bank(DB) as bank:
+            chunks = bank.all_chunks()
+            approved = bank.questions(status=ReviewStatus.APPROVED)
+
+        chunk_counts: Dict[str, int] = {}
+        for c in chunks:
+            chunk_counts[c.doc_title] = chunk_counts.get(c.doc_title, 0) + 1
+        q_counts: Dict[str, int] = {}
+        for q in approved:
+            key = q.source_doc_title or q.topic
+            q_counts[key] = q_counts.get(key, 0) + 1
+
+        docs = []
+        for title in sorted(chunk_counts):
+            docs.append({
+                "title": title,
+                "chunks": chunk_counts[title],
+                "questions": q_counts.get(title, 0),
+                # A document with chunks but no questions has been read but not yet
+                # turned into a quiz — the UI offers to generate for exactly these.
+                "ready": q_counts.get(title, 0) > 0,
+            })
+
+        files = []
+        if DOCUMENTS.exists():
+            files = sorted(p.name for p in DOCUMENTS.iterdir()
+                           if p.suffix.lower() in (".pdf", ".txt", ".md"))
+
+        return self._send({
+            "documents": docs,
+            "files": files,
+            "generator": _generator_label(),
+            "uploadDir": str(DOCUMENTS),
+        })
+
+    def _upload(self):
+        """
+        Accept an uploaded document, extract it, and start generating questions.
+
+        Extraction is fast and happens inline, so the response can immediately say how
+        many chunks and sections were found — or that the file was a scan with no
+        extractable text, which is the single most common failure and worth reporting
+        straight away rather than after a long silence.
+
+        Generation is slow (tens of seconds per chunk against a real model) so it runs
+        on a background thread and the browser polls /api/jobs/<id>. Doing it inline
+        would hold the request open for minutes and time out.
+        """
+        ctype = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in ctype or "boundary=" not in ctype:
+            return self._error(400, "Expected a file upload",
+                               "Send multipart/form-data with a 'file' part.")
+
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            return self._error(400, "Empty upload", "No content was sent.")
+        if length > MAX_UPLOAD:
+            return self._error(
+                413, "File too large",
+                "{} is over the {} MB limit.".format(
+                    _human_size(length), MAX_UPLOAD // (1024 * 1024)),
+            )
+
+        boundary = ctype.split("boundary=", 1)[1].strip().strip('"')
+        raw = self.rfile.read(length)
+        parts = _parse_multipart(raw, boundary)
+
+        filename = parts.get("filename") or ""
+        content = parts.get("content") or b""
+        if not filename or not content:
+            return self._error(400, "No file received", "The 'file' part was missing or empty.")
+
+        # Take only the basename: an uploaded name like ../../etc/passwd must not be
+        # able to escape the documents directory.
+        safe = Path(filename).name
+        if Path(safe).suffix.lower() not in (".pdf", ".txt", ".md"):
+            return self._error(
+                415, "Unsupported file type",
+                "Only .pdf, .txt and .md can be read. Got {!r}.".format(Path(safe).suffix or "no extension"),
+            )
+
+        DOCUMENTS.mkdir(parents=True, exist_ok=True)
+        target = DOCUMENTS / safe
+        target.write_bytes(content)
+
+        # Extract now so problems surface immediately.
+        sys.path.insert(0, str(REPO / "src"))
+        from quizgen.ingest import ingest_document
+
+        try:
+            chunks = ingest_document(target)
+        except Exception as exc:  # noqa: BLE001
+            # A file we cannot read is not kept — it would otherwise be retried on
+            # every future ingest and fail the same way each time.
+            target.unlink(missing_ok=True)
+            return self._error(422, "Could not read this document", str(exc)[:300])
+
+        if not chunks:
+            target.unlink(missing_ok=True)
+            return self._error(
+                422, "No teachable content found",
+                "Text was extracted but nothing usable was found in it.",
+            )
+
+        with Bank(DB) as bank:
+            bank.save_chunks(chunks)
+
+        doc_title = chunks[0].doc_title
+        topics = sorted({c.topic for c in chunks})
+        job_id = _start_generation_job(doc_title)
+
+        return self._send({
+            "file": safe,
+            "title": doc_title,
+            "chunks": len(chunks),
+            "topics": topics,
+            "jobId": job_id,
+            "generator": _generator_label(),
+        }, 201)
+
+    def _job_status(self, job_id: str):
+        job = _JOBS.get(job_id)
+        if job is None:
+            return self._error(404, "Unknown job", job_id)
+        return self._send(dict(job))
 
     # ------------------------------------------------------------------
     # endpoints backing the React UI
@@ -600,13 +864,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    if not DB.exists():
-        print("No question bank at {}.\n".format(DB))
-        print("Build one first:")
-        print("    python scripts/make_sample_pdfs.py")
-        print("    PYTHONPATH=src python -m quizgen.cli ingest --path data/documents")
-        print("    PYTHONPATH=src python -m quizgen.cli generate")
-        return 1
+    # An empty bank is a normal starting state, not an error. Documents can be
+    # uploaded through the UI, and refusing to start here made that impossible:
+    # the one case where you most need the server is the case it rejected.
+    DB.parent.mkdir(parents=True, exist_ok=True)
 
     with Bank(DB) as bank:
         approved = len(bank.questions(status=ReviewStatus.APPROVED))
@@ -616,11 +877,19 @@ def main() -> int:
     print("\n  Employee Training — local dev server")
     print("  " + "-" * 46)
     print("  bank      {} ({} approved of {})".format(DB.name, approved, total))
+    print("  docs      {}".format(DOCUMENTS))
+    print("  generator {}{}".format(
+        _generator_label(),
+        "  (no API key needed, no cost)" if _generator_label() == "mock" else "  (billed per question)",
+    ))
     print("  app       http://localhost:{}".format(port))
     print("  api       http://localhost:{}/api/health".format(port))
     if not approved:
-        print("\n  WARNING: nothing is approved, so no quiz can start.")
-        print("  Fix:     PYTHONPATH=src python -m quizgen.cli review --approve-all")
+        print("\n  The bank is empty. Upload a PDF in the app to build one,")
+        print("  or from the command line:")
+        print("    python scripts/make_sample_pdfs.py")
+        print("    PYTHONPATH=src python -m quizgen.cli ingest --source local --pdf-dir data/documents")
+        print("    QUIZGEN_PROVIDER=mock PYTHONPATH=src python -m quizgen.cli generate")
     print("\n  Ctrl-C to stop.\n")
 
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()

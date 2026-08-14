@@ -76,106 +76,66 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
 
 def cmd_generate(args: argparse.Namespace) -> int:
+    """
+    Thin wrapper over quizgen.pipeline. The loop itself lives there so this command
+    and the HTTP upload endpoint run identical code — including the validation that
+    is now the only gate before a learner sees a question.
+    """
+    from .pipeline import generate_questions, select_chunks
+
     with _bank() as bank:
-        chunks = bank.all_chunks()
-        if not chunks:
+        if not bank.all_chunks():
             print("No chunks yet. Run 'ingest' first.", file=sys.stderr)
             return 1
-        if args.topic:
-            chunks = [c for c in chunks if c.topic.lower() == args.topic.lower()]
-            if not chunks:
-                print("No chunks for topic {!r}.".format(args.topic), file=sys.stderr)
-                return 1
-        if args.scope:
-            chunks = [c for c in chunks if c.role_scope.upper() == args.scope.upper()]
-            if not chunks:
-                print("No chunks for scope {!r}.".format(args.scope), file=sys.stderr)
-                return 1
-        if not args.regenerate:
-            # Resume cheaply: a chunk that already produced questions is skipped, so a
-            # run killed part-way does not re-pay for what it already generated.
-            done = bank.chunk_ids_with_questions()
-            before = len(chunks)
-            chunks = [c for c in chunks if c.chunk_id not in done]
-            if before != len(chunks):
-                print("Skipping {} chunk(s) that already have questions "
-                      "(--regenerate to force).".format(before - len(chunks)))
-        if args.limit:
-            # Real generation is slow and billed. --limit is how you sanity-check the
-            # provider on a handful of chunks before committing to the whole corpus.
-            chunks = chunks[: args.limit]
+
+        chunks, skipped = select_chunks(
+            bank,
+            topic=args.topic or "",
+            scope=args.scope or "",
+            regenerate=args.regenerate,
+            limit=args.limit,
+        )
+        if skipped:
+            print("Skipping {} chunk(s) that already have questions "
+                  "(--regenerate to force).".format(skipped))
+        if not chunks:
+            print("Nothing to generate from.", file=sys.stderr)
+            return 1
+
         print("Generating from {} chunk(s).".format(len(chunks)))
+        print("Generator: {}   (QUIZGEN_PROVIDER={})".format(
+            get_generator(bank.all_chunks()).name, CONFIG.provider))
 
-        corpus = bank.all_chunks()
-        generator = get_generator(corpus)
-        index = BM25(corpus)
-        print("Generator: {}   (QUIZGEN_PROVIDER={})".format(generator.name, CONFIG.provider))
-
-        by_id = {c.chunk_id: c for c in corpus}
-        kept: List[Question] = []
-        notes: dict = {}
-        rejected: List[str] = []
-
-        # Save per chunk, not at the end. A 45-minute run that only writes on completion
-        # loses everything to one crash — and the tokens are already paid for. Saving as
-        # we go also makes re-running cheap: save_questions skips what already exists.
-        written = 0
-        total = len(chunks)
-        failed = []
-        for i, chunk in enumerate(chunks, 1):
-            # One flaky call must not abort the whole run. Failures are collected and
-            # reported; re-running picks them up because nothing was saved for them.
-            try:
-                produced = generator.generate(chunk, count=args.per_chunk)
-            except Exception as exc:  # noqa: BLE001
-                failed.append("{}: {}".format(chunk.topic[:34], type(exc).__name__))
+        def report(p):
+            if p.error:
                 print("  [{:>3}/{}] {:<38} FAILED ({})".format(
-                    i, total, chunk.topic[:38], type(exc).__name__), flush=True)
-                continue
-            batch, batch_notes = [], {}
+                    p.index, p.total, p.chunk.topic[:38], p.error), flush=True)
+            else:
+                print("  [{:>3}/{}] {:<38} +{} kept, {} rejected so far".format(
+                    p.index, p.total, p.chunk.topic[:38], p.kept_in_batch, p.rejected_total),
+                    flush=True)
 
-            for q in produced:
-                source_text = by_id.get(q.source_chunk_id, chunk).text
-                # Cross-document check: what do OTHER documents say about this?
-                related = index.related_to_question(q.prompt, q.source_chunk_id, limit=4)
-                ok, findings = validate(q, source_text, related)
-                if not ok:
-                    rejected.append("{}: {}".format(q.topic, findings[0]))
-                    continue
-                if findings:
-                    batch_notes[q.question_id] = findings
-                    notes[q.question_id] = findings
-                    q.checked_against_chunk_ids = [c.chunk_id for c in related]
-                batch.append(q)
-                kept.append(q)
-
-            written += bank.save_questions(batch, notes=batch_notes)
-            print("  [{:>3}/{}] {:<38} +{} kept, {} rejected so far".format(
-                i, total, chunk.topic[:38], len(batch), len(rejected)), flush=True)
+        r = generate_questions(bank, chunks, per_chunk=args.per_chunk, on_progress=report)
 
         print("\nGenerated {} valid question(s); {} new, {} already in the bank.".format(
-            len(kept), written, len(kept) - written))
+            len(r.kept), r.written, len(r.kept) - r.written))
 
-        if rejected:
-            print("\nRejected {} question(s) before storage:".format(len(rejected)))
-            for r in rejected[:10]:
-                print("   - {}".format(r))
+        if r.rejected:
+            print("\nRejected {} question(s) before storage:".format(len(r.rejected)))
+            for x in r.rejected[:10]:
+                print("   - {}".format(x))
 
-        if notes:
-            print("\n{} question(s) flagged for possible contradiction with other".format(len(notes)))
-            print("documents. Stored, but a reviewer sees the finding:")
-            for qid, findings in list(notes.items())[:5]:
+        if r.notes:
+            print("\n{} question(s) flagged for possible contradiction with other".format(len(r.notes)))
+            print("documents. Stored, but the finding is recorded on the question:")
+            for qid, findings in list(r.notes.items())[:5]:
                 print("   - {}".format(findings[0]))
 
-        if failed:
-            print("\n{} chunk(s) failed and were skipped — re-run to retry them:".format(len(failed)))
-            for f in failed[:8]:
+        if r.failed:
+            print("\n{} chunk(s) failed and were skipped — re-run to retry them:".format(len(r.failed)))
+            for f in r.failed[:8]:
                 print("   - {}".format(f))
 
-        # Report what actually happened. This used to claim PendingReview
-        # unconditionally, which stopped being true when auto-approve became the
-        # default — telling someone to go and approve questions that were already
-        # servable.
         if CONFIG.auto_approve:
             print("\nApproved on save (QUIZGEN_AUTO_APPROVE=true) — servable now.")
             print("The mechanical checks in validators.py were the only gate.")

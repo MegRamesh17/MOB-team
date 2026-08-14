@@ -3,7 +3,7 @@ import {
   LogOut, BookOpen, Award, Users, CheckCircle2, Circle, Lock,
   ChevronRight, X, AlertCircle, Clock, ArrowLeft, User, Star,
   Trophy, Flame, Target, Mail, Briefcase, Share2, Download, Copy,
-  Loader2, RefreshCw,
+  Loader2, RefreshCw, Upload, FileText,
 } from "lucide-react";
 import * as api from "./api";
 import { Logo } from "./logo.jsx";
@@ -361,12 +361,14 @@ function Shell({ role, name, active, setActive, onLogout, children }) {
   const employeeNav = [
     { id: "dashboard", label: "Dashboard", icon: BookOpen },
     { id: "path", label: "My Training", icon: CheckCircle2 },
+    { id: "documents", label: "Documents", icon: FileText },
     { id: "certificates", label: "Certificates", icon: Award },
     { id: "teammates", label: "Teammates", icon: Users },
     { id: "profile", label: "Profile", icon: User },
   ];
   const managerNav = [
     { id: "team", label: "My Team", icon: Users },
+    { id: "documents", label: "Documents", icon: FileText },
     { id: "profile", label: "Profile", icon: User },
   ];
   const nav = role === "manager" ? managerNav : employeeNav;
@@ -1032,6 +1034,218 @@ function Certificates() {
   );
 }
 
+// ---------- Documents: upload PDFs that become quizzes ----------
+
+/**
+ * The step that was only ever possible from a terminal.
+ *
+ * Upload -> extract -> generate -> the document appears as a training. Extraction is
+ * synchronous so problems (a scanned PDF with no text layer, the most common one) are
+ * reported straight away. Generation is a background job because it takes tens of
+ * seconds per section against a real model, so this polls for progress.
+ */
+function DocumentsScreen({ onDone }) {
+  const { data, loading, error, reload } = useAsync(() => api.documents(), []);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
+  const [job, setJob] = useState(null);
+  const [justAdded, setJustAdded] = useState(null);
+  const [dragging, setDragging] = useState(false);
+  const fileRef = useRef(null);
+  const pollRef = useRef(null);
+
+  const generator = data?.generator || "mock";
+  const billed = generator !== "mock";
+
+  // Poll while a generation job is running. Cleared on unmount so navigating away
+  // mid-generation does not leave a timer running against a dead component.
+  useEffect(() => {
+    if (!job || job.state !== "running") return;
+    pollRef.current = setInterval(async () => {
+      try {
+        const next = await api.jobStatus(job.jobId);
+        setJob(next);
+        if (next.state !== "running") {
+          clearInterval(pollRef.current);
+          reload();
+        }
+      } catch {
+        clearInterval(pollRef.current);
+      }
+    }, 1200);
+    return () => clearInterval(pollRef.current);
+  }, [job, reload]);
+
+  const handleFiles = async (files) => {
+    const file = files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setUploadError(null);
+    setJustAdded(null);
+    setJob(null);
+    try {
+      const res = await api.uploadDocument(file);
+      setJustAdded(res);
+      if (res.jobId) setJob({ jobId: res.jobId, state: "running", done: 0, total: res.chunks, kept: 0, message: "Starting…" });
+      reload();
+    } catch (e) {
+      setUploadError(e);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const pct = job && job.total ? Math.round((job.done / job.total) * 100) : 0;
+
+  return (
+    <div className="p-8 max-w-3xl">
+      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Documents</h1>
+      <p style={{ color: C.sub }} className="text-sm mb-6">
+        Upload a policy or training document and it becomes a quiz. Questions are generated
+        from its sections, so headings matter.
+      </p>
+
+      {/* Which generator will run. Real generation costs money per question, and
+          finding that out from a bill rather than the screen is not acceptable. */}
+      <div style={{ background: billed ? C.amberBg : C.lavender, borderColor: billed ? C.amber : C.line }}
+        className="border rounded-xl px-4 py-3 mb-5 flex items-start gap-2.5">
+        <AlertCircle size={16} color={billed ? C.amber : C.violet700} className="shrink-0 mt-0.5" />
+        <div>
+          <p style={{ color: billed ? C.amber : C.violet700 }} className="text-sm font-semibold">
+            {billed ? `Generating with ${generator} — this is billed` : "Generating with the mock provider — free"}
+          </p>
+          <p style={{ color: C.ink }} className="text-xs opacity-80 mt-0.5">
+            {billed
+              ? "Roughly a cent per question, and tens of seconds per section. Set QUIZGEN_PROVIDER=mock to test the flow without spending anything."
+              : "Pattern-matched questions, no API key and no network. Unset QUIZGEN_PROVIDER to use the real model for better questions."}
+          </p>
+        </div>
+      </div>
+
+      {/* drop zone */}
+      <div
+        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files); }}
+        onClick={() => fileRef.current?.click()}
+        style={{
+          borderColor: dragging ? C.violet700 : C.line,
+          background: dragging ? C.lavender : "#fff",
+        }}
+        className="border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition-colors mb-5"
+      >
+        <input ref={fileRef} type="file" accept=".pdf,.txt,.md" className="hidden"
+          onChange={(e) => handleFiles(e.target.files)} />
+        <div style={{ background: C.lavender }} className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-3">
+          {uploading ? <Loader2 size={20} color={C.violet700} className="animate-spin" /> : <Upload size={20} color={C.violet700} />}
+        </div>
+        <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">
+          {uploading ? "Reading your document…" : "Drop a PDF here, or click to choose"}
+        </p>
+        <p style={{ color: C.sub }} className="text-xs">PDF, TXT or MD · up to 25 MB</p>
+      </div>
+
+      {uploadError && <ErrorBox error={uploadError} />}
+
+      {justAdded && (
+        <div style={{ background: C.successBg, borderColor: C.success }} className="border rounded-xl p-4 mb-5">
+          <div className="flex items-start gap-2.5">
+            <CheckCircle2 size={17} color={C.success} className="shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p style={{ color: C.success }} className="text-sm font-semibold mb-0.5">
+                Read “{justAdded.title}” — {justAdded.chunks} section{justAdded.chunks === 1 ? "" : "s"}
+              </p>
+              <p style={{ color: C.ink }} className="text-xs opacity-80">
+                {justAdded.topics.slice(0, 6).join(" · ")}
+                {justAdded.topics.length > 6 ? ` · +${justAdded.topics.length - 6} more` : ""}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {job && (
+        <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white mb-5">
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <p style={{ color: C.ink }} className="text-sm font-semibold flex items-center gap-2">
+              {job.state === "running" && <Loader2 size={14} className="animate-spin" />}
+              {job.state === "running" ? "Writing questions…"
+                : job.state === "error" ? "Generation failed"
+                : "Questions ready"}
+            </p>
+            <span style={{ color: C.sub }} className="text-xs font-semibold">
+              {job.total ? `${job.done}/${job.total} sections` : ""}
+            </span>
+          </div>
+          <div style={{ background: C.line }} className="w-full h-2 rounded-full overflow-hidden mb-2">
+            <div style={{
+              width: `${job.state === "done" ? 100 : pct}%`,
+              background: job.state === "error" ? C.danger : `linear-gradient(90deg, ${C.violet500}, ${C.violet700})`,
+            }} className="h-full rounded-full transition-all" />
+          </div>
+          <p style={{ color: job.state === "error" ? C.danger : C.sub }} className="text-xs">{job.message}</p>
+
+          {job.state === "done" && (
+            <div className="flex items-center gap-3 mt-3 flex-wrap">
+              <Button onClick={onDone}>Go take the quiz</Button>
+              {job.rejected > 0 && (
+                <span style={{ color: C.sub }} className="text-xs">
+                  {job.rejected} rejected by validation before storage
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="flex items-center justify-between mb-3">
+        <h3 style={{ ...display, color: C.ink }} className="font-bold">Documents in the bank</h3>
+        <button onClick={reload} style={{ color: C.violet700 }} className="text-xs font-semibold flex items-center gap-1">
+          <RefreshCw size={12} /> Refresh
+        </button>
+      </div>
+
+      {loading && <Loading />}
+      {error && <ErrorBox error={error} onRetry={reload} />}
+
+      {!loading && !error && (data?.documents || []).length === 0 && (
+        <div style={{ borderColor: C.line }} className="border rounded-xl p-6 bg-white text-center">
+          <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">Nothing uploaded yet</p>
+          <p style={{ color: C.sub }} className="text-xs">Drop a document above to create your first quiz.</p>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {(data?.documents || []).map((d) => (
+          <div key={d.title} style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div style={{ background: d.ready ? C.successBg : C.amberBg }} className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0">
+                <FileText size={16} color={d.ready ? C.success : C.amber} />
+              </div>
+              <div className="min-w-0">
+                <p style={{ color: C.ink }} className="text-sm font-semibold truncate">{d.title}</p>
+                <p style={{ color: C.sub }} className="text-xs">
+                  {d.chunks} section{d.chunks === 1 ? "" : "s"} · {d.questions} question{d.questions === 1 ? "" : "s"}
+                </p>
+              </div>
+            </div>
+            <StatusPill status={d.ready ? "completed" : "in-progress"} />
+          </div>
+        ))}
+      </div>
+
+      <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white mt-6">
+        <p style={{ color: C.ink }} className="text-sm font-semibold mb-1.5">If a document produces poor questions</p>
+        <ul style={{ color: C.sub }} className="text-xs space-y-1 list-disc pl-4">
+          <li>Headings become topics. A document whose headings didn't survive PDF conversion collapses into one section, and targeting gets much coarser.</li>
+          <li>Bullet-point syllabi produce shallow recall questions — there's nothing to build a real question from. Prose works far better.</li>
+          <li>Scanned PDFs have no text layer and are rejected. They'd need OCR, which this pipeline doesn't do.</li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 // ---------- Manager team (design-only) ----------
 function ManagerTeam() {
   const overdueCount = TEAM.reduce((s, t) => s + t.overdue, 0);
@@ -1642,6 +1856,8 @@ export default function App() {
   let content;
   if (view === "profile") {
     content = <Profile role={auth.role} />;
+  } else if (view === "documents") {
+    content = <DocumentsScreen onDone={() => goto(auth.role === "manager" ? "team" : "dashboard")} />;
   } else if (auth.role === "manager") {
     content = <ManagerTeam />;
   } else if (view === "dashboard") {

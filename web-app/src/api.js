@@ -64,3 +64,35 @@ export const gradeAnswer = ({ attemptId, questionId, selectedOptionIds, textAnsw
 /** Final score is computed server-side; the client's tally is never trusted. */
 export const submitQuiz = ({ attemptId, answers }) =>
   call("/quiz/submit", { method: "POST", body: { attemptId, learnerId, answers } });
+
+export const documents = () => call("/documents");
+export const jobStatus = (jobId) => call(`/jobs/${encodeURIComponent(jobId)}`);
+
+/**
+ * Upload a document. The server extracts it inline and returns straight away with the
+ * section count, then generates questions on a background thread — so the caller gets
+ * a jobId to poll rather than a request held open for minutes.
+ *
+ * Content-Type is deliberately not set: the browser must add its own multipart
+ * boundary, and setting the header manually omits it and breaks parsing server-side.
+ */
+export async function uploadDocument(file) {
+  const form = new FormData();
+  form.append("file", file);
+
+  const res = await fetch(BASE + "/api/documents", {
+    method: "POST",
+    headers: { "x-learner-id": learnerId },
+    body: form,
+  });
+
+  let payload = {};
+  try { payload = await res.json(); } catch { /* non-JSON error body */ }
+  if (!res.ok) {
+    const err = new Error(payload.detail || payload.title || `Upload failed (${res.status})`);
+    err.status = res.status;
+    err.title = payload.title;
+    throw err;
+  }
+  return payload;
+}
