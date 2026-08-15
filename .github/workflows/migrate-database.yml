@@ -1,0 +1,71 @@
+name: migrate-database
+
+on:
+  workflow_run:
+    workflows: ["terraform-azure"]
+    types: [completed]
+    branches: [ main ]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  migrate:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Get runner IP
+        id: ip
+        run: echo "ip=$(curl -s https://api.ipify.org)" >> "$GITHUB_OUTPUT"
+      - name: Open temporary firewall rule
+        run: |
+          az sql server firewall-rule create \
+            --resource-group MOB --server mob-sql-server-02 \
+            --name github-actions-temp \
+            --start-ip-address ${{ steps.ip.outputs.ip }} \
+            --end-ip-address ${{ steps.ip.outputs.ip }}
+      - name: Install sqlcmd
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mssql-tools18 unixodbc-dev
+          echo "/opt/mssql-tools18/bin" >> "$GITHUB_PATH"
+      - name: Ensure migration tracking table exists
+        run: |
+          sqlcmd -S mob-sql-server-02.database.windows.net -d mob-training-db \
+            -U mobsqladmin -P "${{ secrets.SQL_ADMIN_PASSWORD }}" -C -b -Q "
+            IF OBJECT_ID('dbo.SchemaMigrations') IS NULL
+            CREATE TABLE dbo.SchemaMigrations (
+              filename NVARCHAR(255) PRIMARY KEY,
+              applied_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+            );"
+      - name: Run only new migrations
+        run: |
+          for file in db/migrations/*.sql; do
+            fname=$(basename "$file")
+            already_applied=$(sqlcmd -S mob-sql-server-02.database.windows.net -d mob-training-db \
+              -U mobsqladmin -P "${{ secrets.SQL_ADMIN_PASSWORD }}" -C -h -1 \
+              -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM dbo.SchemaMigrations WHERE filename = '$fname'" | tr -d '[:space:]')
+            if [ "$already_applied" = "0" ]; then
+              echo "Applying $fname"
+              sqlcmd -S mob-sql-server-02.database.windows.net -d mob-training-db \
+                -U mobsqladmin -P "${{ secrets.SQL_ADMIN_PASSWORD }}" -C -b -i "$file"
+              sqlcmd -S mob-sql-server-02.database.windows.net -d mob-training-db \
+                -U mobsqladmin -P "${{ secrets.SQL_ADMIN_PASSWORD }}" -C -b \
+                -Q "INSERT INTO dbo.SchemaMigrations (filename) VALUES ('$fname')"
+            else
+              echo "Skipping $fname - already applied"
+            fi
+          done
+      - name: Close temporary firewall rule
+        if: always()
+        run: |
+          az sql server firewall-rule delete \
+            --resource-group MOB --server mob-sql-server-02 \
+            --name github-actions-temp
