@@ -1,0 +1,67 @@
+name: tests
+
+# Runs the quizgen test suite on every push and pull request.
+#
+# Deliberately separate from terraform.yml, which deploys infrastructure and runs
+# database migrations. This workflow:
+#
+#   * has NO Azure credentials — it cannot log in, deploy, or touch the database
+#   * makes NO API calls — all 32 tests run offline against the mock generator and a
+#     stubbed blob extractor
+#   * costs nothing — GitHub Actions is free on public repos
+#
+# Keeping test and deploy workflows apart is what stops a pull request from
+# accidentally deploying something.
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Matches the pins in requirements.txt, which need 3.12+.
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        env:
+          # Force the offline generator. If a test ever reached for a real endpoint,
+          # this makes it fail loudly rather than silently trying to spend money.
+          QUIZGEN_PROVIDER: mock
+          PYTHONPATH: src
+        run: python -m unittest discover -s tests -v
+
+      - name: Build the frontend
+        # The React app is a deployable artefact. Without this a syntax error or a
+        # bad import merges green and only fails when someone runs npm run dev.
+        working-directory: web-app
+        run: |
+          npm ci
+          npm run build
+
+      - name: Check migrations are readable
+        # Catches a migration saved as UTF-16 by a Windows redirect, which breaks
+        # sqlcmd in the deploy workflow with an unhelpful error.
+        run: |
+          for f in db/migrations/*.sql; do
+            if file "$f" | grep -qi "UTF-16"; then
+              echo "::error file=$f::UTF-16 encoded — re-save as UTF-8"
+              exit 1
+            fi
+          done
+          echo "All migrations are UTF-8."

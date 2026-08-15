@@ -1,0 +1,13 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "SQL_SERVER": "mob-sql-server-02.database.windows.net",
+    "SQL_DATABASE": "mob-training-db",
+    "SQL_USER": "mobsqladmin",
+    "SQL_PASSWORD": "",
+    "QUIZGEN_PASSING_SCORE": "80",
+    "QUIZGEN_QUIZ_LENGTH": "8"
+  }
+}

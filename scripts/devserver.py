@@ -1,0 +1,1135 @@
+"""
+Local dev server — the web app without Azure.
+
+Serves the endpoint contract in docs/frontend-spec.md out of the SQLite bank that
+`quizgen generate` already writes, so the whole app can be run, demoed and developed
+against on a laptop with no Azure SQL, no Functions host and no credentials.
+
+WHY THIS EXISTS. api/function_app.py is the real API and talks to Azure SQL through
+pyodbc. That database has never been reachable from a laptop — the SQL firewall blocks
+it — so there was no way to click through the product at all. This closes that gap
+without weakening the real thing.
+
+WHAT IS SHARED WITH PRODUCTION, and what is not:
+
+  shared      question selection (quizgen.adaptive.build_quiz), the bank, grading
+              arithmetic, the pass mark, mastery bands. A quiz here is assembled by
+              exactly the code that assembles one in Azure.
+
+  not shared  storage (SQLite, not Azure SQL) and identity (a header, not Entra).
+
+So this is a faithful demo of behaviour and an unfaithful demo of infrastructure. It is
+for development and demos. It is not a deployment target: single-threaded, no auth, and
+it will happily serve to anything that connects.
+
+Run:  python scripts/devserver.py            then open http://localhost:8000
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import threading
+import uuid
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse, parse_qs
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "src"))
+
+from quizgen.adaptive import build_quiz  # noqa: E402
+from quizgen.bank import Bank  # noqa: E402
+from quizgen.models import Attempt, QuestionType, Response, ReviewStatus  # noqa: E402
+
+DB = Path(os.getenv("QUIZGEN_DB", REPO / "data" / "output" / "quizgen.db"))
+WEB = REPO / "web"
+PASSING_SCORE = float(os.getenv("QUIZGEN_PASSING_SCORE", "80"))
+QUIZ_LENGTH = int(os.getenv("QUIZGEN_QUIZ_LENGTH", "8"))
+WEAK_THRESHOLD = float(os.getenv("QUIZGEN_WEAK_THRESHOLD", "0.70"))
+MIN_ANSWERS = int(os.getenv("QUIZGEN_MIN_ANSWERS", "3"))
+
+# In-flight quizzes: attempt_id -> question ids, in the order served.
+#
+# Deliberately in memory. The answer key must not travel to the browser, so the server
+# has to remember what it asked; restarting the server abandons quizzes in progress,
+# which for a dev server is the right trade against persisting half-finished state.
+_IN_FLIGHT: dict = {}
+
+DOCUMENTS = Path(os.getenv("QUIZGEN_DOCUMENTS", REPO / "data" / "documents"))
+MAX_UPLOAD = int(os.getenv("QUIZGEN_MAX_UPLOAD_MB", "25")) * 1024 * 1024
+
+# Generation jobs, keyed by id. In memory, like in-flight quizzes: a dev server that
+# restarts abandons them, which is the right trade against persisting job state.
+_JOBS: dict = {}
+_JOB_LOCK = threading.Lock()
+
+
+def _read_failure_reason(exc: Exception) -> str:
+    """
+    Translate a PDF library error into something a manager can act on.
+
+    "startxref not found" tells a training coordinator nothing. What they need to
+    know is whether to re-export the file, remove a password, or run OCR.
+    """
+    text = str(exc).lower()
+    if "decrypt" in text or "password" in text:
+        return ("This PDF is password-protected. Remove the password (open it and "
+                "re-save / export without encryption) and upload it again.")
+    if "startxref" in text or "eof marker" in text or "invalid" in text:
+        return ("This file is not a readable PDF — it may be truncated or corrupted. "
+                "Try re-exporting it from the original document.")
+    if "scan" in text or "no extractable text" in text:
+        return ("No text could be extracted, so this is probably a scan. This pipeline "
+                "does not run OCR — export a text-based PDF instead.")
+    return str(exc)[:280]
+
+
+def _human_size(n: int) -> str:
+    return "{:.1f} MB".format(n / (1024 * 1024)) if n >= 1024 * 1024 else "{} KB".format(n // 1024)
+
+
+def _generator_label() -> str:
+    """Which provider will actually run — the UI warns about cost when it is not mock."""
+    from quizgen.config import CONFIG as QC
+
+    provider = (QC.provider or "mock").lower()
+    return "mock" if provider == "mock" else provider
+
+
+def _parse_multipart(raw: bytes, boundary: str) -> dict:
+    """
+    Pull the first file part out of a multipart body.
+
+    Hand-rolled because the stdlib's cgi module was removed in Python 3.13 and
+    email.parser mangles binary payloads unless the message is assembled carefully.
+    Only what is needed is parsed: the first part carrying a filename.
+    """
+    delim = ("--" + boundary).encode()
+    out: dict = {}
+
+    for segment in raw.split(delim):
+        if not segment or segment in (b"--", b"--\r\n", b"\r\n"):
+            continue
+        # Headers and body are separated by a blank line.
+        split_at = segment.find(b"\r\n\r\n")
+        if split_at == -1:
+            continue
+        head = segment[:split_at].decode("utf-8", "replace")
+        body = segment[split_at + 4:]
+        # The trailing CRLF belongs to the delimiter, not to the file.
+        if body.endswith(b"\r\n"):
+            body = body[:-2]
+
+        if "filename=" not in head:
+            continue
+        filename = head.split("filename=", 1)[1].split("\r\n", 1)[0].strip().strip('"')
+        if not filename:
+            continue
+        out["filename"] = filename
+        out["content"] = body
+        break
+    return out
+
+
+def _start_generation_job(doc_title: str) -> str:
+    """Generate questions for one document on a background thread."""
+    job_id = "job_" + uuid.uuid4().hex[:12]
+    with _JOB_LOCK:
+        _JOBS[job_id] = {
+            "jobId": job_id,
+            "title": doc_title,
+            "state": "running",
+            "done": 0,
+            "total": 0,
+            "kept": 0,
+            "rejected": 0,
+            "failed": 0,
+            "generator": _generator_label(),
+            "message": "Starting…",
+            "startedAt": _now(),
+        }
+
+    def work():
+        from quizgen.pipeline import generate_questions, select_chunks
+
+        try:
+            with Bank(DB) as bank:
+                chunks, _ = select_chunks(bank, doc_title=doc_title)
+                with _JOB_LOCK:
+                    _JOBS[job_id]["total"] = len(chunks)
+                    _JOBS[job_id]["message"] = (
+                        "Reading {} section(s)…".format(len(chunks)) if chunks
+                        else "Already generated for this document."
+                    )
+                if not chunks:
+                    with _JOB_LOCK:
+                        _JOBS[job_id].update(state="done", message="Already generated.")
+                    return
+
+                def report(p):
+                    with _JOB_LOCK:
+                        j = _JOBS[job_id]
+                        j["done"] = p.index
+                        j["kept"] += p.kept_in_batch
+                        j["rejected"] = p.rejected_total
+                        if p.error:
+                            j["failed"] += 1
+                        j["message"] = "{} ({}/{})".format(p.chunk.topic[:44], p.index, p.total)
+
+                result = generate_questions(bank, chunks, per_chunk=2, on_progress=report)
+
+            with _JOB_LOCK:
+                _JOBS[job_id].update(
+                    state="done",
+                    kept=len(result.kept),
+                    written=result.written,
+                    rejected=len(result.rejected),
+                    failed=len(result.failed),
+                    message="{} question(s) ready.".format(result.written),
+                    finishedAt=_now(),
+                )
+        except Exception as exc:  # noqa: BLE001
+            # The job must always reach a terminal state, or the UI polls forever.
+            with _JOB_LOCK:
+                _JOBS[job_id].update(
+                    state="error",
+                    message="{}: {}".format(type(exc).__name__, str(exc)[:200]),
+                    finishedAt=_now(),
+                )
+
+    threading.Thread(target=work, daemon=True, name=job_id).start()
+    return job_id
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _plus_one_year(iso: str) -> str:
+    """Renewal window: every pass expires one year after it was earned."""
+    try:
+        dt = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return ""
+    try:
+        return dt.replace(year=dt.year + 1).isoformat(timespec="seconds")
+    except ValueError:  # Feb 29
+        return dt.replace(year=dt.year + 1, day=28).isoformat(timespec="seconds")
+
+
+def _latest_passes(bank, learner: str) -> dict:
+    """doc_title -> most recent passing submitted_at for this learner."""
+    rows = bank.conn.execute(
+        """SELECT q.source_doc_title AS doc, MAX(a.submitted_at) AS passed_at
+           FROM attempts a
+           JOIN responses r ON r.attempt_id = a.attempt_id
+           JOIN questions q ON q.question_id = r.question_id
+           WHERE a.learner_id = ? AND a.passed = 1 AND a.submitted_at IS NOT NULL
+                 AND q.source_doc_title != ''
+           GROUP BY doc""",
+        (learner,),
+    ).fetchall()
+    return {r["doc"]: r["passed_at"] for r in rows}
+
+
+def _mastery_band(accuracy: float) -> str:
+    if accuracy >= 90:
+        return "Strong"
+    if accuracy >= 70:
+        return "Developing"
+    return "Needs work"
+
+
+class Handler(BaseHTTPRequestHandler):
+    # ------------------------------------------------------------------
+    # plumbing
+    # ------------------------------------------------------------------
+
+    def log_message(self, fmt, *args):
+        sys.stderr.write("  %s\n" % (fmt % args))
+
+    def _send(self, body, status=200, ctype="application/json"):
+        raw = body if isinstance(body, bytes) else json.dumps(body, default=str).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(raw)))
+        # The UI is served from this same origin, but a teammate running a React dev
+        # server on :3000 against this API would otherwise be blocked by CORS.
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, x-learner-id")
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _error(self, status, title, detail=""):
+        self._send({"title": title, "detail": detail, "status": status}, status)
+
+    def _body(self) -> dict:
+        length = int(self.headers.get("Content-Length") or 0)
+        if not length:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length) or b"{}")
+        except json.JSONDecodeError:
+            return {}
+
+    def _learner_role(self) -> str:
+        """
+        The signed-in employee's role, from a header the demo login sets.
+
+        Self-declared for now — the team knows an employee could lie and has parked
+        that until real identity (Entra) exists. What matters today is the serving
+        side: everything the employee sees is filtered to this role plus ALL.
+        """
+        return self.headers.get("x-learner-role", "").strip().upper()
+
+    def _learner(self) -> str:
+        return self.headers.get("x-learner-id", "demo-learner")
+
+    def do_OPTIONS(self):  # noqa: N802
+        self._send(b"", 204, "text/plain")
+
+    # ------------------------------------------------------------------
+    # routing
+    # ------------------------------------------------------------------
+
+    def do_GET(self):  # noqa: N802
+        route = urlparse(self.path).path.rstrip("/") or "/"
+        query = parse_qs(urlparse(self.path).query)
+
+        if route in ("/", "/index.html"):
+            return self._static("index.html")
+        if not route.startswith("/api"):
+            return self._static(route.lstrip("/"))
+
+        try:
+            if route == "/api/health":
+                return self._health()
+            if route == "/api/me":
+                return self._me()
+            if route == "/api/topics":
+                return self._topics()
+            if route == "/api/questions":
+                return self._questions(query)
+            if route == "/api/trainings":
+                return self._trainings()
+            if route == "/api/lesson":
+                return self._lesson(query)
+            if route == "/api/certificates":
+                return self._certificates()
+            if route == "/api/documents":
+                return self._list_documents()
+            if route == "/api/roles":
+                return self._list_roles()
+            if route.startswith("/api/jobs/"):
+                return self._job_status(route.rsplit("/", 1)[-1])
+        except Exception as exc:  # noqa: BLE001
+            return self._error(500, type(exc).__name__, str(exc)[:300])
+        self._error(404, "Not found", route)
+
+    def do_POST(self):  # noqa: N802
+        route = urlparse(self.path).path.rstrip("/")
+        try:
+            if route == "/api/documents":
+                return self._upload()
+            if route == "/api/documents/confirm":
+                return self._confirm_document()
+            if route == "/api/roles":
+                return self._add_role()
+            if route.startswith("/api/roles/") and route.endswith("/delete"):
+                return self._remove_role(route.split("/")[3])
+            if route == "/api/quiz/start":
+                return self._start()
+            if route == "/api/quiz/answer":
+                return self._answer()
+            if route == "/api/quiz/submit":
+                return self._submit()
+        except Exception as exc:  # noqa: BLE001
+            return self._error(500, type(exc).__name__, str(exc)[:300])
+        self._error(404, "Not found", route)
+
+    def _static(self, relative: str):
+        target = (WEB / relative).resolve()
+        # Path traversal guard: ../../ in a URL must not escape web/.
+        if not str(target).startswith(str(WEB.resolve())) or not target.is_file():
+            return self._error(404, "Not found", relative)
+        types = {".html": "text/html", ".js": "text/javascript", ".css": "text/css",
+                 ".svg": "image/svg+xml", ".json": "application/json"}
+        self._send(target.read_bytes(), 200,
+                   types.get(target.suffix, "application/octet-stream"))
+
+    # ------------------------------------------------------------------
+    # endpoints
+    # ------------------------------------------------------------------
+
+    def _health(self):
+        with Bank(DB) as bank:
+            stats = bank.stats()
+            approved = len(bank.questions(status=ReviewStatus.APPROVED))
+        self._send({
+            "status": "ok",
+            "database": "sqlite:{}".format(DB.name),
+            "questionsApproved": approved,
+            "questionsTotal": stats.get("questions", 0),
+            "servable": approved > 0,
+            # Says plainly that this is not the Azure path, so nobody demos it
+            # believing they have proven the deployed system works.
+            "mode": "local-dev",
+        })
+
+    def _me(self):
+        learner = self._learner()
+        with Bank(DB) as bank:
+            mastery = bank.mastery(learner)
+            attempts = bank.attempt_count(learner)
+
+        topics = [
+            {
+                "topic": m.topic,
+                "answered": m.answered,
+                "correct": m.correct,
+                "accuracyPercent": round(m.accuracy * 100, 1),
+                "masteryLevel": _mastery_band(m.accuracy * 100),
+            }
+            for m in sorted(mastery.values(), key=lambda m: m.accuracy)
+        ]
+        # Weak needs evidence. Without the floor a single wrong answer reads as 0%
+        # and the topic dominates every subsequent quiz.
+        weak = [t for t in topics
+                if t["answered"] >= MIN_ANSWERS and t["accuracyPercent"] < WEAK_THRESHOLD * 100]
+
+        self._send({
+            "learnerId": learner,
+            "attempts": attempts,
+            "topics": topics,
+            "weakTopics": [t["topic"] for t in weak],
+            "passingScore": PASSING_SCORE,
+        })
+
+    def _topics(self):
+        with Bank(DB) as bank:
+            approved = bank.questions(status=ReviewStatus.APPROVED)
+        counts: dict = {}
+        for q in approved:
+            counts[q.topic] = counts.get(q.topic, 0) + 1
+        self._send({
+            "topics": [{"topic": t, "questionCount": n}
+                       for t, n in sorted(counts.items())],
+        })
+
+    def _questions(self, query):
+        """Browse the bank. Never includes is_correct — see the note in _start."""
+        topic = (query.get("topic") or [""])[0]
+        limit = min(int((query.get("limit") or ["50"])[0]), 200)
+        with Bank(DB) as bank:
+            items = bank.questions(topic=topic or None, status=ReviewStatus.APPROVED)
+        self._send({
+            "total": len(items),
+            "questions": [{
+                "questionId": q.question_id,
+                "topic": q.topic,
+                "difficulty": q.difficulty.value,
+                "type": q.question_type.value,
+                "prompt": q.prompt,
+                "provenance": q.provenance_class.value,
+                "sourceTitle": q.source_doc_title,
+                "sourceUrl": q.source_url,
+                "sourceQuote": q.source_quote,
+                "timesServed": q.times_served,
+            } for q in items[:limit]],
+        })
+
+    # ------------------------------------------------------------------
+    # document upload
+    # ------------------------------------------------------------------
+
+    def _list_documents(self):
+        """What has been uploaded, and how far each one got."""
+        with Bank(DB) as bank:
+            chunks = bank.all_chunks()
+            approved = bank.questions(status=ReviewStatus.APPROVED)
+
+        chunk_counts: Dict[str, int] = {}
+        for c in chunks:
+            chunk_counts[c.doc_title] = chunk_counts.get(c.doc_title, 0) + 1
+        q_counts: Dict[str, int] = {}
+        for q in approved:
+            key = q.source_doc_title or q.topic
+            q_counts[key] = q_counts.get(key, 0) + 1
+
+        docs = []
+        for title in sorted(chunk_counts):
+            docs.append({
+                "title": title,
+                "chunks": chunk_counts[title],
+                "questions": q_counts.get(title, 0),
+                # A document with chunks but no questions has been read but not yet
+                # turned into a quiz — the UI offers to generate for exactly these.
+                "ready": q_counts.get(title, 0) > 0,
+            })
+
+        files = []
+        if DOCUMENTS.exists():
+            files = sorted(p.name for p in DOCUMENTS.iterdir()
+                           if p.suffix.lower() in (".pdf", ".txt", ".md"))
+
+        return self._send({
+            "documents": docs,
+            "files": files,
+            "generator": _generator_label(),
+            "uploadDir": str(DOCUMENTS),
+        })
+
+    def _upload(self):
+        """
+        Accept an uploaded document, extract it, and start generating questions.
+
+        Extraction is fast and happens inline, so the response can immediately say how
+        many chunks and sections were found — or that the file was a scan with no
+        extractable text, which is the single most common failure and worth reporting
+        straight away rather than after a long silence.
+
+        Generation is slow (tens of seconds per chunk against a real model) so it runs
+        on a background thread and the browser polls /api/jobs/<id>. Doing it inline
+        would hold the request open for minutes and time out.
+        """
+        ctype = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in ctype or "boundary=" not in ctype:
+            return self._error(400, "Expected a file upload",
+                               "Send multipart/form-data with a 'file' part.")
+
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            return self._error(400, "Empty upload", "No content was sent.")
+        if length > MAX_UPLOAD:
+            return self._error(
+                413, "File too large",
+                "{} is over the {} MB limit.".format(
+                    _human_size(length), MAX_UPLOAD // (1024 * 1024)),
+            )
+
+        boundary = ctype.split("boundary=", 1)[1].strip().strip('"')
+        raw = self.rfile.read(length)
+        parts = _parse_multipart(raw, boundary)
+
+        filename = parts.get("filename") or ""
+        content = parts.get("content") or b""
+        if not filename or not content:
+            return self._error(400, "No file received", "The 'file' part was missing or empty.")
+
+        # Take only the basename: an uploaded name like ../../etc/passwd must not be
+        # able to escape the documents directory.
+        safe = Path(filename).name
+        if Path(safe).suffix.lower() not in (".pdf", ".txt", ".md"):
+            return self._error(
+                415, "Unsupported file type",
+                "Only .pdf, .txt and .md can be read. Got {!r}.".format(Path(safe).suffix or "no extension"),
+            )
+
+        DOCUMENTS.mkdir(parents=True, exist_ok=True)
+        target = DOCUMENTS / safe
+        target.write_bytes(content)
+
+        # Extract now so problems surface immediately.
+        sys.path.insert(0, str(REPO / "src"))
+        from quizgen.ingest import ingest_document
+
+        try:
+            chunks = ingest_document(target)
+        except Exception as exc:  # noqa: BLE001
+            # A file we cannot read is not kept — it would otherwise be retried on
+            # every future ingest and fail the same way each time.
+            target.unlink(missing_ok=True)
+            return self._error(422, "Could not read this document", _read_failure_reason(exc))
+
+        if not chunks:
+            target.unlink(missing_ok=True)
+            return self._error(
+                422, "No teachable content found",
+                "Text was extracted but nothing usable was found in it.",
+            )
+
+        doc_title = chunks[0].doc_title
+        # Two different documents must never share a title: they would merge into one
+        # training, mixing roles and letting set_chunk_roles tag the wrong sections.
+        # A real pack of 16 role briefs all began with the same letterhead and would
+        # have collapsed into a single module.
+        with Bank(DB) as bank:
+            existing_ids = {
+                c.doc_title: c.doc_id for c in bank.all_chunks()
+            }
+        if doc_title in existing_ids and existing_ids[doc_title] != chunks[0].doc_id:
+            doc_title = "{} ({})".format(doc_title, Path(safe).stem.replace("_", " "))
+            for c in chunks:
+                c.doc_title = doc_title
+
+        topics = sorted({c.topic for c in chunks})
+
+        # Chunks are saved now (so nothing is lost), but NOT tagged with roles and
+        # NOT generated from. gpt-5 proposes a section->role mapping; the manager
+        # confirms it in the UI; only then does /api/documents/confirm tag chunks
+        # and start generation. The AI proposes, the manager decides.
+        with Bank(DB) as bank:
+            bank.save_chunks(chunks)
+            from quizgen.rolemap import analyze_document, seed_roles
+            seed_roles(bank)
+            known_roles = bank.roles()
+
+        sections = {}
+        for c in chunks:
+            sections.setdefault(c.topic, c.text)
+
+        try:
+            mapping = analyze_document(doc_title, sections, known_roles)
+        except RuntimeError as exc:
+            # No credentials. The chunks stay saved; the error says exactly what is
+            # missing rather than degrading to a silent guess.
+            return self._error(503, "Role mapping needs the real model", str(exc)[:300])
+        except Exception as exc:  # noqa: BLE001
+            return self._error(502, "Role analysis failed", "{}: {}".format(
+                type(exc).__name__, str(exc)[:250]))
+
+        return self._send({
+            "file": safe,
+            "title": doc_title,
+            "chunks": len(chunks),
+            "topics": topics,
+            "summary": mapping.summary,
+            # topic -> proposed role ("ALL", a known code, or the document's own
+            # words for a role the company hasn't defined)
+            "proposedRoles": mapping.assignments,
+            "unknownRoles": mapping.unknown_roles,
+            # Sections too thin to build a module from. Per the team's rule this is
+            # the manager's problem to solve with more material — never the web's.
+            "thinTopics": mapping.thin_topics,
+            "knownRoles": known_roles,
+            "generator": _generator_label(),
+            "needsConfirmation": True,
+        }, 201)
+
+    def _confirm_document(self):
+        """
+        The manager has reviewed the proposed mapping. Apply it and generate.
+
+        Body: { title, assignments: {topic: role_code|ALL}, newRoles: [{roleCode,
+        title, description}], supersede: "<existing title>"|"" }
+
+        newRoles here are roles the MANAGER chose to add after seeing the document's
+        unknown-role flags — the AI only ever surfaced them.
+        """
+        body = self._body()
+        doc_title = str(body.get("title", "")).strip()
+        assignments = body.get("assignments") or {}
+        if not doc_title or not isinstance(assignments, dict):
+            return self._error(400, "Missing title or assignments")
+
+        with Bank(DB) as bank:
+            for r in body.get("newRoles") or []:
+                code = str(r.get("roleCode", "")).strip().upper().replace(" ", "_")
+                if code:
+                    bank.add_role(code, str(r.get("title", code)),
+                                  str(r.get("description", "")))
+
+            known = {r["role_code"] for r in bank.roles()} | {"ALL"}
+            bad = {t: r for t, r in assignments.items()
+                   if str(r).upper().replace(" ", "_") not in known}
+            if bad:
+                return self._error(
+                    422, "Unknown role in assignments",
+                    "Not in the company role list: {}. Add the role first or map "
+                    "these sections to an existing one.".format(
+                        ", ".join(sorted({str(v) for v in bad.values()}))),
+                )
+
+            normalized = {t: str(r).upper().replace(" ", "_")
+                          for t, r in assignments.items()}
+            tagged = bank.set_chunk_roles(doc_title, normalized)
+
+            # Update-vs-add was decided by gpt-5 and shown to the manager before
+            # this call; supersede arrives here already reviewed. Old questions stop
+            # being served; passes already earned hold until their one-year expiry.
+            retired = 0
+            supersede = str(body.get("supersede", "")).strip()
+            if supersede and supersede != doc_title:
+                retired = bank.retire_document_questions(supersede)
+
+        job_id = _start_generation_job(doc_title)
+        return self._send({
+            "title": doc_title,
+            "taggedChunks": tagged,
+            "retiredQuestions": retired,
+            "superseded": supersede,
+            "jobId": job_id,
+        })
+
+    def _list_roles(self):
+        with Bank(DB) as bank:
+            from quizgen.rolemap import seed_roles
+            seed_roles(bank)
+            roles = bank.roles()
+            # Which roles actually have servable material, for the login picker.
+            counts = {}
+            for q in bank.questions(status=ReviewStatus.APPROVED):
+                for code in (q.role_code or "ALL").split(","):
+                    counts[code.strip().upper()] = counts.get(code.strip().upper(), 0) + 1
+        return self._send({
+            "roles": [
+                {**r, "questionCount": counts.get(r["role_code"], 0) + counts.get("ALL", 0)}
+                for r in roles
+            ],
+        })
+
+    def _add_role(self):
+        body = self._body()
+        code = str(body.get("roleCode", "")).strip().upper().replace(" ", "_")
+        title = str(body.get("title", "")).strip()
+        if not code or not title:
+            return self._error(400, "roleCode and title are required")
+        with Bank(DB) as bank:
+            bank.add_role(code, title, str(body.get("description", "")))
+        return self._send({"roleCode": code, "title": title}, 201)
+
+    def _remove_role(self, code: str):
+        with Bank(DB) as bank:
+            removed = bank.remove_role(code)
+        if not removed:
+            return self._error(404, "No such role", code)
+        return self._send({"removed": code})
+
+    def _job_status(self, job_id: str):
+        job = _JOBS.get(job_id)
+        if job is None:
+            return self._error(404, "Unknown job", job_id)
+        return self._send(dict(job))
+
+    # ------------------------------------------------------------------
+    # endpoints backing the React UI
+    # ------------------------------------------------------------------
+
+    def _trainings(self):
+        """
+        Source documents, presented as the UI's "trainings".
+
+        The mapping the frontend assumes:
+            training = source document       (Behavioral Compliance for Employees)
+            module   = section heading in it (Recognising Phishing Attempts)
+
+        This is the same grain mastery is measured on, so the progress ring on a
+        training card and the weak-topic targeting in the quiz engine agree with each
+        other. Deriving it any other way would let the UI show 90% on a subject the
+        engine considers weak.
+        """
+        learner = self._learner()
+        role = self._learner_role()
+        with Bank(DB) as bank:
+            approved = bank.questions(status=ReviewStatus.APPROVED)
+            mastery = bank.mastery(learner)
+            chunks = bank.all_chunks()
+            passes = _latest_passes(bank, learner)
+
+        # Role isolation happens HERE, on the serving side. A Sales Manager must not
+        # even see that Cloud DevOps modules exist, let alone take them. A document
+        # counts for this learner if any of its questions is in scope for their role
+        # (or scoped ALL — the miscellaneous-everyone material).
+        from quizgen.adaptive import scope_matches
+        if role:
+            approved = [q for q in approved if scope_matches(q.role_code, role)]
+
+        modules_by_doc: Dict[str, list] = {}
+        visible_docs = {q.source_doc_title or q.topic for q in approved}
+        for c in chunks:
+            if c.doc_title not in visible_docs:
+                continue
+            modules_by_doc.setdefault(c.doc_title, [])
+            if c.topic not in modules_by_doc[c.doc_title]:
+                modules_by_doc[c.doc_title].append(c.topic)
+
+        counts: Dict[str, int] = {}
+        for q in approved:
+            key = q.source_doc_title or q.topic
+            counts[key] = counts.get(key, 0) + 1
+
+        out = []
+        for doc, n in sorted(counts.items()):
+            m = mastery.get(doc)
+            answered = m.answered if m else 0
+            accuracy = round(m.accuracy * 100, 1) if m else 0
+            # Status is derived from evidence, not from a stored flag: a learner who
+            # has answered nothing has not started, and one at/above the pass mark
+            # has completed it.
+            if answered == 0:
+                status = "not-started"
+            elif accuracy >= PASSING_SCORE:
+                status = "completed"
+            else:
+                status = "in-progress"
+            passed_at = passes.get(doc)
+            expires_at = _plus_one_year(passed_at) if passed_at else None
+            expired = bool(expires_at and expires_at < _now())
+            out.append({
+                "id": doc,
+                "title": doc,
+                "status": status,
+                # Compliance is passed-within-a-year: a pass older than the renewal
+                # window no longer counts, and the module owes a retake.
+                "compliant": bool(passed_at) and not expired,
+                "passedAt": passed_at,
+                "expiresAt": expires_at,
+                "expired": expired,
+                "mastery": int(accuracy),
+                "answered": answered,
+                "questionCount": n,
+                "modules": modules_by_doc.get(doc, []),
+            })
+        return self._send({"trainings": out})
+
+    def _lesson(self, query):
+        """
+        The reading a learner sees before the quiz — the actual indexed source text.
+
+        This is not filler. Questions are generated from these chunks, so the lesson a
+        learner reads and the questions they are asked come from the same passages. If
+        this returned anything else, the UI would promise "the questions come straight
+        from it" and be lying.
+        """
+        training = (query.get("training") or [""])[0]
+        with Bank(DB) as bank:
+            chunks = [c for c in bank.all_chunks() if c.doc_title == training]
+
+        if not chunks:
+            return self._error(404, "No lesson content", "Nothing indexed for {!r}.".format(training))
+
+        sections, seen = [], set()
+        for c in chunks:
+            if c.topic in seen:
+                continue
+            seen.add(c.topic)
+            sections.append({
+                "heading": c.topic,
+                "body": c.text,
+                "sourceUrl": c.source_url or "",
+                "page": c.page_start,
+            })
+
+        words = sum(len(s["body"].split()) for s in sections)
+        return self._send({
+            "title": training,
+            # 200wpm, floored at a minute so a short doc never reads "0 min".
+            "readTime": "{} min read".format(max(1, round(words / 200))),
+            "sections": sections,
+        })
+
+    def _certificates(self):
+        """Passed attempts. A certificate is a passed attempt, not a separate record."""
+        learner = self._learner()
+        with Bank(DB) as bank:
+            rows = bank.conn.execute(
+                """SELECT attempt_id, submitted_at, score_percent
+                   FROM attempts
+                   WHERE learner_id = ? AND passed = 1 AND submitted_at IS NOT NULL
+                   ORDER BY submitted_at DESC""",
+                (learner,),
+            ).fetchall()
+            certs = []
+            for r in rows:
+                # Name the certificate after whatever the attempt actually covered.
+                topics = bank.conn.execute(
+                    """SELECT q.source_doc_title AS doc, COUNT(*) AS n
+                       FROM responses r JOIN questions q ON q.question_id = r.question_id
+                       WHERE r.attempt_id = ? AND q.source_doc_title != ''
+                       GROUP BY doc ORDER BY n DESC LIMIT 1""",
+                    (r["attempt_id"],),
+                ).fetchone()
+                expires = _plus_one_year(r["submitted_at"] or "")
+                certs.append({
+                    "title": topics["doc"] if topics else "General Compliance",
+                    "date": (r["submitted_at"] or "")[:10],
+                    "score": round(r["score_percent"], 1),
+                    # Certificates renew yearly; an expired one is shown, marked, and
+                    # owed again — not silently dropped from the list.
+                    "expiresAt": expires[:10],
+                    "expired": bool(expires and expires < _now()),
+                })
+        return self._send({"certificates": certs})
+
+    def _answer(self):
+        """
+        Grade ONE question, mid-quiz, so the UI can give immediate feedback.
+
+        This endpoint exists because the alternative was worse. The React UI checks
+        answers as they are given and shows an explanation straight away — good design,
+        but it was doing that against a `correct` index held in the browser. Shipping
+        the key to the client puts every answer one devtools panel away.
+
+        So the browser sends what was picked and gets back a verdict. The key is
+        revealed for THAT question only, and only after an answer was committed, which
+        is exactly what the UI needs to render its correct/incorrect states and nothing
+        more.
+
+        Grading here is identical to the arithmetic in _submit; the final score is
+        still computed server-side at submit and never trusted from the client.
+        """
+        body = self._body()
+        attempt_id = body.get("attemptId", "")
+        question_id = body.get("questionId", "")
+
+        served = _IN_FLIGHT.get(attempt_id)
+        if served is None:
+            return self._error(404, "Unknown attempt", "Start a quiz first.")
+        # Only a question actually served in this attempt may be graded, or this
+        # becomes an oracle for reading the answer to any question in the bank.
+        if question_id not in served:
+            return self._error(403, "Not part of this attempt", question_id)
+
+        with Bank(DB) as bank:
+            question = bank.get_question(question_id)
+        if question is None:
+            return self._error(404, "Unknown question", question_id)
+
+        if question.question_type == QuestionType.FILL_IN_BLANK:
+            typed = str(body.get("textAnswer", "")).strip().lower()
+            accepted = {a.strip().lower() for a in question.accepted_answers}
+            correct = bool(typed) and typed in accepted
+        else:
+            selected = set(body.get("selectedOptionIds") or [])
+            key = {o.option_id for o in question.options if o.is_correct}
+            correct = bool(key) and selected == key
+
+        return self._send({
+            "questionId": question_id,
+            "correct": correct,
+            "correctOptionIds": [o.option_id for o in question.options if o.is_correct],
+            "acceptedAnswers": question.accepted_answers,
+            "explanation": question.explanation,
+            "sourceTitle": question.source_doc_title,
+            "sourceUrl": question.source_url,
+            "sourceQuote": question.source_quote,
+            "provenance": question.provenance_class.value,
+        })
+
+    def _start(self):
+        body = self._body()
+        learner = body.get("learnerId") or self._learner()
+        length = int(body.get("length") or QUIZ_LENGTH)
+        role = body.get("role", "")
+
+        training = body.get("training", "")
+        # The header wins over the body: an employee cannot request another role's
+        # quiz by editing the POST payload in devtools.
+        role = self._learner_role() or role
+
+        with Bank(DB) as bank:
+            plan = build_quiz(bank, learner_id=learner, length=length, role=role)
+
+            # Scoping to one training happens after assembly rather than inside
+            # build_quiz: the adaptive engine still decides which topics within the
+            # document are worth asking about, and only the document is constrained.
+            if training:
+                from quizgen.adaptive import scope_matches
+                scoped = [q for q in plan.questions if (q.source_doc_title or q.topic) == training]
+                if len(scoped) < length:
+                    # The top-up pool must apply the SAME role filter build_quiz did.
+                    # It once refilled from the whole bank unfiltered, which handed a
+                    # Customer Service rep a Sales Manager question — the exact leak
+                    # the role scope exists to prevent.
+                    pool = [
+                        q for q in bank.questions(status=ReviewStatus.APPROVED)
+                        if (q.source_doc_title or q.topic) == training
+                        and (not role or scope_matches(q.role_code, role))
+                        and q.question_id not in {s.question_id for s in scoped}
+                    ]
+                    scoped.extend(pool[: length - len(scoped)])
+                plan.questions = scoped
+
+        if not plan.questions:
+            return self._error(
+                409, "No questions available",
+                "The bank has no approved questions matching this learner and role. "
+                "Run `quizgen generate`, then `quizgen review --approve-all`.",
+            )
+
+        attempt_id = "att_" + uuid.uuid4().hex[:12]
+        _IN_FLIGHT[attempt_id] = [q.question_id for q in plan.questions]
+
+        # THE ANSWER KEY IS NOT IN THIS PAYLOAD.
+        #
+        # No is_correct, no accepted_answers, no explanation. Option ids go out so the
+        # browser can say which one was picked; only the server knows which id is right.
+        # Sending the key and hiding it in the UI would put every answer one devtools
+        # panel away.
+        self._send({
+            "attemptId": attempt_id,
+            "learnerId": learner,
+            "startedAt": _now(),
+            "passingScore": PASSING_SCORE,
+            "isRemedial": plan.is_remedial,
+            # Why these topics. Shown in the UI so a learner is never guessing at why
+            # a quiz looks the way it does.
+            "rationale": [
+                {
+                    "topic": t.topic,
+                    "questions": t.slots,
+                    "reason": t.reason,
+                    "accuracyPercent": None if t.accuracy is None else round(t.accuracy * 100, 1),
+                }
+                for t in plan.topic_plans
+            ],
+            "questions": [{
+                "questionId": q.question_id,
+                "topic": q.topic,
+                "difficulty": q.difficulty.value,
+                "type": q.question_type.value,
+                "prompt": q.prompt,
+                "points": q.points,
+                "options": [{"optionId": o.option_id, "text": o.text} for o in q.options],
+            } for q in plan.questions],
+        })
+
+    def _submit(self):
+        body = self._body()
+        attempt_id = body.get("attemptId", "")
+        learner = body.get("learnerId") or self._learner()
+        answers = {a.get("questionId"): a for a in body.get("answers", [])}
+
+        served = _IN_FLIGHT.get(attempt_id)
+        if served is None:
+            return self._error(
+                404, "Unknown attempt",
+                "Start a quiz first. Attempts are lost when the dev server restarts.",
+            )
+
+        with Bank(DB) as bank:
+            questions = {qid: bank.get_question(qid) for qid in served}
+
+            responses = []
+            awarded = possible = 0
+            detail = []
+
+            for qid in served:
+                question = questions.get(qid)
+                if question is None:
+                    continue
+                possible += question.points
+                given = answers.get(qid, {})
+
+                # Grading is arithmetic, not a model call. A learner disputing a score
+                # has to be able to be shown exactly why it came out that way.
+                if question.question_type == QuestionType.FILL_IN_BLANK:
+                    typed = str(given.get("textAnswer", "")).strip().lower()
+                    accepted = {a.strip().lower() for a in question.accepted_answers}
+                    correct = bool(typed) and typed in accepted
+                    selected = []
+                else:
+                    selected = list(given.get("selectedOptionIds") or [])
+                    key = {o.option_id for o in question.options if o.is_correct}
+                    correct = bool(key) and set(selected) == key
+
+                points = question.points if correct else 0
+                awarded += points
+
+                responses.append(Response(
+                    response_id="res_" + uuid.uuid4().hex[:12],
+                    attempt_id=attempt_id,
+                    learner_id=learner,
+                    question_id=qid,
+                    topic=question.topic,
+                    selected_option_ids=selected,
+                    text_answer=str(given.get("textAnswer", "")),
+                    is_correct=correct,
+                    points_awarded=points,
+                    answered_at=_now(),
+                ))
+
+                # The key is only revealed once the attempt is graded and closed.
+                detail.append({
+                    "questionId": qid,
+                    "topic": question.topic,
+                    "prompt": question.prompt,
+                    "correct": correct,
+                    "explanation": question.explanation,
+                    "correctOptionIds": [o.option_id for o in question.options if o.is_correct],
+                    "acceptedAnswers": question.accepted_answers,
+                    "sourceTitle": question.source_doc_title,
+                    "sourceUrl": question.source_url,
+                    "sourceQuote": question.source_quote,
+                    "provenance": question.provenance_class.value,
+                })
+
+            score = round(100.0 * awarded / possible, 1) if possible else 0.0
+            attempt = Attempt(
+                attempt_id=attempt_id,
+                learner_id=learner,
+                started_at=_now(),
+                submitted_at=_now(),
+                score_percent=score,
+                points_awarded=awarded,
+                points_possible=possible,
+                passed=score >= PASSING_SCORE,
+                responses=responses,
+            )
+            bank.save_attempt(attempt)
+
+            mastery = bank.mastery(learner)
+
+        _IN_FLIGHT.pop(attempt_id, None)
+
+        weak = sorted(
+            (m for m in mastery.values()
+             if m.answered >= MIN_ANSWERS and m.accuracy < WEAK_THRESHOLD),
+            key=lambda m: m.accuracy,
+        )
+        self._send({
+            "attemptId": attempt_id,
+            "scorePercent": score,
+            "pointsAwarded": awarded,
+            "pointsPossible": possible,
+            "passed": score >= PASSING_SCORE,
+            "passingScore": PASSING_SCORE,
+            "results": detail,
+            "weakTopics": [
+                {"topic": m.topic, "accuracyPercent": round(m.accuracy * 100, 1)}
+                for m in weak[:5]
+            ],
+        })
+
+
+def main() -> int:
+    # An empty bank is a normal starting state, not an error. Documents can be
+    # uploaded through the UI, and refusing to start here made that impossible:
+    # the one case where you most need the server is the case it rejected.
+    DB.parent.mkdir(parents=True, exist_ok=True)
+
+    with Bank(DB) as bank:
+        approved = len(bank.questions(status=ReviewStatus.APPROVED))
+        total = bank.stats().get("questions", 0)
+
+    port = int(os.getenv("PORT", "8000"))
+    print("\n  Employee Training — local dev server")
+    print("  " + "-" * 46)
+    print("  bank      {} ({} approved of {})".format(DB.name, approved, total))
+    print("  docs      {}".format(DOCUMENTS))
+    print("  generator {}{}".format(
+        _generator_label(),
+        "  (no API key needed, no cost)" if _generator_label() == "mock" else "  (billed per question)",
+    ))
+    print("  app       http://localhost:{}".format(port))
+    print("  api       http://localhost:{}/api/health".format(port))
+    if not approved:
+        print("\n  The bank is empty. Upload a PDF in the app to build one,")
+        print("  or from the command line:")
+        print("    python scripts/make_sample_pdfs.py")
+        print("    PYTHONPATH=src python -m quizgen.cli ingest --source local --pdf-dir data/documents")
+        print("    QUIZGEN_PROVIDER=mock PYTHONPATH=src python -m quizgen.cli generate")
+    print("\n  Ctrl-C to stop.\n")
+
+    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("\n  stopped.")

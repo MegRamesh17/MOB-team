@@ -7,3 +7,21 @@ __pycache__/
 *.tfstate.backup
 terraform.tfvars
 .DS_Store
+
+# quizgen
+.venv/
+data/output/
+data/documents/*.pdf
+data/documents/*.txt
+data/documents/*.md
+!data/documents/.gitkeep
+*.egg-info/
+
+# Backups created by scripts/load_env_from_vault.sh — contain live secrets
+.env.bak
+.env.*
+!.env.example
+
+# frontend build artefacts
+node_modules/
+web-app/dist/
