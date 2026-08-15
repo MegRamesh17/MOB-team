@@ -46,6 +46,10 @@ Inferred from the existing codebase on `ai-retry`. These work today and are not 
 
 The rebuild, in intended order. All are hypotheses until shipped.
 
+- [ ] One storage interface serves both Azure SQL and SQLite, and the same tests pass against both — a difference between them fails CI rather than surfacing at demo time
+- [ ] Database migrations and seed data are applied to Azure SQL by a pipeline, not by hand
+- [ ] The API and the web app are deployed by a pipeline that runs from `ai-retry`
+- [ ] A deployed environment is verifiable end to end: the deployed API reaches Azure SQL and reports a real question-bank count
 - [ ] User authenticates with a username and password; credentials are stored hashed, never plaintext
 - [ ] Credential store is a gitignored JSON file behind a provider interface, so Entra ID can replace it without touching callers
 - [ ] A signed-in user's role determines what they can see and do — access is enforced server-side, not in the UI
@@ -111,13 +115,19 @@ locally only, so moving to Azure SQL as the real backing store carries no data m
 - **Cost**: Document Intelligence is a new billable Azure resource not currently in `infra/` or `requirements.txt`. Question generation with gpt-5 costs roughly a cent per question; the `mock` provider must remain viable for offline development.
 - **Provenance**: every served question must trace to an approved source. This constrains generation, not just display — it is why open web search is excluded.
 - **Answer-key secrecy**: the answer key must never reach the browser before an attempt is graded. A key in the client is a key in devtools.
-- **Offline development must keep working**: `QUIZGEN_PROVIDER=mock` plus the SQLite dev server let the pipeline run with no Azure account. Azure SQL becoming the real store must not remove this.
+- **Offline development must keep working**: `QUIZGEN_PROVIDER=mock` plus the SQLite dev server let the pipeline run with no Azure account. Azure SQL becoming the real store must not remove this. `tests.yml` depends on it — that workflow has no Azure credentials by design, so a PR cannot deploy anything.
+- **No backend divergence**: SQLite and Azure SQL must not disagree. Something that works locally and fails in Azure is the failure mode to design against — it surfaces during a demo, which is the worst possible moment. Parity is enforced by running the same tests against both, not by care.
+- **Deployment branch**: the deploy pipeline runs from `ai-retry`. `terraform.yml` currently gates deploy to `main`, which never fires on the branches this project actually uses.
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Authorization is the first phase, before any new features | The RBAC schema exists but nothing enforces it. Every later feature (role-scoped training, manager upload, tenant isolation, Q Score visibility) depends on knowing who the caller is. Building them first means retrofitting auth through all of them. | — Pending |
+| Data layer and deployment pipelines come before authorization | Migrations have never been applied to Azure SQL by anything — `tests.yml` guards against UTF-16 breaking "sqlcmd in the deploy workflow," but no such step exists in `terraform.yml`. Auth cannot read a role or company from a database whose tables were never created. Getting deploy working first also makes every later phase demoable. | — Pending |
+| SQLite and Azure SQL both supported, with parity enforced by tests | A demo must work against real Azure SQL, but `tests.yml` deliberately holds no Azure credentials so a PR cannot deploy. Keeping both and running the same suite against each is what prevents "works on my machine, fails in the demo." | — Pending |
+| Deploy pipeline runs from `ai-retry`, not `main` | Commit 4a601c1 gated `terraform apply` to main-only to stop PRs applying infrastructure. The side effect is that nothing deploys from the branches this project uses. | — Pending |
+| Migrations 003 and 010 stay in place, documented as superseded | 011's header already explains why they are unused — they were designed around `content_agent.py` and have nowhere to put a citation, review status, or role scope. Deleting them would break replaying history against a fresh database. | — Pending |
+| Authorization is the next phase, before any new features | The RBAC schema exists but nothing enforces it. Every later feature (role-scoped training, manager upload, tenant isolation, Q Score visibility) depends on knowing who the caller is. Building them first means retrofitting auth through all of them. | — Pending |
 | Credentials in a gitignored JSON file, hashed, behind a provider interface | Fast to build and needs no Azure dependency, while the interface keeps Entra reachable. Hashing and gitignoring are non-negotiable because the repo is public. | — Pending |
 | Azure SQL is the real backing store; SQLite stays for local development | Migrations 001–011 already target Azure SQL, and the local DB work carries no migration burden. Keeping SQLite preserves the four-command offline path. | — Pending |
 | Azure Document Intelligence replaces pypdf for extraction | pypdf returns nothing for scanned PDFs and flattens tables and multi-column layouts. Defensible citation needs reliable page and section structure. | — Pending |
