@@ -294,15 +294,35 @@ function Button({ children, onClick, variant = "primary", disabled, className = 
 }
 
 // ---------- Login ----------
+/**
+ * Real sign-in. Username and password go to /api/auth/login, which returns a signed
+ * token; everything after that is authorised by the token.
+ *
+ * The role picker that used to live here is gone on purpose. It let the employee
+ * declare their own role, and the server believed it. Role now comes from the
+ * credential store, arrives inside the signed token, and cannot be chosen at sign-in.
+ */
 function Login({ onLogin }) {
-  const [role, setRole] = useState("employee");
-  // The employee declares their company role at sign-in. Self-declared for now;
-  // the team has parked verifying it until real identity exists. Everything the
-  // employee sees is filtered server-side to this role plus the everyone-modules.
-  const [companyRole, setCompanyRole] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
   const { data: h } = useAsync(() => api.health().catch(() => null), []);
-  const rolesQ = useAsync(() => api.roles().catch(() => ({ roles: [] })), []);
-  const companyRoles = rolesQ.data?.roles || [];
+
+  const submit = async (e) => {
+    e?.preventDefault();
+    if (!username || !password || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onLogin(await api.login(username.trim(), password));
+    } catch (err) {
+      setError(err.message || "Sign-in failed");
+      setPassword("");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="min-h-screen flex items-center justify-center" style={{ ...font, background: `linear-gradient(160deg, ${C.violet900} 0%, ${C.violet700} 45%, ${C.violet500} 100%)` }}>
@@ -312,58 +332,47 @@ function Login({ onLogin }) {
           <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Sign in</h1>
           <p style={{ color: C.sub }} className="text-sm mb-6">Quiz-based compliance training</p>
 
-          <label style={{ color: C.ink }} className="text-sm font-semibold block mb-2">Sign in as</label>
-          <div className="grid grid-cols-2 gap-3 mb-6">
-            {["employee", "manager"].map((r) => (
-              <button
-                key={r}
-                onClick={() => setRole(r)}
-                style={{
-                  borderColor: role === r ? C.violet700 : C.line,
-                  background: role === r ? C.lavender : "#fff",
-                  color: role === r ? C.violet700 : C.sub,
-                }}
-                className="border rounded-xl py-3 text-sm font-semibold capitalize transition-colors"
-              >
-                {r}
-              </button>
-            ))}
-          </div>
-
-          {role === "employee" && (
+          <form onSubmit={submit}>
             <div className="mb-4">
-              <label style={{ color: C.ink }} className="text-sm font-semibold block mb-2">Your role</label>
-              <select value={companyRole} onChange={(e) => setCompanyRole(e.target.value)}
-                style={{ borderColor: C.line, color: C.ink }}
-                className="w-full border rounded-xl px-3 py-2.5 text-sm bg-white">
-                <option value="">— select your role —</option>
-                {companyRoles.map((r) => (
-                  <option key={r.role_code} value={r.role_code}>{r.title}</option>
-                ))}
-              </select>
-              <p style={{ color: C.sub }} className="text-xs mt-1.5">
-                You'll only see training for this role, plus the modules everyone takes.
-              </p>
+              <label style={{ color: C.ink }} className="text-sm font-semibold block mb-2">Email</label>
+              <input
+                type="email"
+                autoComplete="username"
+                autoFocus
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="you@company.com"
+                style={{ borderColor: error ? C.danger : C.line, color: C.ink }}
+                className="w-full border rounded-xl px-3 py-2.5 text-sm bg-white"
+              />
             </div>
-          )}
-          <div className="mb-4">
-            <label style={{ color: C.ink }} className="text-sm font-semibold block mb-2">Email</label>
-            <input readOnly value={PROFILES[role].email}
-              style={{ borderColor: C.line, color: C.ink }} className="w-full border rounded-xl px-3 py-2.5 text-sm bg-gray-50" />
-          </div>
-          <div className="mb-6">
-            <label style={{ color: C.ink }} className="text-sm font-semibold block mb-2">Password</label>
-            <input readOnly type="password" value="••••••••" style={{ borderColor: C.line, color: C.ink }} className="w-full border rounded-xl px-3 py-2.5 text-sm bg-gray-50" />
-          </div>
-          <Button className="w-full" onClick={() => onLogin(role, companyRole)}
-            disabled={role === "employee" && !companyRole}>
-            {role === "employee" && !companyRole ? "Select your role to sign in" : "Sign in"}
-          </Button>
+            <div className="mb-6">
+              <label style={{ color: C.ink }} className="text-sm font-semibold block mb-2">Password</label>
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                style={{ borderColor: error ? C.danger : C.line, color: C.ink }}
+                className="w-full border rounded-xl px-3 py-2.5 text-sm bg-white"
+              />
+            </div>
 
-          {/* Sign-in is not implemented; the backend takes the learner from a header.
-              Saying so here beats letting a reviewer assume auth exists. */}
+            {error && (
+              <p style={{ color: C.danger }} className="text-sm mb-4 text-center">{error}</p>
+            )}
+
+            <Button className="w-full" type="submit" disabled={!username || !password || busy}>
+              {busy ? "Signing in…" : "Sign in"}
+            </Button>
+          </form>
+
+          {/* No role picker: role comes from the credential store inside a signed
+              token. Letting the user choose it at sign-in is what made the old screen
+              a demo rather than a login. */}
           <p style={{ color: C.sub }} className="text-xs text-center mt-4">
-            Demo sign-in — no password is checked. Role decides what you see next.
+            Your role decides what training you see. It comes from your account, not
+            from this screen.
           </p>
           {h && (
             <p style={{ color: C.sub }} className="text-xs text-center mt-2">
@@ -1831,8 +1840,17 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
 }
 
 // ---------- Profile ----------
-function Profile({ role }) {
-  const p = PROFILES[role];
+function Profile({ role, principal }) {
+  // Identity comes from the signed-in principal. The persona in PROFILES is only a
+  // fallback for the fields that still have no backend (joined date, streak) — using
+  // it for name or email would show "Daniel Cho" to whoever actually signed in.
+  const persona = PROFILES[role];
+  const p = {
+    ...persona,
+    name: principal?.name || persona.name,
+    email: principal?.email || persona.email,
+    role: principal?.role_code || persona.role,
+  };
   const { data: meData, loading, error, reload } = useAsync(() => api.me(), []);
   const { data: certData } = useAsync(() => api.certificates().catch(() => ({ certificates: [] })), []);
   const { data: trainData } = useAsync(() => api.trainings().catch(() => ({ trainings: [] })), []);
@@ -1967,8 +1985,24 @@ function Profile({ role }) {
 }
 
 // ---------- App ----------
+/**
+ * Turns a principal's access_role into the two-way split the UI navigation uses.
+ *
+ * The server knows five tiers (employee, manager, director, admin, executive); the
+ * screens only distinguish "sees a team" from "takes training". Anyone at manager or
+ * above gets the manager navigation. Keeping the collapse in one named function means
+ * the tier list lives in one place if a director ever needs its own view.
+ */
+const MANAGER_TIERS = ["manager", "director", "admin", "executive"];
+const uiRole = (principal) =>
+  MANAGER_TIERS.includes(principal?.access_role) ? "manager" : "employee";
+
 export default function App() {
   const [auth, setAuth] = useState(null);
+  // Distinct from "signed out": on load we may hold a token that still needs
+  // checking. Showing the sign-in screen during that check makes a valid session
+  // flicker to a login form on every refresh.
+  const [restoring, setRestoring] = useState(true);
   const [view, setView] = useState("dashboard");
   const [training, setTraining] = useState(null);
   const [quiz, setQuiz] = useState(null);
@@ -1976,20 +2010,35 @@ export default function App() {
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState(null);
 
-  if (!auth) {
+  const signIn = useCallback((principal) => {
+    const role = uiRole(principal);
+    setAuth({ ...principal, role });
+    setView(role === "manager" ? "team" : "dashboard");
+  }, []);
+
+  // Restore a session from the stored token. api.currentUser() returns null and
+  // clears the token if it has expired, so a stale token signs you out cleanly
+  // rather than failing every subsequent call.
+  useEffect(() => {
+    let cancelled = false;
+    api.currentUser()
+      .then((principal) => { if (!cancelled && principal) signIn(principal); })
+      .catch(() => { /* unreachable API means signed out, not broken */ })
+      .finally(() => { if (!cancelled) setRestoring(false); });
+    return () => { cancelled = true; };
+  }, [signIn]);
+
+  if (restoring) {
     return (
-      <Login
-        onLogin={(role, companyRole) => {
-          const profile = PROFILES[role];
-          // Each persona+role is its own learner so histories stay separate and
-          // switching roles at login demonstrates the isolation cleanly.
-          api.setLearner(companyRole ? `${profile.email}:${companyRole}` : profile.email);
-          api.setLearnerRole(role === "employee" ? companyRole : "");
-          setAuth({ role, name: profile.name, companyRole });
-          setView(role === "manager" ? "team" : "dashboard");
-        }}
-      />
+      <div className="min-h-screen flex items-center justify-center"
+           style={{ ...font, background: `linear-gradient(160deg, ${C.violet900} 0%, ${C.violet700} 45%, ${C.violet500} 100%)` }}>
+        <Logo size={36} />
+      </div>
     );
+  }
+
+  if (!auth) {
+    return <Login onLogin={signIn} />;
   }
 
   const goto = (v) => setView(v);
@@ -2011,7 +2060,7 @@ export default function App() {
 
   let content;
   if (view === "profile") {
-    content = <Profile role={auth.role} />;
+    content = <Profile role={auth.role} principal={auth} />;
   } else if (view === "documents") {
     content = <DocumentsScreen onDone={() => goto(auth.role === "manager" ? "team" : "dashboard")} />;
   } else if (auth.role === "manager") {
@@ -2051,7 +2100,11 @@ export default function App() {
       name={auth.name}
       active={quizViews.includes(view) ? "dashboard" : view}
       setActive={goto}
-      onLogout={() => setAuth(null)}
+      onLogout={async () => {
+        await api.logout();
+        setAuth(null);
+        setView("dashboard");
+      }}
     >
       {content}
     </Shell>
