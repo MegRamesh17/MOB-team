@@ -11,6 +11,32 @@ Requirements marked **(preserve)** describe behaviour that works today but chang
 substantively under authentication and tenancy — the capability exists, the code path does
 not survive untouched.
 
+### Data Layer & Backend Parity
+
+- [ ] **DATA-01**: A single storage interface serves both Azure SQL and SQLite; no caller knows which backend is active
+- [ ] **DATA-02**: The question bank — chunks, questions, attempts, responses, mastery — goes through that interface; no direct `sqlite3` or `pyodbc` call remains in a caller
+- [ ] **DATA-03**: The same test suite runs against both SQLite and Azure SQL and passes identically
+- [ ] **DATA-04**: A behavioural difference between the two backends fails CI, rather than surfacing during a demo
+- [ ] **DATA-05**: Migrations 003 and 010 are documented as superseded and unused, so nobody builds on them
+
+### Deployment & Seed
+
+Deployment is owned by teammates (their Track 0 and Track G). Only the gap nobody owns
+stays in this roadmap.
+
+- [ ] **DEPLOY-02**: A pipeline loads seed data — companies, departments, teams, roles, employees — into Azure SQL. `migrate-database.yml` applies schema but has no seed step, so `db/seed/org_seed.sql` and `seed_data.sql` have never run. Without seeded rows, sign-in has no role or company to resolve.
+
+**Owned by teammates, tracked as external dependencies — not built here:**
+
+| Was | Now covered by |
+|-----|----------------|
+| DEPLOY-01 migration runner | Built: `.github/workflows/migrate-database.yml` (commit `2d0586c`) |
+| DEPLOY-03 deploy `api/` | Teammate Track 0 step 4, Track G step 2 |
+| DEPLOY-04 deploy `web-app/` | Teammate Track G step 3 |
+| DEPLOY-05 Key Vault secret | Teammate Track 0 step 2 (merged as `24a6b70`) |
+| DEPLOY-06 deploy branch | Resolved: `terraform apply` stays gated to `main` |
+| DEPLOY-07 health check | Teammate Track 0 step 5 |
+
 ### Authentication & Authorization
 
 - [ ] **AUTH-01**: User can sign in with a username and password
@@ -42,7 +68,7 @@ not survive untouched.
 ### Document Upload
 
 - [ ] **UPLOAD-01**: A manager or above can upload a PDF from the web UI
-- [ ] **UPLOAD-02**: The set of roles a user may upload for is computed from their position in the Departments > Teams > Roles hierarchy
+- [ ] **UPLOAD-02**: The set of roles a user may upload for is the set of roles held by anyone in their `Employees.manager_id` reporting subtree. Both hierarchies are used for what each is good at: `manager_id` (migration 001) determines *which people* report to you; `Departments > Teams > Roles` (migration 006) determines *which role* each of them holds, and roles are what an upload targets
 - [ ] **UPLOAD-03**: An upload targeting a role outside the uploader's org subtree is rejected server-side
 - [ ] **UPLOAD-04**: An uploaded document lands in the blob container matching its target role
 - [ ] **UPLOAD-05**: An uploaded document is ingested into the question bank without a manual CLI step
@@ -66,12 +92,26 @@ not survive untouched.
 
 ### Q Score
 
+> ⚠️ **UNRESOLVED — settle with the team before this phase is planned.** "Q Score" currently
+> names two different things. `docs/roadmap-online-sourcing-and-renewal.md` §3 defines it as
+> a **per-employee compliance rollup**: `100 x Coverage x (0.75 + 0.25 x Quality)`, one number
+> per person, driven by unexpired certificate coverage. A teammate's task breakdown defines it
+> as a **per-attempt performance score**: `raw score % x difficulty weight x consistency
+> factor`, computed in `POST /quiz/submit` and stored as a `q_score` column on the Certificates
+> row beside `attempt_id`.
+>
+> These differ in grain, subject, and consumer. They are compatible if renamed — the per-attempt
+> number is a natural input to the `Quality` term of the rollup — but shipping both under one
+> name makes "Q Score 82" ambiguous between "82% compliant" and "scored 82 on one quiz".
+> Requirements below assume the rollup definition. If the team picks the other, QSCORE-01,
+> QSCORE-02, and QSCORE-04 all change.
+
 - [ ] **QSCORE-01**: Q Score is computed as `100 x Coverage x (0.75 + 0.25 x Quality)`
 - [ ] **QSCORE-02**: Coverage counts only unexpired certificates, against the role's admin-configured required list
 - [ ] **QSCORE-03**: When an assessment is retaken, the best score is the score of record
 - [ ] **QSCORE-04**: Behavioural and technical Q Scores are reported separately as well as combined
 - [ ] **QSCORE-05**: An employee can see their own Q Score
-- [ ] **QSCORE-06**: Everyone above an employee in the org chart can see that employee's Q Score
+- [ ] **QSCORE-06**: Everyone above an employee in the `Employees.manager_id` reporting chain can see that employee's Q Score
 
 ### Renewal
 
@@ -127,13 +167,90 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| _(pending roadmap)_ | — | — |
+| DATA-01 | Phase 2 — Data Layer & Backend Parity | Pending |
+| DATA-02 | Phase 2 — Data Layer & Backend Parity | Pending |
+| DATA-03 | Phase 2 — Data Layer & Backend Parity | Pending |
+| DATA-04 | Phase 2 — Data Layer & Backend Parity | Pending |
+| DATA-05 | Phase 2 — Data Layer & Backend Parity | Pending |
+| DEPLOY-02 | Phase 1 — Real Sign-In End to End | Pending |
+| AUTH-01 | Phase 1 — Real Sign-In End to End | Pending |
+| AUTH-02 | Phase 1 — Real Sign-In End to End | Pending |
+| AUTH-03 | Phase 1 — Real Sign-In End to End | Pending |
+| AUTH-04 | Phase 1 — Real Sign-In End to End | Pending |
+| AUTH-05 | Phase 1 — Real Sign-In End to End | Pending |
+| AUTH-06 | Phase 3 — Server-Side Authorization & Tenant Scoping | Pending |
+| AUTH-07 | Phase 1 — Real Sign-In End to End | Pending |
+| TENANT-01 | Phase 1 — Real Sign-In End to End | Pending |
+| TENANT-02 | Phase 3 — Server-Side Authorization & Tenant Scoping | Pending |
+| TENANT-03 | Phase 3 — Server-Side Authorization & Tenant Scoping | Pending |
+| TENANT-04 | Phase 6 — Manager Upload Scoped by Org Chart | Pending |
+| TENANT-05 | Phase 10 — Tenant Isolation Proof & Honest Surface | Pending |
+| DOC-01 | Phase 5 — Document Intelligence Extraction | Pending |
+| DOC-02 | Phase 5 — Document Intelligence Extraction | Pending |
+| DOC-03 | Phase 5 — Document Intelligence Extraction | Pending |
+| DOC-04 | Phase 5 — Document Intelligence Extraction | Pending |
+| DOC-05 | Phase 5 — Document Intelligence Extraction | Pending |
+| DOC-06 | Phase 5 — Document Intelligence Extraction | Pending |
+| DOC-07 | Phase 5 — Document Intelligence Extraction | Pending |
+| UPLOAD-01 | Phase 6 — Manager Upload Scoped by Org Chart | Pending |
+| UPLOAD-02 | Phase 6 — Manager Upload Scoped by Org Chart | Pending |
+| UPLOAD-03 | Phase 6 — Manager Upload Scoped by Org Chart | Pending |
+| UPLOAD-04 | Phase 6 — Manager Upload Scoped by Org Chart | Pending |
+| UPLOAD-05 | Phase 6 — Manager Upload Scoped by Org Chart | Pending |
+| TRAIN-01 | Phase 4 — Role-Scoped Training on Authenticated Identity | Pending |
+| TRAIN-02 | Phase 4 — Role-Scoped Training on Authenticated Identity | Pending |
+| TRAIN-03 | Phase 4 — Role-Scoped Training on Authenticated Identity | Pending |
+| TRAIN-04 | Phase 4 — Role-Scoped Training on Authenticated Identity | Pending |
+| TRAIN-05 | Phase 4 — Role-Scoped Training on Authenticated Identity | Pending |
+| CERT-01 | Phase 7 — Certificates with Expiry | Pending |
+| CERT-02 | Phase 7 — Certificates with Expiry | Pending |
+| CERT-03 | Phase 7 — Certificates with Expiry | Pending |
+| CERT-04 | Phase 7 — Certificates with Expiry | Pending |
+| CERT-05 | Phase 7 — Certificates with Expiry | Pending |
+| CERT-06 | Phase 7 — Certificates with Expiry | Pending |
+| QSCORE-01 | Phase 8 — Q Score | Pending |
+| QSCORE-02 | Phase 8 — Q Score | Pending |
+| QSCORE-03 | Phase 8 — Q Score | Pending |
+| QSCORE-04 | Phase 8 — Q Score | Pending |
+| QSCORE-05 | Phase 8 — Q Score | Pending |
+| QSCORE-06 | Phase 8 — Q Score | Pending |
+| RENEW-01 | Phase 9 — Renewal | Pending |
+| RENEW-02 | Phase 9 — Renewal | Pending |
+| RENEW-03 | Phase 9 — Renewal | Pending |
+| UI-01 | Phase 1 — Real Sign-In End to End | Pending |
+| UI-02 | Phase 6 — Manager Upload Scoped by Org Chart | Pending |
+| UI-03 | Phase 8 — Q Score | Pending |
+| UI-04 | Phase 7 — Certificates with Expiry | Pending |
+| UI-05 | Phase 10 — Tenant Isolation Proof & Honest Surface | Pending |
 
 **Coverage:**
-- v1 requirements: 49 total
-- Mapped to phases: 0
-- Unmapped: 49 ⚠️
+- v1 requirements: 55 total
+- Mapped to phases: 55
+- Unmapped: 0 ✓
+
+Every v1 requirement maps to exactly one phase. No orphans, no duplicates.
+
+Scope history: v1 was 49, rose to 61 when the data-layer and deployment categories were added,
+then fell to **55** after the `origin/main` merge (`f111882`) — six DEPLOY requirements were
+withdrawn as built or teammate-owned, leaving only DEPLOY-02 (seed data), which now sits in
+Phase 1 as a sign-in dependency.
+
+**By phase:**
+
+| Phase | Requirements | Count |
+|-------|--------------|-------|
+| 1 — Real Sign-In End to End | DEPLOY-02, AUTH-01, AUTH-02, AUTH-03, AUTH-04, AUTH-05, AUTH-07, TENANT-01, UI-01 | 9 |
+| 2 — Data Layer & Backend Parity | DATA-01, DATA-02, DATA-03, DATA-04, DATA-05 | 5 |
+| 3 — Server-Side Authorization & Tenant Scoping | AUTH-06, TENANT-02, TENANT-03 | 3 |
+| 4 — Role-Scoped Training on Authenticated Identity | TRAIN-01, TRAIN-02, TRAIN-03, TRAIN-04, TRAIN-05 | 5 |
+| 5 — Document Intelligence Extraction | DOC-01, DOC-02, DOC-03, DOC-04, DOC-05, DOC-06, DOC-07 | 7 |
+| 6 — Manager Upload Scoped by Org Chart | TENANT-04, UPLOAD-01, UPLOAD-02, UPLOAD-03, UPLOAD-04, UPLOAD-05, UI-02 | 7 |
+| 7 — Certificates with Expiry | CERT-01, CERT-02, CERT-03, CERT-04, CERT-05, CERT-06, UI-04 | 7 |
+| 8 — Q Score | QSCORE-01, QSCORE-02, QSCORE-03, QSCORE-04, QSCORE-05, QSCORE-06, UI-03 | 7 |
+| 9 — Renewal | RENEW-01, RENEW-02, RENEW-03 | 3 |
+| 10 — Tenant Isolation Proof & Honest Surface | TENANT-05, UI-05 | 2 |
+| **Total** | | **55** |
 
 ---
 *Requirements defined: 2026-08-14*
-*Last updated: 2026-08-14 after initial definition*
+*Last updated: 2026-08-15 after post-merge roadmap revision (55 requirements, 10 phases)*
