@@ -37,3 +37,8 @@ variable "local_dev_object_ids" {
   type        = list(string)
   default     = []
 }
+
+variable "sql_admin_password" {
+  type      = string
+  sensitive = true
+}
