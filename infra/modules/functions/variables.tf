@@ -23,3 +23,10 @@ variable "comms_connection_string" {
 variable "app_integration_subnet_id" {
   type = string
 }
+
+variable "sql_server_fqdn" { type = string }
+variable "sql_database_name" { type = string }
+variable "sql_admin_username" {
+  type    = string
+  default = "mobsqladmin"
+}
