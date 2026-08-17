@@ -43,6 +43,10 @@ class Identity:
     company_id: int
     access_role: Optional[str]   # 'employee' | 'manager' | 'director' | 'admin' | 'executive'
 
+    # Display name. In the token rather than looked up, because /auth/me answers from
+    # the token alone -- without this the UI can only greet people by email address.
+    name: str = ""
+
     # The TRAINING role -- which material this person is served (SDE2, SWE_MANAGER, ALL).
     # Distinct from access_role, which is the permission tier, and kept separate because
     # they answer different questions: an employee whose title contains "lead" is not a
@@ -65,6 +69,11 @@ def create_token(
     access_role: Optional[str],
     role_code: Optional[str] = "ALL",
     manager_id: Optional[int] = None,
+    # Appended rather than slotted in beside the other identity fields, deliberately.
+    # Inserting a positional parameter into a signature that already has callers silently
+    # shifts every argument after it -- the failure is a type error somewhere unrelated,
+    # not a missing-argument error at the call site.
+    name: str = "",
 ) -> str:
     now = datetime.now(timezone.utc)
     payload = {
@@ -72,6 +81,7 @@ def create_token(
         "email": email,
         "company_id": company_id,
         "access_role": access_role,
+        "name": name or "",
         "role_code": (role_code or "ALL").upper(),
         "manager_id": manager_id,
         "iat": now,
@@ -92,6 +102,7 @@ def decode_token(token: str) -> Optional[Identity]:
             email=payload["email"],
             company_id=int(payload["company_id"]),
             access_role=payload.get("access_role"),
+            name=payload.get("name") or "",
             # .get with a default, not [], so a token minted before these claims
             # existed still decodes instead of logging everyone out on deploy.
             role_code=(payload.get("role_code") or "ALL").upper(),

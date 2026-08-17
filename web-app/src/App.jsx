@@ -294,15 +294,36 @@ function Button({ children, onClick, variant = "primary", disabled, className = 
 }
 
 // ---------- Login ----------
+/**
+ * One sign-in. No persona toggle, no role picker.
+ *
+ * The old screen asked you to choose "employee or manager" and then pick your own role
+ * from a dropdown, and the server believed both. That is not a login, it is a costume
+ * change: an employee could see another role's material by selecting it. Role and
+ * permission tier now come from the account, inside a signed token, and there is nothing
+ * here to choose.
+ */
 function Login({ onLogin }) {
-  const [role, setRole] = useState("employee");
-  // The employee declares their company role at sign-in. Self-declared for now;
-  // the team has parked verifying it until real identity exists. Everything the
-  // employee sees is filtered server-side to this role plus the everyone-modules.
-  const [companyRole, setCompanyRole] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
   const { data: h } = useAsync(() => api.health().catch(() => null), []);
-  const rolesQ = useAsync(() => api.roles().catch(() => ({ roles: [] })), []);
-  const companyRoles = rolesQ.data?.roles || [];
+
+  const submit = async (e) => {
+    e?.preventDefault();
+    if (!email || !password || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onLogin(await api.login(email.trim(), password));
+    } catch (err) {
+      setError(err.message || "Sign-in failed");
+      setPassword("");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="min-h-screen flex items-center justify-center" style={{ ...font, background: `linear-gradient(160deg, ${C.violet900} 0%, ${C.violet700} 45%, ${C.violet500} 100%)` }}>
@@ -312,58 +333,36 @@ function Login({ onLogin }) {
           <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Sign in</h1>
           <p style={{ color: C.sub }} className="text-sm mb-6">Quiz-based compliance training</p>
 
-          <label style={{ color: C.ink }} className="text-sm font-semibold block mb-2">Sign in as</label>
-          <div className="grid grid-cols-2 gap-3 mb-6">
-            {["employee", "manager"].map((r) => (
-              <button
-                key={r}
-                onClick={() => setRole(r)}
-                style={{
-                  borderColor: role === r ? C.violet700 : C.line,
-                  background: role === r ? C.lavender : "#fff",
-                  color: role === r ? C.violet700 : C.sub,
-                }}
-                className="border rounded-xl py-3 text-sm font-semibold capitalize transition-colors"
-              >
-                {r}
-              </button>
-            ))}
-          </div>
-
-          {role === "employee" && (
+          <form onSubmit={submit}>
             <div className="mb-4">
-              <label style={{ color: C.ink }} className="text-sm font-semibold block mb-2">Your role</label>
-              <select value={companyRole} onChange={(e) => setCompanyRole(e.target.value)}
-                style={{ borderColor: C.line, color: C.ink }}
-                className="w-full border rounded-xl px-3 py-2.5 text-sm bg-white">
-                <option value="">— select your role —</option>
-                {companyRoles.map((r) => (
-                  <option key={r.role_code} value={r.role_code}>{r.title}</option>
-                ))}
-              </select>
-              <p style={{ color: C.sub }} className="text-xs mt-1.5">
-                You'll only see training for this role, plus the modules everyone takes.
-              </p>
+              <label style={{ color: C.ink }} className="text-sm font-semibold block mb-2">Email</label>
+              <input
+                type="email" autoComplete="username" autoFocus
+                value={email} onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@company.com"
+                style={{ borderColor: error ? C.danger : C.line, color: C.ink }}
+                className="w-full border rounded-xl px-3 py-2.5 text-sm bg-white"
+              />
             </div>
-          )}
-          <div className="mb-4">
-            <label style={{ color: C.ink }} className="text-sm font-semibold block mb-2">Email</label>
-            <input readOnly value={PROFILES[role].email}
-              style={{ borderColor: C.line, color: C.ink }} className="w-full border rounded-xl px-3 py-2.5 text-sm bg-gray-50" />
-          </div>
-          <div className="mb-6">
-            <label style={{ color: C.ink }} className="text-sm font-semibold block mb-2">Password</label>
-            <input readOnly type="password" value="••••••••" style={{ borderColor: C.line, color: C.ink }} className="w-full border rounded-xl px-3 py-2.5 text-sm bg-gray-50" />
-          </div>
-          <Button className="w-full" onClick={() => onLogin(role, companyRole)}
-            disabled={role === "employee" && !companyRole}>
-            {role === "employee" && !companyRole ? "Select your role to sign in" : "Sign in"}
-          </Button>
+            <div className="mb-6">
+              <label style={{ color: C.ink }} className="text-sm font-semibold block mb-2">Password</label>
+              <input
+                type="password" autoComplete="current-password"
+                value={password} onChange={(e) => setPassword(e.target.value)}
+                style={{ borderColor: error ? C.danger : C.line, color: C.ink }}
+                className="w-full border rounded-xl px-3 py-2.5 text-sm bg-white"
+              />
+            </div>
 
-          {/* Sign-in is not implemented; the backend takes the learner from a header.
-              Saying so here beats letting a reviewer assume auth exists. */}
+            {error && <p style={{ color: C.danger }} className="text-sm mb-4 text-center">{error}</p>}
+
+            <Button className="w-full" type="submit" disabled={!email || !password || busy}>
+              {busy ? "Signing in…" : "Sign in"}
+            </Button>
+          </form>
+
           <p style={{ color: C.sub }} className="text-xs text-center mt-4">
-            Demo sign-in — no password is checked. Role decides what you see next.
+            Your training and your team come from your account.
           </p>
           {h && (
             <p style={{ color: C.sub }} className="text-xs text-center mt-2">
@@ -382,21 +381,22 @@ function Login({ onLogin }) {
 }
 
 // ---------- Shell ----------
-function Shell({ role, name, active, setActive, onLogout, children }) {
-  const employeeNav = [
+function Shell({ name, roleCode, manages, active, setActive, onLogout, children }) {
+  // One nav for everyone. Managing people ADDS a tab; it does not replace the rest.
+  //
+  // This used to be two lists, with managerNav substituted for employeeNav — so a
+  // manager got Team, Documents and Profile and had no way to reach their own training
+  // at all. A manager is also an employee with training of their own, and the old split
+  // made that unreachable.
+  const nav = [
     { id: "dashboard", label: "Dashboard", icon: BookOpen },
     { id: "path", label: "My Training", icon: CheckCircle2 },
+    ...(manages ? [{ id: "team", label: "My Team", icon: Users }] : []),
     { id: "documents", label: "Documents", icon: FileText },
     { id: "certificates", label: "Certificates", icon: Award },
     { id: "teammates", label: "Teammates", icon: Users },
     { id: "profile", label: "Profile", icon: User },
   ];
-  const managerNav = [
-    { id: "team", label: "My Team", icon: Users },
-    { id: "documents", label: "Documents", icon: FileText },
-    { id: "profile", label: "Profile", icon: User },
-  ];
-  const nav = role === "manager" ? managerNav : employeeNav;
 
   return (
     <div style={{ ...font, background: C.paper, minHeight: "100vh" }} className="flex">
@@ -425,7 +425,7 @@ function Shell({ role, name, active, setActive, onLogout, children }) {
             </div>
             <div>
               <div style={{ color: C.ink }} className="text-sm font-semibold leading-tight">{name}</div>
-              <div style={{ color: C.sub }} className="text-xs capitalize">{role}</div>
+              <div style={{ color: C.sub }} className="text-xs">{roleCode}</div>
             </div>
           </div>
           <button onClick={onLogout} style={{ color: C.sub }} className="flex items-center gap-2 text-xs font-semibold hover:opacity-80">
@@ -1250,7 +1250,7 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
   );
 }
 
-function DocumentsScreen({ onDone }) {
+function DocumentsScreen({ team, onDone }) {
   const { data, loading, error, reload } = useAsync(() => api.documents(), []);
   const rolesQ = useAsync(() => api.roles(), []);
   const [uploading, setUploading] = useState(false);
@@ -1402,81 +1402,94 @@ function DocumentsScreen({ onDone }) {
 }
 
 // ---------- Manager team (design-only) ----------
-function ManagerTeam() {
-  const overdueCount = TEAM.reduce((s, t) => s + t.overdue, 0);
+function ManagerTeam({ team }) {
+  const people = team?.people || [];
+  const targets = team?.uploadTargets || [];
+  const direct = people.filter((p) => p.direct);
+  const indirect = people.filter((p) => !p.direct);
+
+  if (!people.length) {
+    return (
+      <div className="p-8 max-w-4xl">
+        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">My team</h1>
+        <p style={{ color: C.sub }} className="text-sm">Nobody reports to you yet.</p>
+      </div>
+    );
+  }
+
+  const Row = ({ p }) => (
+    <tr key={p.employeeId} style={{ borderTop: `1px solid ${C.line}` }}>
+      <td className="px-4 py-3" style={{ color: C.ink }}>{p.name}</td>
+      <td className="px-4 py-3" style={{ color: C.sub }}>{p.title || p.roleCode}</td>
+      <td className="px-4 py-3">
+        <span style={{ background: p.direct ? C.lavender : "#F1F0F3", color: p.direct ? C.violet700 : C.sub }}
+              className="text-[11px] font-semibold px-2 py-0.5 rounded-full">
+          {p.direct ? "direct report" : "reports to " + (people.find((x) => x.employeeId === p.managerId)?.name || "a manager")}
+        </span>
+      </td>
+    </tr>
+  );
+
   return (
     <div className="p-8 max-w-4xl">
-      <div className="flex items-center gap-3 mb-1">
-        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold">My team</h1>
-        <MockNote>sample data</MockNote>
-      </div>
+      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">My team</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">
-        Compliance status for your direct reports. There's no team model in the backend yet, so these figures are illustrative.
+        Everyone who reports to you, and the roles you can upload training for.
       </p>
 
       <div className="grid grid-cols-3 gap-4 mb-6">
-        <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white">
-          <p style={{ color: C.sub }} className="text-xs font-semibold mb-1">Team members</p>
-          <p style={{ ...display, color: C.ink }} className="text-2xl font-bold">{TEAM.length}</p>
-        </div>
-        <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white">
-          <p style={{ color: C.sub }} className="text-xs font-semibold mb-1">Avg. completion</p>
-          <p style={{ ...display, color: C.ink }} className="text-2xl font-bold">
-            {Math.round(TEAM.reduce((s, t) => s + t.completion, 0) / TEAM.length)}%
-          </p>
-        </div>
-        <div style={{ borderColor: overdueCount ? C.danger : C.line }} className="border rounded-xl p-4 bg-white">
-          <p style={{ color: C.sub }} className="text-xs font-semibold mb-1">Overdue</p>
-          <p style={{ ...display, color: overdueCount ? C.danger : C.ink }} className="text-2xl font-bold">{overdueCount}</p>
-        </div>
+        {[["Direct reports", direct.length],
+          ["Further down", indirect.length],
+          ["Roles you can upload for", targets.length]].map(([label, value]) => (
+          <div key={label} style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white">
+            <p style={{ color: C.sub }} className="text-xs font-semibold mb-1">{label}</p>
+            <p style={{ ...display, color: C.ink }} className="text-2xl font-bold">{value}</p>
+          </div>
+        ))}
       </div>
 
-      <div style={{ borderColor: C.line }} className="border rounded-xl bg-white overflow-hidden">
+      <div style={{ borderColor: C.line }} className="border rounded-xl bg-white overflow-hidden mb-6">
         <table className="w-full text-sm">
           <thead>
             <tr style={{ background: C.lavender, color: C.violet700 }} className="text-left text-xs uppercase tracking-wide">
               <th className="px-4 py-3 font-semibold">Name</th>
               <th className="px-4 py-3 font-semibold">Role</th>
-              <th className="px-4 py-3 font-semibold">Progress</th>
-              <th className="px-4 py-3 font-semibold">Status</th>
-              <th className="px-4 py-3 font-semibold">Overdue</th>
+              <th className="px-4 py-3 font-semibold">Reporting line</th>
             </tr>
           </thead>
           <tbody>
-            {TEAM.map((m, i) => (
-              <tr key={i} style={{ borderColor: C.line }} className="border-t">
-                <td style={{ color: C.ink }} className="px-4 py-3 font-semibold">{m.name}</td>
-                <td style={{ color: C.sub }} className="px-4 py-3">{m.role}</td>
-                <td className="px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <div style={{ background: C.line }} className="w-24 h-2 rounded-full overflow-hidden">
-                      <div style={{ width: `${m.completion}%`, background: C.violet700 }} className="h-full rounded-full" />
-                    </div>
-                    <span style={{ color: C.sub }} className="text-xs">{m.completion}%</span>
-                  </div>
-                </td>
-                <td className="px-4 py-3"><StatusPill status={m.status} /></td>
-                <td className="px-4 py-3">
-                  {m.overdue > 0
-                    ? <span style={{ color: C.danger }} className="font-semibold text-xs">{m.overdue}</span>
-                    : <span style={{ color: C.sub }} className="text-xs">—</span>}
-                </td>
-              </tr>
-            ))}
+            {direct.map((p) => <Row key={p.employeeId} p={p} />)}
+            {indirect.map((p) => <Row key={p.employeeId} p={p} />)}
           </tbody>
         </table>
       </div>
 
-      <div className="flex items-center justify-between mt-8 mb-3">
-        <h3 style={{ ...display, color: C.ink }} className="font-bold">Team Q characters</h3>
-        <span style={{ color: C.sub }} className="text-xs">See how everyone's companion has grown</span>
+      {/* Progress and overdue counts are deliberately absent. There is no per-employee
+          completion model behind this yet, and the previous version filled the gap with
+          invented figures under a "sample data" label. An empty column is honest; a
+          fabricated percentage next to a real name is not. */}
+      <div style={{ borderColor: C.line }} className="border rounded-xl p-5 bg-white">
+        <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">Upload training for</p>
+        <p style={{ color: C.sub }} className="text-xs mb-3">
+          Roles held by your reports. The ones your direct reports hold are marked; you can
+          also upload for roles further down if you need to.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {targets.map((t) => (
+            <span key={t.roleCode}
+                  style={{ borderColor: t.direct ? C.violet700 : C.line,
+                           color: t.direct ? C.violet700 : C.sub,
+                           background: t.direct ? C.lavender : "#fff" }}
+                  className="border rounded-full px-3 py-1 text-xs font-semibold">
+              {t.title} · {t.headcount}
+            </span>
+          ))}
+        </div>
       </div>
-      <TeamHabitat members={TEAM} />
     </div>
   );
 }
 
-// ---------- Companion pet ----------
 function getPetStageIdx(trainingsCompleted) {
   let idx = 0;
   for (let i = 0; i < PET_STAGES.length; i++) {
@@ -1831,8 +1844,17 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
 }
 
 // ---------- Profile ----------
-function Profile({ role }) {
-  const p = PROFILES[role];
+function Profile({ principal }) {
+  // Identity from the signed-in principal. PROFILES is a fallback ONLY for the fields
+  // that still have no backend (joined date, streak) — using it for name or email would
+  // show one hardcoded persona to whoever actually signed in.
+  const persona = PROFILES.employee;
+  const p = {
+    ...persona,
+    name: principal?.name || principal?.email || persona.name,
+    email: principal?.email || persona.email,
+    role: principal?.role_code || persona.role,
+  };
   const { data: meData, loading, error, reload } = useAsync(() => api.me(), []);
   const { data: certData } = useAsync(() => api.certificates().catch(() => ({ certificates: [] })), []);
   const { data: trainData } = useAsync(() => api.trainings().catch(() => ({ trainings: [] })), []);
@@ -1969,6 +1991,14 @@ function Profile({ role }) {
 // ---------- App ----------
 export default function App() {
   const [auth, setAuth] = useState(null);
+  // Distinct from signed-out: on load we may hold a token that still needs checking.
+  // Showing sign-in during that check makes a valid session flicker to a login form on
+  // every refresh.
+  const [restoring, setRestoring] = useState(true);
+  // Whether this person has anyone reporting to them. Comes from the org chart, not from
+  // access_role: the tier says what you may DO, the reporting line says whose training
+  // you are responsible for, and they are not the same question.
+  const [team, setTeam] = useState(null);
   const [view, setView] = useState("dashboard");
   const [training, setTraining] = useState(null);
   const [quiz, setQuiz] = useState(null);
@@ -1976,22 +2006,35 @@ export default function App() {
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState(null);
 
-  if (!auth) {
+  const signIn = useCallback((principal) => {
+    setAuth(principal);
+    setView("dashboard");
+    api.team().then(setTeam).catch(() => setTeam(null));
+  }, []);
+
+  // Restore a session from the stored token. api.currentUser() clears an expired token
+  // and returns null, so a stale one signs you out cleanly instead of failing every call.
+  useEffect(() => {
+    let cancelled = false;
+    api.currentUser()
+      .then((principal) => { if (!cancelled && principal) signIn(principal); })
+      .catch(() => { /* unreachable API means signed out, not broken */ })
+      .finally(() => { if (!cancelled) setRestoring(false); });
+    return () => { cancelled = true; };
+  }, [signIn]);
+
+  if (restoring) {
     return (
-      <Login
-        onLogin={(role, companyRole) => {
-          const profile = PROFILES[role];
-          // Each persona+role is its own learner so histories stay separate and
-          // switching roles at login demonstrates the isolation cleanly.
-          api.setLearner(companyRole ? `${profile.email}:${companyRole}` : profile.email);
-          api.setLearnerRole(role === "employee" ? companyRole : "");
-          setAuth({ role, name: profile.name, companyRole });
-          setView(role === "manager" ? "team" : "dashboard");
-        }}
-      />
+      <div className="min-h-screen flex items-center justify-center"
+           style={{ ...font, background: `linear-gradient(160deg, ${C.violet900} 0%, ${C.violet700} 45%, ${C.violet500} 100%)` }}>
+        <Logo size={36} />
+      </div>
     );
   }
 
+  if (!auth) return <Login onLogin={signIn} />;
+
+  const manages = Boolean(team?.manages);
   const goto = (v) => setView(v);
   const openTraining = (t) => { setTraining(t); setView("trainingDetail"); };
 
@@ -2009,15 +2052,18 @@ export default function App() {
     }
   };
 
+  // Routed on the VIEW, never on the role. The old version had
+  // `else if (auth.role === "manager") content = <ManagerTeam />`, which swallowed every
+  // other view — a manager could not open their own training however they navigated.
   let content;
   if (view === "profile") {
-    content = <Profile role={auth.role} />;
+    content = <Profile principal={auth} />;
   } else if (view === "documents") {
-    content = <DocumentsScreen onDone={() => goto(auth.role === "manager" ? "team" : "dashboard")} />;
-  } else if (auth.role === "manager") {
-    content = <ManagerTeam />;
+    content = <DocumentsScreen team={team} onDone={() => goto("dashboard")} />;
+  } else if (view === "team") {
+    content = <ManagerTeam team={team} />;
   } else if (view === "dashboard") {
-    content = <Dashboard name={auth.name} onOpenPath={() => goto("path")} onOpenTraining={openTraining} />;
+    content = <Dashboard name={auth.name || auth.email} onOpenPath={() => goto("path")} onOpenTraining={openTraining} />;
   } else if (view === "path") {
     content = <LearningPath onBack={() => goto("dashboard")} onOpenTraining={openTraining} />;
   } else if (view === "trainingDetail") {
@@ -2036,22 +2082,28 @@ export default function App() {
       />
     );
   } else if (view === "quizResults") {
-    content = <QuizResults result={result} onRetake={() => { goto("quizPre"); }} onDone={() => goto("dashboard")} />;
+    content = <QuizResults result={result} onRetake={() => goto("quizPre")} onDone={() => goto("dashboard")} />;
   } else if (view === "certificates") {
     content = <Certificates />;
   } else if (view === "teammates") {
-    content = <TeammatesGallery name={auth.name} />;
+    content = <TeammatesGallery name={auth.name || auth.email} />;
   }
 
   const quizViews = ["trainingDetail", "lesson", "quizPre", "quizRunner", "quizResults"];
 
   return (
     <Shell
-      role={auth.role}
-      name={auth.name}
+      name={auth.name || auth.email}
+      roleCode={auth.role_code}
+      manages={manages}
       active={quizViews.includes(view) ? "dashboard" : view}
       setActive={goto}
-      onLogout={() => setAuth(null)}
+      onLogout={async () => {
+        await api.logout();
+        setAuth(null);
+        setTeam(null);
+        setView("dashboard");
+      }}
     >
       {content}
     </Shell>

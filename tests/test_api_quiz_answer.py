@@ -204,7 +204,11 @@ _TEST_SIGNING_KEY = "test-only-key-" + ("x" * 50)
 def _token(employee_id=3, email="ethan.brooks@demo.com", role="employee"):
     import os
     os.environ.setdefault("JWT_SIGNING_SECRET", _TEST_SIGNING_KEY)
-    return shared_auth.create_token(employee_id, email, 1, role, "SDE2", 1)
+    # Keywords, not positions: this call is exactly what broke when `name` was
+    # briefly inserted mid-signature.
+    return shared_auth.create_token(
+        employee_id=employee_id, email=email, company_id=1, access_role=role,
+        role_code="SDE2", manager_id=1, name="Ethan Brooks")
 
 
 def _request(body, email="ethan.brooks@demo.com"):

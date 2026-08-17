@@ -10,7 +10,7 @@ to, and a bug in the frontend's auth handling shows up locally instead of only i
 WHAT MUST STAY IN STEP WITH api/shared/auth.py
     algorithm       HS256
     TTL             12 hours
-    claims          sub (employee_id as a string), email, company_id,
+    claims          sub (employee_id as a string), email, name, company_id,
                     access_role, role_code, manager_id, iat, exp
     login route     POST /api/login   {email, password}
     login response  {token, expiresInHours, principal{...}}
@@ -99,6 +99,7 @@ class Identity:
     email: str
     company_id: int
     access_role: Optional[str]
+    name: str = ""
     role_code: str = "ALL"
     manager_id: Optional[int] = None
 
@@ -114,6 +115,7 @@ class Identity:
             "email": self.email,
             "company_id": self.company_id,
             "access_role": self.access_role,
+            "name": self.name,
             "role_code": self.role_code,
             "manager_id": self.manager_id,
         }
@@ -193,6 +195,7 @@ def authenticate(email: str, password: str) -> Optional[Identity]:
             email=user["email"],
             company_id=int(user.get("company_id", 1)),
             access_role=user.get("access_role", "employee"),
+            name=user.get("name", ""),
             role_code=(user.get("role_code") or "ALL").upper(),
             manager_id=user.get("manager_id"),
         )
@@ -265,6 +268,8 @@ def create_token(identity: Identity) -> str:
             "email": identity.email,
             "company_id": identity.company_id,
             "access_role": identity.access_role,
+            "name": identity.name,
+            "name": identity.name,
             "role_code": identity.role_code,
             "manager_id": identity.manager_id,
             "iat": now,
@@ -293,6 +298,7 @@ def decode_token(token: str) -> Optional[Identity]:
             email=claims["email"],
             company_id=int(claims.get("company_id", 1)),
             access_role=claims.get("access_role"),
+            name=claims.get("name") or "",
             role_code=(claims.get("role_code") or "ALL").upper(),
             manager_id=int(manager_id) if manager_id is not None else None,
         )

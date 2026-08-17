@@ -96,7 +96,7 @@ def login(req: func.HttpRequest) -> func.HttpResponse:
         with _conn() as c:
             cur = c.cursor()
             cur.execute(
-                """SELECT e.id, e.email, e.company_id, e.password_hash, e.manager_id,
+                """SELECT e.id, e.email, e.name, e.company_id, e.password_hash, e.manager_id,
                           r.access_role, r.role_code
                        FROM dbo.Employees e
                        LEFT JOIN dbo.Roles r ON r.id = e.role_id
@@ -128,6 +128,7 @@ def login(req: func.HttpRequest) -> func.HttpResponse:
         # company-wide material only. Under-serving is the right direction to fail in.
         role_code=row.role_code,
         manager_id=row.manager_id,
+        name=row.name,
     )
 
     # The principal goes back with the token so the client does not have to decode a JWT
@@ -140,6 +141,7 @@ def login(req: func.HttpRequest) -> func.HttpResponse:
             "email": row.email,
             "company_id": row.company_id,
             "access_role": row.access_role,
+            "name": row.name,
             "role_code": (row.role_code or "ALL").upper(),
             "manager_id": row.manager_id,
         },
@@ -175,6 +177,7 @@ def auth_me(req: func.HttpRequest) -> func.HttpResponse:
             "email": identity.email,
             "company_id": identity.company_id,
             "access_role": identity.access_role,
+            "name": identity.name,
             "role_code": identity.role_code,
             "manager_id": identity.manager_id,
         }
