@@ -14,11 +14,13 @@
 #      or change that value to whatever you name it. It needs the same access the
 #      GitHub Actions pipeline identity has: SQL admin login, Key Vault read on
 #      mob-kv-dev, and Contributor (or Website Contributor) on mob-functions-dev.
-#   2. Pipelines -> Library -> new variable group named `mob-backend-secrets`,
-#      either with a secret variable `SQL_ADMIN_PASSWORD` set directly, or (better)
-#      linked to mob-kv-dev so it reads `sql-password` from Key Vault automatically.
-#      Either way the variable available to this pipeline must be named
-#      SQL_ADMIN_PASSWORD.
+#   2. Pipelines -> Library -> new variable group named `mob-backend-secrets`, linked
+#      to mob-kv-dev so it reads `sql-password` from Key Vault automatically. The
+#      pipeline below expects the variable to be named exactly `sql-password` (that's
+#      what Terraform's keyvault module names the secret) -- if you instead set a
+#      secret variable directly rather than linking Key Vault, name it `sql-password`
+#      too, or edit the `env:` mappings in the Migrate and Seed stages to match
+#      whatever name you actually used.
 #
 # Trigger: push to main. Same trigger terraform.yml's apply job uses, but this is
 # an independent DevOps pipeline -- it does NOT wait for a GitHub Actions terraform
@@ -131,11 +133,20 @@ stages:
             # file on disk. They have to be explicitly mapped to a real shell env var
             # here, then referenced in the script as $SQL_ADMIN_PASSWORD (no parens).
             # Getting this wrong doesn't fail loudly at the $(...) site: bash instead
-            # tries to run the literal leftover text "$(SQL_ADMIN_PASSWORD)" as a command
-            # substitution, so the error shows up as "SQL_ADMIN_PASSWORD: command not
-            # found" followed by a SQL login failure -- easy to misread as a bad password.
+            # tries to run the literal leftover text as a command substitution, so the
+            # error shows up as "<name>: command not found" followed by a SQL login
+            # failure -- easy to misread as a bad password rather than a missing var.
+            #
+            # The right-hand side here is the PIPELINE variable name, which is
+            # `sql-password` (hyphenated) -- that's what mob-backend-secrets exposes it
+            # as, because that's the exact name Terraform's keyvault module gives the
+            # secret (infra/modules/keyvault/main.tf). A shell env var name can't contain
+            # a hyphen, which is exactly why this needs the env: mapping in the first
+            # place: it renames sql-password (pipeline variable, hyphen OK) to
+            # SQL_ADMIN_PASSWORD (shell env var, no hyphen allowed) so the script below
+            # can read it as $SQL_ADMIN_PASSWORD.
             env:
-              SQL_ADMIN_PASSWORD: $(SQL_ADMIN_PASSWORD)
+              SQL_ADMIN_PASSWORD: $(sql-password)
 
           - task: AzureCLI@2
             displayName: 'Close temporary firewall rule'
@@ -190,9 +201,11 @@ stages:
               done
             displayName: 'Apply seed data (safe to re-run -- guarded by WHERE NOT EXISTS)'
             # See the same env: note on the Migrate stage's "Run only new migrations" step
-            # -- secret variables need this explicit mapping, $(...) alone won't work.
+            # -- secret variables need this explicit mapping, and the pipeline variable
+            # is named sql-password (hyphenated, from Terraform's keyvault module), not
+            # SQL_ADMIN_PASSWORD -- only the shell-side name on the left is that.
             env:
-              SQL_ADMIN_PASSWORD: $(SQL_ADMIN_PASSWORD)
+              SQL_ADMIN_PASSWORD: $(sql-password)
 
           - task: AzureCLI@2
             displayName: 'Close temporary firewall rule'
