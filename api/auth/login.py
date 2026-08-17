@@ -96,7 +96,8 @@ def login(req: func.HttpRequest) -> func.HttpResponse:
         with _conn() as c:
             cur = c.cursor()
             cur.execute(
-                """SELECT e.id, e.email, e.company_id, e.password_hash, r.access_role
+                """SELECT e.id, e.email, e.company_id, e.password_hash, e.manager_id,
+                          r.access_role, r.role_code
                        FROM dbo.Employees e
                        LEFT JOIN dbo.Roles r ON r.id = e.role_id
                        WHERE e.email = ?""",
@@ -122,8 +123,27 @@ def login(req: func.HttpRequest) -> func.HttpResponse:
         email=row.email,
         company_id=row.company_id,
         access_role=row.access_role,
+        # Roles.role_code is nullable (016_add_role_code.sql): an org role with no
+        # training role mapped yet comes back NULL and becomes "ALL", which serves
+        # company-wide material only. Under-serving is the right direction to fail in.
+        role_code=row.role_code,
+        manager_id=row.manager_id,
     )
-    return _json({"token": token, "expiresInHours": 12})
+
+    # The principal goes back with the token so the client does not have to decode a JWT
+    # to render a name, or make a second call to find out who it just signed in as.
+    return _json({
+        "token": token,
+        "expiresInHours": 12,
+        "principal": {
+            "employee_id": row.id,
+            "email": row.email,
+            "company_id": row.company_id,
+            "access_role": row.access_role,
+            "role_code": (row.role_code or "ALL").upper(),
+            "manager_id": row.manager_id,
+        },
+    })
 
 
 # --- The only change to the existing function_app.py. Add these two lines near the

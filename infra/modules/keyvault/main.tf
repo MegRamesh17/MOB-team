@@ -56,3 +56,12 @@ resource "azurerm_key_vault_secret" "sql_password" {
   value        = var.sql_admin_password
   key_vault_id = azurerm_key_vault.mob_kv.id
 }
+
+# Signs the session tokens issued by api/auth/login.py. api/shared/auth.py raises
+# rather than falling back to a default when this is missing, which is correct --
+# a default signing key in a public repo lets anyone mint a token for any user.
+resource "azurerm_key_vault_secret" "jwt_signing_secret" {
+  name         = "jwt-signing-secret"
+  value        = var.jwt_signing_secret
+  key_vault_id = azurerm_key_vault.mob_kv.id
+}

@@ -4,6 +4,10 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 3.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.0"
+    }
   }
   backend "azurerm" {
     resource_group_name  = "MOB"
@@ -15,19 +19,31 @@ terraform {
 provider "azurerm" {
   features {}
 }
+
+# Signing key for session tokens. Generated once and held in state rather than
+# passed in as a variable, so there is no manual step and nobody has to keep a
+# copy of it anywhere.
+#
+# Stability matters more than it looks: this key signs every live session, so
+# regenerating it on an apply would sign every user out. `random_password` only
+# regenerates when its keepers change, and there are none.
+resource "random_password" "jwt_signing_secret" {
+  length  = 64
+  special = false
+}
 data "azurerm_resource_group" "mob_rg" {
   name = "MOB"
 }
 module "storage" {
   source              = "./modules/storage"
   resource_group_name = data.azurerm_resource_group.mob_rg.name
-  location             = data.azurerm_resource_group.mob_rg.location
+  location            = data.azurerm_resource_group.mob_rg.location
 }
 module "sql" {
   source              = "./modules/sql"
   resource_group_name = data.azurerm_resource_group.mob_rg.name
-  location             = "southcentralus"
-  admin_password       = var.sql_admin_password
+  location            = "southcentralus"
+  admin_password      = var.sql_admin_password
 }
 module "network" {
   source              = "./modules/network"
@@ -36,16 +52,17 @@ module "network" {
   location            = var.location
 }
 module "keyvault" {
-  source                       = "./modules/keyvault"
-  environment                  = var.environment
-  resource_group_name          = var.resource_group_name
-  location                     = var.location
-  pipeline_identity_object_id  = var.pipeline_identity_object_id
-  sql_connection_string        = module.sql.connection_string
-  sql_admin_password             = var.sql_admin_password
-  openai_api_key                = var.openai_api_key
-  function_app_principal_id    = module.functions.function_app_identity_principal_id
-  local_dev_object_ids         = var.local_dev_object_ids
+  source                      = "./modules/keyvault"
+  environment                 = var.environment
+  resource_group_name         = var.resource_group_name
+  location                    = var.location
+  pipeline_identity_object_id = var.pipeline_identity_object_id
+  sql_connection_string       = module.sql.connection_string
+  sql_admin_password          = var.sql_admin_password
+  openai_api_key              = var.openai_api_key
+  function_app_principal_id   = module.functions.function_app_identity_principal_id
+  local_dev_object_ids        = var.local_dev_object_ids
+  jwt_signing_secret          = random_password.jwt_signing_secret.result
 }
 # TEMPORARILY DISABLED: blocked on Microsoft.Communication provider
 # registration - subscription lacks permission, admin request pending.
@@ -58,21 +75,21 @@ module "keyvault" {
 #   resource_group_name = var.resource_group_name
 # }
 module "functions" {
-  source                     = "./modules/functions"
-  environment                = var.environment
-  resource_group_name        = var.resource_group_name
-  location                   = var.location
-  key_vault_uri               = module.keyvault.key_vault_uri
-  comms_connection_string    = "placeholder-until-comms-unblocked"
-  app_integration_subnet_id  = module.network.app_integration_subnet_id
-  sql_server_fqdn              = module.sql.server_fqdn
-  sql_database_name            = module.sql.database_name
+  source                    = "./modules/functions"
+  environment               = var.environment
+  resource_group_name       = var.resource_group_name
+  location                  = var.location
+  key_vault_uri             = module.keyvault.key_vault_uri
+  comms_connection_string   = "placeholder-until-comms-unblocked"
+  app_integration_subnet_id = module.network.app_integration_subnet_id
+  sql_server_fqdn           = module.sql.server_fqdn
+  sql_database_name         = module.sql.database_name
 }
 module "appservice" {
-  source                     = "./modules/appservice"
-  environment                = var.environment
-  resource_group_name        = var.resource_group_name
-  location                   = var.location
-  key_vault_uri               = module.keyvault.key_vault_uri
-  app_integration_subnet_id  = module.network.app_integration_subnet_id
+  source                    = "./modules/appservice"
+  environment               = var.environment
+  resource_group_name       = var.resource_group_name
+  location                  = var.location
+  key_vault_uri             = module.keyvault.key_vault_uri
+  app_integration_subnet_id = module.network.app_integration_subnet_id
 }

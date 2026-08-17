@@ -42,3 +42,9 @@ variable "sql_admin_password" {
   type      = string
   sensitive = true
 }
+
+variable "jwt_signing_secret" {
+  description = "HS256 signing key for session tokens issued by api/shared/auth.py"
+  type        = string
+  sensitive   = true
+}

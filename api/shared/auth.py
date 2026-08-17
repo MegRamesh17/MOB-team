@@ -43,14 +43,37 @@ class Identity:
     company_id: int
     access_role: Optional[str]   # 'employee' | 'manager' | 'director' | 'admin' | 'executive'
 
+    # The TRAINING role -- which material this person is served (SDE2, SWE_MANAGER, ALL).
+    # Distinct from access_role, which is the permission tier, and kept separate because
+    # they answer different questions: an employee whose title contains "lead" is not a
+    # manager, and a SWE_MANAGER training role does not by itself grant manager access.
+    #
+    # Defaults to "ALL", which serves company-wide material and nothing role-specific --
+    # so an unmapped role under-serves rather than leaking another role's training.
+    role_code: str = "ALL"
 
-def create_token(employee_id: int, email: str, company_id: int, access_role: Optional[str]) -> str:
+    # Who this person reports to. Needed for the manager's team view, for scoping which
+    # roles a manager may upload for, and for Q Score visibility. Known at login, so
+    # carrying it here saves a query on every request that needs the reporting line.
+    manager_id: Optional[int] = None
+
+
+def create_token(
+    employee_id: int,
+    email: str,
+    company_id: int,
+    access_role: Optional[str],
+    role_code: Optional[str] = "ALL",
+    manager_id: Optional[int] = None,
+) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(employee_id),
         "email": email,
         "company_id": company_id,
         "access_role": access_role,
+        "role_code": (role_code or "ALL").upper(),
+        "manager_id": manager_id,
         "iat": now,
         "exp": now + timedelta(hours=TOKEN_TTL_HOURS),
     }
@@ -63,11 +86,16 @@ def decode_token(token: str) -> Optional[Identity]:
     except jwt.PyJWTError:
         return None
     try:
+        manager_id = payload.get("manager_id")
         return Identity(
             employee_id=int(payload["sub"]),
             email=payload["email"],
             company_id=int(payload["company_id"]),
             access_role=payload.get("access_role"),
+            # .get with a default, not [], so a token minted before these claims
+            # existed still decodes instead of logging everyone out on deploy.
+            role_code=(payload.get("role_code") or "ALL").upper(),
+            manager_id=int(manager_id) if manager_id is not None else None,
         )
     except (KeyError, ValueError, TypeError):
         return None
