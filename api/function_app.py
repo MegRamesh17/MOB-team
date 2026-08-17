@@ -601,7 +601,6 @@ def submit_quiz(req: func.HttpRequest) -> func.HttpResponse:
                     {
                         "questionId": qid,
                         "topic": q["topic"],
-                        "difficulty": q.get("difficulty", "Medium"),
                         "isCorrect": is_correct,
                         # Carried because shared/qscore.py weights by it. Omitting it
                         # does not error — every question silently weighs 1.0 and the
