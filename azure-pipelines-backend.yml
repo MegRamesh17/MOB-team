@@ -91,7 +91,7 @@ stages:
 
           - bash: |
               set -euo pipefail
-              sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$(SQL_ADMIN_PASSWORD)" -C -b -Q "
+              sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -b -Q "
                 IF OBJECT_ID('dbo.SchemaMigrations') IS NULL
                 CREATE TABLE dbo.SchemaMigrations (
                   filename NVARCHAR(255) PRIMARY KEY,
@@ -100,24 +100,34 @@ stages:
 
               for file in db/migrations/*.sql; do
                 fname=$(basename "$file")
-                already_applied=$(sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$(SQL_ADMIN_PASSWORD)" -C -h -1 \
+                already_applied=$(sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -h -1 \
                   -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM dbo.SchemaMigrations WHERE filename = '$fname'" | tr -d '[:space:]')
                 if [ "$already_applied" = "0" ]; then
                   echo "Applying $fname"
                   # Same fix as GitHub Actions' migrate-database.yml: check the exit code
                   # before recording the migration as applied, so a partial failure can
                   # never be marked done.
-                  if ! sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$(SQL_ADMIN_PASSWORD)" -C -b -i "$file"; then
+                  if ! sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -b -i "$file"; then
                     echo "##vso[task.logissue type=error]Migration $fname failed -- NOT recording it as applied."
                     exit 1
                   fi
-                  sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$(SQL_ADMIN_PASSWORD)" -C -b \
+                  sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -b \
                     -Q "INSERT INTO dbo.SchemaMigrations (filename) VALUES ('$fname')"
                 else
                   echo "Skipping $fname - already applied"
                 fi
               done
             displayName: 'Run only new migrations'
+            # Secret pipeline variables are never substituted into $(...) text inside a
+            # script -- that would write the plaintext password to the generated script
+            # file on disk. They have to be explicitly mapped to a real shell env var
+            # here, then referenced in the script as $SQL_ADMIN_PASSWORD (no parens).
+            # Getting this wrong doesn't fail loudly at the $(...) site: bash instead
+            # tries to run the literal leftover text "$(SQL_ADMIN_PASSWORD)" as a command
+            # substitution, so the error shows up as "SQL_ADMIN_PASSWORD: command not
+            # found" followed by a SQL login failure -- easy to misread as a bad password.
+            env:
+              SQL_ADMIN_PASSWORD: $(SQL_ADMIN_PASSWORD)
 
           - task: AzureCLI@2
             displayName: 'Close temporary firewall rule'
@@ -168,9 +178,13 @@ stages:
               set -euo pipefail
               for file in db/seed/org_seed.sql db/seed/seed_data.sql; do
                 echo "--- $file"
-                sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$(SQL_ADMIN_PASSWORD)" -C -b -i "$file"
+                sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -b -i "$file"
               done
             displayName: 'Apply seed data (safe to re-run -- guarded by WHERE NOT EXISTS)'
+            # See the same env: note on the Migrate stage's "Run only new migrations" step
+            # -- secret variables need this explicit mapping, $(...) alone won't work.
+            env:
+              SQL_ADMIN_PASSWORD: $(SQL_ADMIN_PASSWORD)
 
           - task: AzureCLI@2
             displayName: 'Close temporary firewall rule'
