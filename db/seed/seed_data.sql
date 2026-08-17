@@ -207,6 +207,11 @@ WHERE NOT EXISTS (
     WHERE a.employee_id = e.id AND a.question_id = q.id AND a.attempt_number = 1
 );
 
+DECLARE @employee_count INT, @course_count INT;
+
+SELECT @employee_count = COUNT(*) FROM Employees WHERE company_id = @company_id;
+SELECT @course_count = COUNT(*) FROM Courses WHERE company_id = @company_id;
+
 PRINT 'seed_data: '
-    + CAST((SELECT COUNT(*) FROM Employees WHERE company_id = @company_id) AS VARCHAR) + ' employees, '
-    + CAST((SELECT COUNT(*) FROM Courses   WHERE company_id = @company_id) AS VARCHAR) + ' courses.';
+    + CAST(@employee_count AS VARCHAR) + ' employees, '
+    + CAST(@course_count AS VARCHAR) + ' courses.';

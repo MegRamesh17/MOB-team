@@ -135,11 +135,19 @@ WHERE NOT EXISTS (
     SELECT 1 FROM Roles r WHERE r.team_id = t.id AND r.title = v.title
 );
 
-PRINT 'org_seed: ' + CAST((SELECT COUNT(*) FROM Departments WHERE company_id = @company_id) AS VARCHAR)
-    + ' departments, '
-    + CAST((SELECT COUNT(*) FROM Teams t JOIN Departments d ON d.id = t.department_id
-            WHERE d.company_id = @company_id) AS VARCHAR) + ' teams, '
-    + CAST((SELECT COUNT(*) FROM Roles r
-            JOIN Teams t ON t.id = r.team_id
-            JOIN Departments d ON d.id = t.department_id
-            WHERE d.company_id = @company_id) AS VARCHAR) + ' roles.';
+DECLARE @dept_count INT, @team_count INT, @role_count INT;
+
+SELECT @dept_count = COUNT(*) FROM Departments WHERE company_id = @company_id;
+
+SELECT @team_count = COUNT(*) FROM Teams t
+    JOIN Departments d ON d.id = t.department_id
+    WHERE d.company_id = @company_id;
+
+SELECT @role_count = COUNT(*) FROM Roles r
+    JOIN Teams t ON t.id = r.team_id
+    JOIN Departments d ON d.id = t.department_id
+    WHERE d.company_id = @company_id;
+
+PRINT 'org_seed: ' + CAST(@dept_count AS VARCHAR) + ' departments, '
+    + CAST(@team_count AS VARCHAR) + ' teams, '
+    + CAST(@role_count AS VARCHAR) + ' roles.';
