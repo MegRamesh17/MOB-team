@@ -1,10 +1,12 @@
+# SUPERSEDED by azure-pipelines-backend.yml's Migrate stage in Azure DevOps.
+# workflow_dispatch-only now (the automatic workflow_run trigger off terraform-azure
+# is removed) so this can no longer fire on its own and race the DevOps pipeline for
+# the same database. Kept only for manual emergency use -- e.g. DevOps is down and
+# someone needs to apply a migration by hand.
 name: migrate-database
 
 on:
-  workflow_run:
-    workflows: ["terraform-azure"]
-    types: [completed]
-    branches: [ main ]
+  workflow_dispatch:
 
 permissions:
   id-token: write
