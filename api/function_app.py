@@ -149,6 +149,33 @@ def _now() -> str:
 # health
 # --------------------------------------------------------------------------
 
+DIFFICULTY_MULTIPLIERS = {"Easy": 0.95, "Medium": 1.0, "Hard": 1.08}
+
+def _calculate_q_score(percent, results):
+    """
+    Q Score = raw score % x difficulty weight x consistency factor.
+    """
+    if not results:
+        return round(percent, 2)
+
+    correct = [r for r in results if r["isCorrect"]]
+    if correct:
+        avg_multiplier = sum(
+            DIFFICULTY_MULTIPLIERS.get(r.get("difficulty", "Medium"), 1.0)
+            for r in correct
+        ) / len(correct)
+    else:
+        avg_multiplier = 1.0
+
+    topics = {}
+    for r in results:
+        topics.setdefault(r["topic"], []).append(r["isCorrect"])
+    topic_rates = [sum(v) / len(v) for v in topics.values()]
+    consistency = 1.0 if not topic_rates or min(topic_rates) >= 0.5 else 0.92
+
+    return round(min(100.0, percent * avg_multiplier * consistency), 2)
+
+
 @app.route(route="health", methods=["GET"])
 def health(req: func.HttpRequest) -> func.HttpResponse:
     """
@@ -574,6 +601,7 @@ def submit_quiz(req: func.HttpRequest) -> func.HttpResponse:
                     {
                         "questionId": qid,
                         "topic": q["topic"],
+                        "difficulty": q.get("difficulty", "Medium"),
                         "isCorrect": is_correct,
                         # Carried because shared/qscore.py weights by it. Omitting it
                         # does not error — every question silently weighs 1.0 and the
@@ -1325,3 +1353,4 @@ def set_requirements(req: func.HttpRequest) -> func.HttpResponse:
         return _json({"roleCode": role, "count": len(rows)})
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
+

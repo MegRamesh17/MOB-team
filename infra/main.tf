@@ -51,19 +51,22 @@ module "network" {
   resource_group_name = var.resource_group_name
   location            = var.location
 }
+  
 module "keyvault" {
-  source                      = "./modules/keyvault"
-  environment                 = var.environment
-  resource_group_name         = var.resource_group_name
-  location                    = var.location
-  pipeline_identity_object_id = var.pipeline_identity_object_id
-  sql_connection_string       = module.sql.connection_string
-  sql_admin_password          = var.sql_admin_password
-  openai_api_key              = var.openai_api_key
-  function_app_principal_id   = module.functions.function_app_identity_principal_id
-  local_dev_object_ids        = var.local_dev_object_ids
-  jwt_signing_secret          = random_password.jwt_signing_secret.result
+  source                       = "./modules/keyvault"
+  environment                  = var.environment
+  resource_group_name          = var.resource_group_name
+  location                     = var.location
+  pipeline_identity_object_id  = var.pipeline_identity_object_id
+  sql_connection_string        = module.sql.connection_string
+  storage_connection_string    = module.storage.primary_connection_string
+  sql_admin_password            = var.sql_admin_password
+  openai_api_key                = var.openai_api_key
+  function_app_principal_id    = module.functions.function_app_identity_principal_id
+  local_dev_object_ids         = var.local_dev_object_ids
+  jwt_signing_secret           = random_password.jwt_signing_secret.result
 }
+    
 # TEMPORARILY DISABLED: blocked on Microsoft.Communication provider
 # registration - subscription lacks permission, admin request pending.
 # Re-enable once registered; also switch functions' comms_connection_string

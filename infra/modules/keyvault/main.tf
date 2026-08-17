@@ -57,25 +57,21 @@ resource "azurerm_key_vault_secret" "sql_password" {
   key_vault_id = azurerm_key_vault.mob_kv.id
 }
 
-# Signs the session tokens issued by api/auth/login.py. api/shared/auth.py raises
-# rather than falling back to a default when this is missing, which is correct --
-# a default signing key in a public repo lets anyone mint a token for any user.
 resource "azurerm_key_vault_secret" "jwt_signing_secret" {
   name         = "jwt-signing-secret"
   value        = var.jwt_signing_secret
   key_vault_id = azurerm_key_vault.mob_kv.id
 }
 
-
-# Document Intelligence. Created in the portal rather than by Terraform, so this stores
-# its key and does not try to own the resource — importing a hand-made resource into
-# state is a separate, deliberate decision.
-#
-# count guards it: with no key supplied, the secret is not created and extraction falls
-# back to pypdf. That keeps `terraform apply` working for anyone who has not set it.
 resource "azurerm_key_vault_secret" "doc_intelligence_key" {
   count        = var.doc_intelligence_key != "" ? 1 : 0
   name         = "doc-intelligence-key"
   value        = var.doc_intelligence_key
+  key_vault_id = azurerm_key_vault.mob_kv.id
+}
+
+resource "azurerm_key_vault_secret" "storage_connection_string" {
+  name         = "storage-connection-string"
+  value        = var.storage_connection_string
   key_vault_id = azurerm_key_vault.mob_kv.id
 }

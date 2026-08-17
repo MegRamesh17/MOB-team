@@ -41,3 +41,4 @@ pyflakes==3.2.0
 # Document Intelligence: OCR, reading order, and heading roles. Extraction falls back to
 # pypdf when DOCUMENT_INTELLIGENCE_ENDPOINT is unset, so this is not required offline.
 azure-ai-documentintelligence==1.0.2
+reportlab

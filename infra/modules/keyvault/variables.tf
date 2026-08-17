@@ -49,10 +49,14 @@ variable "jwt_signing_secret" {
   sensitive   = true
 }
 
-
 variable "doc_intelligence_key" {
   description = "Azure Document Intelligence key. Empty until the resource is wired up."
   type        = string
   sensitive   = true
   default     = ""
+}
+
+variable "storage_connection_string" {
+  type      = string
+  sensitive = true
 }
