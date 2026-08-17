@@ -160,6 +160,9 @@ def _start_generation_job(doc_title: str) -> str:
         from quizgen.pipeline import generate_questions, select_chunks
 
         try:
+            # No request here — this runs on a background thread after the response
+            # has gone out. Falls back to the configured company, which is correct
+            # for a single-tenant local bank and is the reason this is a DEV server.
             with Bank(DB) as bank:
                 chunks, _ = select_chunks(bank, doc_title=doc_title)
                 with _JOB_LOCK:
@@ -282,6 +285,18 @@ class Handler(BaseHTTPRequestHandler):
     def _identity(self):
         """The authenticated caller, from a signed token, or None."""
         return devauth.identity_from_header(self.headers.get("Authorization", ""))
+
+    def _company(self):
+        """
+        The tenant every Bank in this request is scoped to.
+
+        Taken from the caller's token, so the dev server behaves like the deployed API
+        rather than trusting a process-wide config value. An unauthenticated request
+        falls back to the configured company — the only routes that reach a Bank without
+        a token are open ones, and there is nobody to scope them to.
+        """
+        identity = self._identity()
+        return str(identity.company_id) if identity else CONFIG.company_id
 
     def _require(self, tier: str = "employee"):
         """
@@ -533,7 +548,7 @@ class Handler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
 
     def _health(self):
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             stats = bank.stats()
             approved = len(bank.questions(status=ReviewStatus.APPROVED))
         self._send({
@@ -549,7 +564,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _me(self):
         learner = self._learner()
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             mastery = bank.mastery(learner)
             attempts = bank.attempt_count(learner)
 
@@ -577,7 +592,7 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _topics(self):
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             approved = bank.questions(status=ReviewStatus.APPROVED)
         counts: dict = {}
         for q in approved:
@@ -591,7 +606,7 @@ class Handler(BaseHTTPRequestHandler):
         """Browse the bank. Never includes is_correct — see the note in _start."""
         topic = (query.get("topic") or [""])[0]
         limit = min(int((query.get("limit") or ["50"])[0]), 200)
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             items = bank.questions(topic=topic or None, status=ReviewStatus.APPROVED)
         self._send({
             "total": len(items),
@@ -615,7 +630,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _list_documents(self):
         """What has been uploaded, and how far each one got."""
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             chunks = bank.all_chunks()
             approved = bank.questions(status=ReviewStatus.APPROVED)
 
@@ -728,7 +743,7 @@ class Handler(BaseHTTPRequestHandler):
         # training, mixing roles and letting set_chunk_roles tag the wrong sections.
         # A real pack of 16 role briefs all began with the same letterhead and would
         # have collapsed into a single module.
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             existing_ids = {
                 c.doc_title: c.doc_id for c in bank.all_chunks()
             }
@@ -743,7 +758,7 @@ class Handler(BaseHTTPRequestHandler):
         # NOT generated from. gpt-5 proposes a section->role mapping; the manager
         # confirms it in the UI; only then does /api/documents/confirm tag chunks
         # and start generation. The AI proposes, the manager decides.
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             bank.save_chunks(chunks)
             from quizgen.rolemap import analyze_document, seed_roles
             seed_roles(bank)
@@ -815,7 +830,7 @@ class Handler(BaseHTTPRequestHandler):
         if not doc_title or not isinstance(assignments, dict):
             return self._error(400, "Missing title or assignments")
 
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             for r in body.get("newRoles") or []:
                 code = str(r.get("roleCode", "")).strip().upper().replace(" ", "_")
                 if code:
@@ -877,7 +892,7 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _list_roles(self):
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             from quizgen.rolemap import seed_roles
             seed_roles(bank)
             roles = bank.roles()
@@ -899,12 +914,12 @@ class Handler(BaseHTTPRequestHandler):
         title = str(body.get("title", "")).strip()
         if not code or not title:
             return self._error(400, "roleCode and title are required")
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             bank.add_role(code, title, str(body.get("description", "")))
         return self._send({"roleCode": code, "title": title}, 201)
 
     def _remove_role(self, code: str):
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             removed = bank.remove_role(code)
         if not removed:
             return self._error(404, "No such role", code)
@@ -935,7 +950,7 @@ class Handler(BaseHTTPRequestHandler):
         """
         learner = self._learner()
         role = self._learner_role()
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             approved = bank.questions(status=ReviewStatus.APPROVED)
             mastery = bank.mastery(learner)
             chunks = bank.all_chunks()
@@ -1007,7 +1022,7 @@ class Handler(BaseHTTPRequestHandler):
         from it" and be lying.
         """
         training = (query.get("training") or [""])[0]
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             chunks = [c for c in bank.all_chunks() if c.doc_title == training]
 
         if not chunks:
@@ -1045,7 +1060,7 @@ class Handler(BaseHTTPRequestHandler):
         from quizgen import qscore
 
         learner = self._learner()
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             held = bank.certificates(learner)
 
         best = qscore.best_certificates(held)
@@ -1102,7 +1117,7 @@ class Handler(BaseHTTPRequestHandler):
                 role_code=(person.get("role_code") or "ALL").upper(),
                 manager_id=person.get("manager_id"))
 
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             self._seed_requirements_if_empty(bank)
             requirements = bank.role_requirements(target.role_code)
             held = bank.certificates(target.email)
@@ -1153,7 +1168,7 @@ class Handler(BaseHTTPRequestHandler):
         identity = self._require()
         if identity is None:
             return None
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             self._seed_requirements_if_empty(bank)
             return self._send({
                 "requirements": bank.all_role_requirements(),
@@ -1178,7 +1193,7 @@ class Handler(BaseHTTPRequestHandler):
         if not role or not isinstance(items, list):
             return self._error(400, "Bad request",
                                "roleCode and a requirements list are required.")
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             count = bank.set_role_requirements(role, items)
         return self._send({"roleCode": role, "count": count})
 
@@ -1211,7 +1226,7 @@ class Handler(BaseHTTPRequestHandler):
         if question_id not in served:
             return self._error(403, "Not part of this attempt", question_id)
 
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             question = bank.get_question(question_id)
         if question is None:
             return self._error(404, "Unknown question", question_id)
@@ -1250,7 +1265,7 @@ class Handler(BaseHTTPRequestHandler):
         # quiz by editing the POST payload in devtools.
         role = self._learner_role()
 
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             plan = build_quiz(bank, learner_id=learner, length=length, role=role)
 
             # Scoping to one training happens after assembly rather than inside
@@ -1379,7 +1394,7 @@ class Handler(BaseHTTPRequestHandler):
                 "Start a quiz first. Attempts are lost when the dev server restarts.",
             )
 
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             questions = {qid: bank.get_question(qid) for qid in served}
 
             responses = []
@@ -1493,6 +1508,7 @@ def main() -> int:
     # the one case where you most need the server is the case it rejected.
     DB.parent.mkdir(parents=True, exist_ok=True)
 
+    # Startup summary: no request here, so the configured company.
     with Bank(DB) as bank:
         approved = len(bank.questions(status=ReviewStatus.APPROVED))
         total = bank.stats().get("questions", 0)

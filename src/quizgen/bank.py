@@ -73,7 +73,8 @@ CREATE TABLE IF NOT EXISTS questions (
     contradiction_notes TEXT,
     times_served     INTEGER NOT NULL DEFAULT 0,
     times_correct    INTEGER NOT NULL DEFAULT 0,
-    created_at       TEXT NOT NULL
+    created_at       TEXT NOT NULL,
+    company_id       TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS ix_questions_topic  ON questions(topic, review_status);
@@ -103,7 +104,8 @@ CREATE TABLE IF NOT EXISTS attempts (
     score_percent   REAL,
     points_awarded  INTEGER,
     points_possible INTEGER,
-    passed          INTEGER
+    passed          INTEGER,
+    company_id      TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_attempts_learner ON attempts(learner_id, started_at DESC);
 
@@ -117,7 +119,8 @@ CREATE TABLE IF NOT EXISTS responses (
     text_answer   TEXT,
     is_correct    INTEGER NOT NULL,
     points_awarded INTEGER NOT NULL DEFAULT 0,
-    answered_at   TEXT NOT NULL
+    answered_at   TEXT NOT NULL,
+    company_id    TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_responses_learner ON responses(learner_id, topic);
 CREATE INDEX IF NOT EXISTS ix_responses_question ON responses(question_id);
@@ -155,7 +158,8 @@ CREATE TABLE IF NOT EXISTS certificates (
     expires_at      TEXT NOT NULL,
     -- Placeholder until the certificate artefact exists. Deliberately nullable rather
     -- than a fake URL: a link that 404s is worse than an honest absence.
-    certificate_url TEXT
+    certificate_url TEXT,
+    company_id      TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_certificates_learner ON certificates(learner_id, doc_title);
 """
@@ -166,7 +170,25 @@ def utcnow() -> str:
 
 
 class Bank:
-    def __init__(self, db_path: Path) -> None:
+    """
+    The local question bank, scoped to one company.
+
+    TENANCY IS ENFORCED HERE, not at the call sites. Every read filters on company_id and
+    every write stamps it, so a query cannot forget — the alternative is a WHERE clause
+    repeated in forty places, where the one that gets missed returns another company's
+    rows and looks exactly like a query that worked.
+
+    `company_id` defaults to CONFIG.company_id rather than to "no filtering". A permissive
+    default is the bug this exists to prevent; there is no way to open a Bank that sees
+    everything by accident. ALL_COMPANIES is the deliberate escape hatch for admin tooling
+    and migrations, and it is a distinct, greppable string for exactly that reason.
+    """
+
+    #: Opt out of tenant scoping. Deliberately ugly and searchable.
+    ALL_COMPANIES = "*all-companies*"
+
+    def __init__(self, db_path: Path, company_id: Optional[str] = None) -> None:
+        self.company_id = company_id if company_id is not None else CONFIG.company_id
         db_path.parent.mkdir(parents=True, exist_ok=True)
         # timeout raises the busy wait well above the 5s default. Question generation
         # writes after every chunk while learners are taking quizzes on the same
@@ -198,20 +220,75 @@ class Bank:
         Kept deliberately small: name the column, its type, its default. Adding a
         column is the only migration SQLite does cheaply, and the only one this needs.
         """
+        # Empty is not a usable value — isolation.validate_company_id rejects it and
+        # search_index.upload refuses to index it. It exists so an existing bank can be
+        # opened at all; rows still have to be re-tagged before they mean anything.
+        tenant_column = ("company_id", "TEXT NOT NULL DEFAULT ''")
         additions = {
-            # Empty is not a usable value — isolation.validate_company_id rejects it
-            # and search_index.upload refuses to index it. It exists so an existing
-            # bank can be opened at all; the chunk still has to be re-tagged before it
-            # can reach a shared index.
-            "chunks": [("company_id", "TEXT NOT NULL DEFAULT ''")],
+            "chunks": [tenant_column],
+            "questions": [tenant_column],
+            "attempts": [tenant_column],
+            "responses": [tenant_column],
+            "certificates": [tenant_column],
         }
         for table, columns in additions.items():
             existing = {r["name"] for r in self.conn.execute(
                 "PRAGMA table_info({})".format(table))}
             for name, spec in columns:
-                if name not in existing:
+                if name in existing:
+                    continue
+                self.conn.execute(
+                    "ALTER TABLE {} ADD COLUMN {} {}".format(table, name, spec))
+
+                # Backfill an existing bank to this process's company, EXCEPT chunks.
+                #
+                # Without this, opening a bank written before the column makes every
+                # question, attempt and certificate vanish: the rows get '' and the
+                # filter looks for a real company id. An empty app is a worse failure
+                # than a wrong one here, because it looks like data loss.
+                #
+                # chunks are excluded deliberately. They are the one thing that reaches
+                # a SHARED search index, where an untagged chunk is retrievable by every
+                # company (docs/company-isolation-gap.md). Guessing a tenant for those
+                # is the permissive default that whole design rejects, so they stay
+                # empty and must be re-ingested — and there is a test for it.
+                if name == "company_id" and table != "chunks" and self._scoped:
                     self.conn.execute(
-                        "ALTER TABLE {} ADD COLUMN {} {}".format(table, name, spec))
+                        "UPDATE {} SET company_id = ? WHERE company_id = ''".format(table),
+                        (self.company_id,))
+
+    @property
+    def _scoped(self) -> bool:
+        return self.company_id != self.ALL_COMPANIES
+
+    def _where(self, alias: str = "") -> str:
+        """A leading AND-clause scoping to this tenant, or nothing when opted out."""
+        if not self._scoped:
+            return ""
+        prefix = "{}.".format(alias) if alias else ""
+        return " AND {}company_id = :company_id".format(prefix)
+
+    def _params(self, **kw) -> dict:
+        if self._scoped:
+            kw["company_id"] = self.company_id
+        return kw
+
+    def _where_qmark(self, alias: str = "") -> str:
+        """
+        The same clause in qmark style, for queries that build a positional list.
+
+        sqlite3 refuses to mix ":name" and "?" in one statement, and several callers here
+        already accumulate a params list. Two helpers is less error-prone than converting
+        those to named parameters and getting one of them wrong.
+        """
+        if not self._scoped:
+            return ""
+        prefix = "{}.".format(alias) if alias else ""
+        return " AND {}company_id = ?".format(prefix)
+
+    def _scope_params(self, params: list) -> list:
+        """Append the tenant value to a positional list, when scoped."""
+        return params + [self.company_id] if self._scoped else params
 
     def close(self) -> None:
         self.conn.close()
@@ -227,7 +304,12 @@ class Bank:
     def save_chunks(self, chunks: Iterable[Chunk]) -> int:
         rows = [
             (c.chunk_id, c.doc_id, c.doc_title, c.topic, c.section, c.page_start,
-             c.page_end, c.text, c.container, c.role_scope, c.company_id)
+             c.page_end, c.text, c.container, c.role_scope,
+             # The BANK's tenant, not the chunk's. A chunk carrying a
+             # different company_id than the bank it is being written to is a
+             # bug; taking the bank's value means it cannot silently land in
+             # the wrong tenant.
+             self.company_id)
             for c in chunks
         ]
         # Columns named explicitly rather than relying on positional VALUES: an
@@ -252,7 +334,9 @@ class Bank:
                 container=r["container"], role_scope=r["role_scope"],
                 company_id=r["company_id"],
             )
-            for r in self.conn.execute("SELECT * FROM chunks ORDER BY doc_title, page_start")
+            for r in self.conn.execute(
+                "SELECT * FROM chunks WHERE 1=1" + self._where()
+                + " ORDER BY doc_title, page_start", self._params())
         ]
 
     # --- questions ------------------------------------------------------------
@@ -274,7 +358,8 @@ class Bank:
             # Do not clobber an existing review decision or accumulated statistics on
             # regeneration — a human already made a call on this question.
             existing = self.conn.execute(
-                "SELECT review_status FROM questions WHERE question_id = ?", (q.question_id,)
+                "SELECT review_status FROM questions WHERE question_id = :qid" + self._where(),
+                self._params(qid=q.question_id)
             ).fetchone()
             if existing:
                 continue
@@ -285,8 +370,9 @@ class Bank:
                                           source_page, source_quote, generator, review_status,
                                           provenance_class, role_code, role_requirement,
                                           contradiction_notes,
-                                          times_served, times_correct, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?)""",
+                                          times_served, times_correct, created_at,
+                                          company_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?)""",
                 (
                     q.question_id, q.topic, q.question_type.value, q.difficulty.value, q.prompt,
                     q.explanation, q.points, q.source_chunk_id, q.source_doc_title,
@@ -296,6 +382,7 @@ class Bank:
                     ReviewStatus.APPROVED.value if auto else q.review_status.value,
                     q.provenance_class.value, q.role_code, q.role_requirement,
                     "; ".join(notes.get(q.question_id, [])), utcnow(),
+                    self.company_id,
                 ),
             )
             for i, o in enumerate(q.options):
@@ -353,8 +440,10 @@ class Bank:
         status: Optional[ReviewStatus] = None,
         topic: Optional[str] = None,
     ) -> List[Question]:
-        sql = "SELECT * FROM questions WHERE 1=1"
-        params: List[object] = []
+        # Tenant clause first so every branch below inherits it. qmark style, because
+        # the optional filters below build a positional list.
+        sql = "SELECT * FROM questions WHERE 1=1" + self._where_qmark()
+        params: List[object] = self._scope_params([])
         if status is not None:
             sql += " AND review_status = ?"
             params.append(status.value)
@@ -366,7 +455,8 @@ class Bank:
 
     def get_question(self, question_id: str) -> Optional[Question]:
         row = self.conn.execute(
-            "SELECT * FROM questions WHERE question_id = ?", (question_id,)
+            "SELECT * FROM questions WHERE question_id = :qid" + self._where(),
+            self._params(qid=question_id)
         ).fetchone()
         return self._hydrate(row) if row else None
 
@@ -442,6 +532,7 @@ class Bank:
             r["source_chunk_id"]
             for r in self.conn.execute(
                 "SELECT DISTINCT source_chunk_id FROM questions WHERE source_chunk_id != ''"
+                + self._where(), self._params()
             )
         }
 
@@ -449,7 +540,8 @@ class Bank:
         return [
             r["topic"]
             for r in self.conn.execute(
-                "SELECT DISTINCT topic FROM questions WHERE review_status = 'Approved' ORDER BY topic"
+                "SELECT DISTINCT topic FROM questions WHERE review_status = 'Approved'"
+                + self._where() + " ORDER BY topic", self._params()
             )
         ]
 
@@ -458,21 +550,27 @@ class Bank:
     def save_attempt(self, attempt: Attempt) -> None:
         self.conn.execute(
             """INSERT OR REPLACE INTO attempts
-               VALUES (?,?,?,?,?,?,?,?)""",
+               (attempt_id, learner_id, started_at, submitted_at, score_percent,
+                points_awarded, points_possible, passed, company_id)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
             (
                 attempt.attempt_id, attempt.learner_id, attempt.started_at,
                 attempt.submitted_at, attempt.score_percent, attempt.points_awarded,
                 attempt.points_possible, 1 if attempt.passed else 0,
+                self.company_id,
             ),
         )
         for r in attempt.responses:
             self.conn.execute(
                 """INSERT OR REPLACE INTO responses
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                   (response_id, attempt_id, learner_id, question_id, topic, selected,
+                    text_answer, is_correct, points_awarded, answered_at, company_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     r.response_id, r.attempt_id, r.learner_id, r.question_id, r.topic,
                     ",".join(r.selected_option_ids), r.text_answer,
                     1 if r.is_correct else 0, r.points_awarded, r.answered_at,
+                    self.company_id,
                 ),
             )
             # Empirical difficulty accumulates here.
@@ -503,17 +601,17 @@ class Bank:
                             SUM(r.is_correct)   AS correct
                      FROM responses r
                      LEFT JOIN questions q ON q.question_id = r.question_id
-                     WHERE r.learner_id = ?
+                     WHERE r.learner_id = :learner""" + self._where("r") + """
                      GROUP BY grp"""
         else:
             sql = """SELECT topic AS grp,
                             COUNT(*)          AS answered,
                             SUM(is_correct)   AS correct
                      FROM responses
-                     WHERE learner_id = ?
+                     WHERE learner_id = :learner""" + self._where() + """
                      GROUP BY grp"""
 
-        rows = self.conn.execute(sql, (learner_id,))
+        rows = self.conn.execute(sql, self._params(learner=learner_id))
         return {
             r["grp"]: TopicMastery(r["grp"], r["answered"], r["correct"] or 0)
             for r in rows
@@ -524,8 +622,9 @@ class Bank:
         attempt_ids = [
             r["attempt_id"]
             for r in self.conn.execute(
-                "SELECT attempt_id FROM attempts WHERE learner_id = ? ORDER BY started_at DESC LIMIT ?",
-                (learner_id, last_n_attempts),
+                "SELECT attempt_id FROM attempts WHERE learner_id = :learner" + self._where()
+                + " ORDER BY started_at DESC LIMIT :limit",
+                self._params(learner=learner_id, limit=last_n_attempts),
             )
         ]
         if not attempt_ids:
@@ -536,31 +635,35 @@ class Bank:
             for r in self.conn.execute(
                 "SELECT DISTINCT question_id FROM responses WHERE attempt_id IN ({})".format(
                     placeholders
-                ),
-                attempt_ids,
+                ) + self._where_qmark(),
+                self._scope_params(attempt_ids),
             )
         ]
 
     def attempt_count(self, learner_id: str) -> int:
         row = self.conn.execute(
-            "SELECT COUNT(*) AS n FROM attempts WHERE learner_id = ? AND submitted_at IS NOT NULL",
-            (learner_id,),
+            "SELECT COUNT(*) AS n FROM attempts WHERE learner_id = :learner "
+            "AND submitted_at IS NOT NULL" + self._where(),
+            self._params(learner=learner_id),
         ).fetchone()
         return row["n"] if row else 0
 
     def stats(self) -> Dict[str, int]:
-        def one(sql: str, *params) -> int:
-            row = self.conn.execute(sql, params).fetchone()
+        # Counts are tenant-scoped like everything else. An unscoped total would report
+        # another company's volume on this company's dashboard — less severe than leaking
+        # their content, still their business and not ours to show.
+        def one(sql: str) -> int:
+            row = self.conn.execute(sql + self._where(), self._params()).fetchone()
             return row[0] if row else 0
 
         return {
-            "chunks": one("SELECT COUNT(*) FROM chunks"),
-            "questions": one("SELECT COUNT(*) FROM questions"),
+            "chunks": one("SELECT COUNT(*) FROM chunks WHERE 1=1"),
+            "questions": one("SELECT COUNT(*) FROM questions WHERE 1=1"),
             "approved": one("SELECT COUNT(*) FROM questions WHERE review_status='Approved'"),
             "pending": one("SELECT COUNT(*) FROM questions WHERE review_status='PendingReview'"),
             "rejected": one("SELECT COUNT(*) FROM questions WHERE review_status='Rejected'"),
-            "attempts": one("SELECT COUNT(*) FROM attempts"),
-            "responses": one("SELECT COUNT(*) FROM responses"),
+            "attempts": one("SELECT COUNT(*) FROM attempts WHERE 1=1"),
+            "responses": one("SELECT COUNT(*) FROM responses WHERE 1=1"),
         }
 
     # --- role requirements & certificates -------------------------------------
@@ -626,15 +729,16 @@ class Bank:
                    issued_at=utcnow(), expires_at=expires_at, certificate_url=None)
         self.conn.execute(
             "INSERT OR REPLACE INTO certificates (certificate_id, learner_id, doc_title, "
-            "attempt_id, attempt_score, category, issued_at, expires_at, certificate_url) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            "attempt_id, attempt_score, category, issued_at, expires_at, certificate_url, "
+            "company_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (row["certificate_id"], row["learner_id"], row["doc_title"], row["attempt_id"],
-             row["attempt_score"], row["category"], row["issued_at"], row["expires_at"], None))
+             row["attempt_score"], row["category"], row["issued_at"], row["expires_at"], None,
+             self.company_id))
         self.conn.commit()
         return row
 
     def certificates(self, learner_id: str) -> List[dict]:
         """Every certificate this learner holds, expired ones included."""
         return [dict(r) for r in self.conn.execute(
-            "SELECT * FROM certificates WHERE learner_id = ? ORDER BY issued_at DESC",
-            (learner_id,))]
+            "SELECT * FROM certificates WHERE learner_id = :learner" + self._where()
+            + " ORDER BY issued_at DESC", self._params(learner=learner_id))]

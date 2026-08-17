@@ -152,25 +152,43 @@ def _now() -> str:
 
 @app.route(route="health", methods=["GET"])
 def health(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Liveness, and — only for a signed-in caller — their company's bank size.
+
+    This is the one endpoint that must answer without a token: deploy-backend.yml's health
+    check calls it to tell "the app is down" from "the app needs a password", and the
+    sign-in screen uses it to tell "API unreachable" from "wrong password".
+
+    That is also why the COUNTS are gated. There is no identity to scope them to when
+    nobody is signed in, so an unauthenticated count would sum every company's questions
+    — not a content leak, but still one tenant's volume shown to another, and visible to
+    anyone who can reach the host at all.
+    """
+    identity = get_current_employee(req)
     try:
         with _conn() as c:
             cur = c.cursor()
-            cur.execute(
-                "SELECT COUNT(*) FROM dbo.GeneratedQuestions WHERE review_status='Approved'"
-            )
-            approved = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM dbo.GeneratedQuestions")
-            total = cur.fetchone()[0]
-        return _json(
-            {
-                "status": "ok",
-                "database": "connected",
-                "questionsApproved": approved,
-                "questionsTotal": total,
-                # A learner cannot be served anything until questions are approved.
-                "servable": approved > 0,
-            }
-        )
+            counts = {}
+            if identity is not None:
+                cur.execute(
+                    """SELECT COUNT(*) FROM dbo.GeneratedQuestions
+                        WHERE review_status='Approved' AND company_id = ?""",
+                    identity.company_id)
+                approved = cur.fetchone()[0]
+                cur.execute(
+                    "SELECT COUNT(*) FROM dbo.GeneratedQuestions WHERE company_id = ?",
+                    identity.company_id)
+                counts = {
+                    "questionsApproved": approved,
+                    "questionsTotal": cur.fetchone()[0],
+                    # A learner cannot be served anything until questions are approved.
+                    "servable": approved > 0,
+                }
+            else:
+                # Proves the connection works without reporting anyone's data.
+                cur.execute("SELECT 1")
+                cur.fetchone()
+        return _json({"status": "ok", "database": "connected", **counts})
     except Exception as exc:  # noqa: BLE001
         return _json(
             {"status": "degraded", "database": "unreachable", "error": type(exc).__name__},
@@ -193,9 +211,10 @@ def get_me(req: func.HttpRequest) -> func.HttpResponse:
             cur = c.cursor()
             cur.execute(
                 """SELECT topic, answered, correct, accuracy_percent, mastery_level
-                   FROM dbo.vw_LearnerTopicMastery WHERE learner_id = ?
+                   FROM dbo.vw_LearnerTopicMastery
+                   WHERE learner_id = ? AND company_id = ?
                    ORDER BY accuracy_percent""",
-                learner,
+                learner, identity.company_id,
             )
             mastery = _rows(cur)
 
@@ -240,9 +259,10 @@ def list_topics(req: func.HttpRequest) -> func.HttpResponse:
                 """SELECT c.role_scope, q.topic, COUNT(*) AS questionCount
                    FROM dbo.GeneratedQuestions q
                    JOIN dbo.SourceChunks c ON c.chunk_id = q.source_chunk_id
-                   WHERE q.review_status = 'Approved'
+                   WHERE q.review_status = 'Approved' AND q.company_id = ?
                    GROUP BY c.role_scope, q.topic
-                   ORDER BY c.role_scope, q.topic"""
+                   ORDER BY c.role_scope, q.topic""",
+                identity.company_id,
             )
             return _json({"topics": _rows(cur)})
     except Exception as exc:  # noqa: BLE001
@@ -253,7 +273,7 @@ def list_topics(req: func.HttpRequest) -> func.HttpResponse:
 # quiz
 # --------------------------------------------------------------------------
 
-def _weak_topics(cur, learner: str) -> List[str]:
+def _weak_topics(cur, learner: str, company_id: int) -> List[str]:
     """
     Topics below the threshold with enough evidence to judge.
 
@@ -262,9 +282,10 @@ def _weak_topics(cur, learner: str) -> List[str]:
     """
     cur.execute(
         """SELECT topic FROM dbo.vw_LearnerTopicMastery
-           WHERE learner_id = ? AND answered >= ? AND accuracy_percent < ?
+           WHERE learner_id = ? AND company_id = ?
+             AND answered >= ? AND accuracy_percent < ?
            ORDER BY accuracy_percent""",
-        learner, MIN_ANSWERS, WEAK_THRESHOLD * 100,
+        learner, company_id, MIN_ANSWERS, WEAK_THRESHOLD * 100,
     )
     return [r["topic"] for r in _rows(cur)]
 
@@ -291,12 +312,13 @@ def start_quiz(req: func.HttpRequest) -> func.HttpResponse:
     try:
         with _conn() as c:
             cur = c.cursor()
-            weak = _weak_topics(cur, learner)
+            weak = _weak_topics(cur, learner, identity.company_id)
 
             # Questions the learner has already seen — held back unless the bank is thin.
             cur.execute(
-                "SELECT DISTINCT question_id FROM dbo.GeneratedQuizResponses WHERE learner_id = ?",
-                learner,
+                """SELECT DISTINCT question_id FROM dbo.GeneratedQuizResponses
+                    WHERE learner_id = ? AND company_id = ?""",
+                learner, identity.company_id,
             )
             seen = {r["question_id"] for r in _rows(cur)}
 
@@ -304,8 +326,8 @@ def start_quiz(req: func.HttpRequest) -> func.HttpResponse:
                             q.prompt, q.points, q.provenance_class, c.role_scope
                      FROM dbo.GeneratedQuestions q
                      JOIN dbo.SourceChunks c ON c.chunk_id = q.source_chunk_id
-                     WHERE q.review_status = 'Approved'"""
-            params: List[Any] = []
+                     WHERE q.review_status = 'Approved' AND q.company_id = ?"""
+            params: List[Any] = [identity.company_id]
             if role:
                 # A role sees its own material plus everything company-wide.
                 sql += " AND c.role_scope IN (?, 'ALL')"
@@ -330,9 +352,10 @@ def start_quiz(req: func.HttpRequest) -> func.HttpResponse:
         with _conn() as c:
             cur = c.cursor()
             cur.execute(
-                """INSERT INTO dbo.GeneratedQuizAttempts (attempt_id, learner_id, started_at)
-                   VALUES (?, ?, SYSUTCDATETIME())""",
-                attempt_id, learner,
+                """INSERT INTO dbo.GeneratedQuizAttempts
+                       (attempt_id, learner_id, started_at, company_id)
+                   VALUES (?, ?, SYSUTCDATETIME(), ?)""",
+                attempt_id, learner, identity.company_id,
             )
             # Record what was served. POST /quiz/answer reveals the key for one question,
             # so it has to be able to check that the question was actually in this
@@ -433,9 +456,10 @@ def _issue_certificate(cur, identity, attempt_id, results):
     cur.execute(
         """INSERT INTO dbo.Certificates
                (employee_id, attempt_id, doc_title, attempt_score, category,
-                issued_at, expires_at, status)
-           VALUES (?, ?, ?, ?, ?, SYSUTCDATETIME(), ?, 'Active')""",
+                issued_at, expires_at, status, company_id)
+           VALUES (?, ?, ?, ?, ?, SYSUTCDATETIME(), ?, 'Active', ?)""",
         identity.employee_id, attempt_id, doc_title, score, category, expires_at,
+        identity.company_id,
     )
     return {
         "docTitle": doc_title,
@@ -531,11 +555,11 @@ def submit_quiz(req: func.HttpRequest) -> func.HttpResponse:
                 cur.execute(
                     """INSERT INTO dbo.GeneratedQuizResponses
                        (response_id, attempt_id, learner_id, question_id, topic,
-                        selected, text_answer, is_correct, points_awarded)
-                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                        selected, text_answer, is_correct, points_awarded, company_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
                     "res_" + uuid.uuid4().hex[:12], attempt_id, learner, qid,
                     q["topic"], ",".join(selected), text_answer,
-                    1 if is_correct else 0, points,
+                    1 if is_correct else 0, points, identity.company_id,
                 )
                 # Measured difficulty accumulates here.
                 cur.execute(
@@ -619,7 +643,8 @@ def review_pending(req: func.HttpRequest) -> func.HttpResponse:
     # the answer key for the whole bank to anyone who could reach the host -- no sign-in,
     # no role, no rate limit. Reviewing is a manager action in any case, so it takes the
     # same gate as review/decide.
-    forbidden = require_manager(get_current_employee(req))
+    identity = get_current_employee(req)
+    forbidden = require_manager(identity)
     if forbidden:
         return forbidden
 
@@ -633,9 +658,9 @@ def review_pending(req: func.HttpRequest) -> func.HttpResponse:
                           explanation, source_doc_title, source_page, source_quote,
                           provenance_class, contradiction_notes
                    FROM dbo.GeneratedQuestions
-                   WHERE review_status = 'PendingReview'
+                   WHERE review_status = 'PendingReview' AND company_id = ?
                    ORDER BY created_at""",
-                limit,
+                limit, identity.company_id,
             )
             questions = _rows(cur)
             for q in questions:
@@ -732,8 +757,9 @@ def answer_question(req: func.HttpRequest) -> func.HttpResponse:
             # Check 1: the attempt is this caller's. Same 404 for "no such attempt" and
             # "someone else's" — distinguishing them confirms an attempt id exists.
             cur.execute(
-                "SELECT learner_id FROM dbo.GeneratedQuizAttempts WHERE attempt_id = ?",
-                attempt_id,
+                """SELECT learner_id FROM dbo.GeneratedQuizAttempts
+                    WHERE attempt_id = ? AND company_id = ?""",
+                attempt_id, identity.company_id,
             )
             attempt = cur.fetchone()
             if attempt is None or attempt.learner_id != learner:
@@ -751,8 +777,9 @@ def answer_question(req: func.HttpRequest) -> func.HttpResponse:
             cur.execute(
                 """SELECT question_id, question_type, explanation, source_doc_title,
                           source_page, source_quote, source_url, provenance_class
-                     FROM dbo.GeneratedQuestions WHERE question_id = ?""",
-                question_id,
+                     FROM dbo.GeneratedQuestions
+                    WHERE question_id = ? AND company_id = ?""",
+                question_id, identity.company_id,
             )
             question = cur.fetchone()
             if question is None:
@@ -831,10 +858,11 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
                      FROM dbo.GeneratedQuestions q
                      LEFT JOIN dbo.SourceChunks c ON c.chunk_id = q.source_chunk_id
                     WHERE q.review_status = 'Approved'
+                      AND q.company_id = ?
                       AND (COALESCE(c.role_scope, 'ALL') IN ('ALL', ?))
                     GROUP BY COALESCE(q.source_doc_title, q.topic)
                     ORDER BY doc""",
-                role,
+                identity.company_id, role,
             )
             docs = _rows(cur)
             if not docs:
@@ -844,9 +872,10 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
 
             cur.execute(
                 """SELECT DISTINCT doc_title, topic FROM dbo.SourceChunks
-                    WHERE COALESCE(role_scope, 'ALL') IN ('ALL', ?)
+                    WHERE company_id = ?
+                      AND COALESCE(role_scope, 'ALL') IN ('ALL', ?)
                     ORDER BY doc_title, topic""",
-                role,
+                identity.company_id, role,
             )
             modules: Dict[str, List[str]] = {}
             for row in _rows(cur):
@@ -857,13 +886,14 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
             cur.execute(
                 """SELECT m.topic, m.answered, m.correct
                      FROM dbo.vw_LearnerTopicMastery m
-                    WHERE m.learner_id = ?""",
-                learner,
+                    WHERE m.learner_id = ? AND m.company_id = ?""",
+                learner, identity.company_id,
             )
             by_topic = {r["topic"]: r for r in _rows(cur)}
 
             cur.execute(
-                """SELECT DISTINCT doc_title, topic FROM dbo.SourceChunks""")
+                """SELECT DISTINCT doc_title, topic FROM dbo.SourceChunks
+                    WHERE company_id = ?""", identity.company_id)
             topic_to_doc = {r["topic"]: r["doc_title"] for r in _rows(cur)}
 
         rolled: Dict[str, Dict[str, int]] = {}
@@ -929,9 +959,10 @@ def get_lesson(req: func.HttpRequest) -> func.HttpResponse:
                 """SELECT chunk_id, topic, section, page_start, page_end, chunk_text
                      FROM dbo.SourceChunks
                     WHERE doc_title = ?
+                      AND company_id = ?
                       AND COALESCE(role_scope, 'ALL') IN ('ALL', ?)
                     ORDER BY page_start, section""",
-                training, role,
+                training, identity.company_id, role,
             )
             sections = _rows(cur)
 
@@ -1084,14 +1115,14 @@ def _role_requirements(cur, role_code: str, company_id: int) -> List[Dict[str, A
     return _rows(cur)
 
 
-def _certificates_for(cur, employee_id: int) -> List[Dict[str, Any]]:
+def _certificates_for(cur, employee_id: int, company_id: int) -> List[Dict[str, Any]]:
     cur.execute(
         """SELECT id, doc_title, attempt_id, attempt_score, category,
                   issued_at, expires_at, certificate_url, status
              FROM dbo.Certificates
-            WHERE employee_id = ? AND doc_title IS NOT NULL
+            WHERE employee_id = ? AND company_id = ? AND doc_title IS NOT NULL
             ORDER BY issued_at DESC""",
-        employee_id)
+        employee_id, company_id)
     return [
         {
             "certificate_id": str(r["id"]),
@@ -1117,7 +1148,7 @@ def list_certificates(req: func.HttpRequest) -> func.HttpResponse:
 
     try:
         with _conn() as c:
-            held = _certificates_for(c.cursor(), identity.employee_id)
+            held = _certificates_for(c.cursor(), identity.employee_id, identity.company_id)
 
         best = qscore.best_certificates(held)
         return _json({
@@ -1194,7 +1225,7 @@ def get_qscore(req: func.HttpRequest) -> func.HttpResponse:
                 target_role = (person.role_code or "ALL").upper()
 
             requirements = _role_requirements(cur, target_role, identity.company_id)
-            held = _certificates_for(cur, target_id)
+            held = _certificates_for(cur, target_id, identity.company_id)
 
         standing = qscore.standing(requirements, held)
         return _json({

@@ -122,11 +122,14 @@ class TestCompanyIdSurvivesStorage(unittest.TestCase):
     """A tag that is lost on the way through SQLite is not a tag."""
 
     def test_round_trip_through_the_bank(self):
+        # The BANK's tenant is authoritative, not the Chunk's. Passing a chunk built for
+        # another company must not write into that company — so the bank is opened as
+        # company 7 rather than the chunk merely claiming to be.
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "bank.db"
-            with Bank(db) as bank:
-                bank.save_chunks([_chunk(company_id="7")])
-            with Bank(db) as bank:
+            with Bank(db, company_id="7") as bank:
+                bank.save_chunks([_chunk()])
+            with Bank(db, company_id="7") as bank:
                 restored = bank.all_chunks()
         self.assertEqual(len(restored), 1)
         self.assertEqual(restored[0].company_id, "7")
@@ -134,12 +137,11 @@ class TestCompanyIdSurvivesStorage(unittest.TestCase):
     def test_two_companies_stay_distinct(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "bank.db"
-            with Bank(db) as bank:
-                bank.save_chunks([
-                    _chunk(chunk_id="a", company_id="1"),
-                    _chunk(chunk_id="b", company_id="2"),
-                ])
-            with Bank(db) as bank:
+            with Bank(db, company_id="1") as bank:
+                bank.save_chunks([_chunk(chunk_id="a")])
+            with Bank(db, company_id="2") as bank:
+                bank.save_chunks([_chunk(chunk_id="b")])
+            with Bank(db, company_id=Bank.ALL_COMPANIES) as bank:
                 by_id = {c.chunk_id: c.company_id for c in bank.all_chunks()}
         self.assertEqual(by_id, {"a": "1", "b": "2"})
 
@@ -166,15 +168,26 @@ class TestCompanyIdSurvivesStorage(unittest.TestCase):
             legacy.close()
 
             with Bank(db) as bank:
-                restored = bank.all_chunks()
+                visible = bank.all_chunks()
+            with Bank(db, company_id=Bank.ALL_COMPANIES) as bank:
+                all_rows = bank.all_chunks()
 
-            self.assertEqual(len(restored), 1)
-            # Migrated, not guessed at: the pre-existing row is empty, which is invalid
-            # and will be refused by upload until it is re-tagged. Inventing a company
-            # for it would be exactly the silent-default failure this all exists to stop.
-            self.assertEqual(restored[0].company_id, "")
+            # The bank opens rather than raising — that is what this test is for.
+            #
+            # The legacy row survives the migration but is INVISIBLE to a tenant-scoped
+            # read, because it carries no company. That is the safe direction: a row that
+            # cannot be attributed to a company must not be served to one.
+            #
+            # Chunks are deliberately not backfilled, unlike the other tables. They are
+            # the one thing that reaches a SHARED search index, where an untagged chunk is
+            # retrievable by everybody — so guessing a tenant for them is exactly the
+            # permissive default docs/company-isolation-gap.md rejects. They have to be
+            # re-ingested.
+            self.assertEqual(visible, [], "an untagged row must not be served to a tenant")
+            self.assertEqual(len(all_rows), 1, "but it is still there")
+            self.assertEqual(all_rows[0].company_id, "")
             with self.assertRaises(IsolationError):
-                validate_company_id({"chunk_id": "old", "company_id": restored[0].company_id})
+                validate_company_id({"chunk_id": "old", "company_id": all_rows[0].company_id})
 
 
 class TestIngestionTagsAtCreation(unittest.TestCase):
