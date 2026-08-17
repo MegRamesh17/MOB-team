@@ -389,6 +389,10 @@ def _chunk_pages(pages: List[str], source_name: str, doc_title: str) -> List[Chu
                     page_start=page_no,
                     page_end=page_no,
                     text=text,
+                    # Tagged at creation, not stamped on later. A chunk that exists
+                    # untagged is a chunk that can be handed to something which forgets
+                    # to tag it — the window is small, and closing it costs one line.
+                    company_id=CONFIG.company_id,
                 )
             )
     return chunks

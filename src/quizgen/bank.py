@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     page_end    INTEGER NOT NULL,
     text        TEXT NOT NULL,
     container   TEXT NOT NULL DEFAULT '',
-    role_scope  TEXT NOT NULL DEFAULT 'ALL'
+    role_scope  TEXT NOT NULL DEFAULT 'ALL',
+    company_id  TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_chunks_scope ON chunks(role_scope);
 
@@ -145,7 +146,35 @@ class Bank:
         except sqlite3.DatabaseError:
             pass
         self.conn.executescript(SCHEMA)
+        self._ensure_columns()
         self.conn.commit()
+
+    def _ensure_columns(self) -> None:
+        """
+        Add columns that CREATE TABLE IF NOT EXISTS cannot.
+
+        A bank created before a column existed keeps its old shape — the guarded CREATE
+        is a no-op on an existing table, so a new column is silently absent and every
+        read of it raises. Anyone with a `quizgen.db` from before company_id would have
+        hit that on their next quiz.
+
+        Kept deliberately small: name the column, its type, its default. Adding a
+        column is the only migration SQLite does cheaply, and the only one this needs.
+        """
+        additions = {
+            # Empty is not a usable value — isolation.validate_company_id rejects it
+            # and search_index.upload refuses to index it. It exists so an existing
+            # bank can be opened at all; the chunk still has to be re-tagged before it
+            # can reach a shared index.
+            "chunks": [("company_id", "TEXT NOT NULL DEFAULT ''")],
+        }
+        for table, columns in additions.items():
+            existing = {r["name"] for r in self.conn.execute(
+                "PRAGMA table_info({})".format(table))}
+            for name, spec in columns:
+                if name not in existing:
+                    self.conn.execute(
+                        "ALTER TABLE {} ADD COLUMN {} {}".format(table, name, spec))
 
     def close(self) -> None:
         self.conn.close()
@@ -161,11 +190,18 @@ class Bank:
     def save_chunks(self, chunks: Iterable[Chunk]) -> int:
         rows = [
             (c.chunk_id, c.doc_id, c.doc_title, c.topic, c.section, c.page_start,
-             c.page_end, c.text, c.container, c.role_scope)
+             c.page_end, c.text, c.container, c.role_scope, c.company_id)
             for c in chunks
         ]
+        # Columns named explicitly rather than relying on positional VALUES: an
+        # existing bank migrated by _ensure_columns has company_id appended last,
+        # while a freshly created one gets it from CREATE TABLE. Naming them makes
+        # both orders work and stops the next added column breaking this silently.
         self.conn.executemany(
-            "INSERT OR REPLACE INTO chunks VALUES (?,?,?,?,?,?,?,?,?,?)", rows
+            "INSERT OR REPLACE INTO chunks "
+            "(chunk_id, doc_id, doc_title, topic, section, page_start, page_end, "
+            " text, container, role_scope, company_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows
         )
         self.conn.commit()
         return len(rows)
@@ -177,6 +213,7 @@ class Bank:
                 topic=r["topic"], section=r["section"], page_start=r["page_start"],
                 page_end=r["page_end"], text=r["text"],
                 container=r["container"], role_scope=r["role_scope"],
+                company_id=r["company_id"],
             )
             for r in self.conn.execute("SELECT * FROM chunks ORDER BY doc_title, page_start")
         ]

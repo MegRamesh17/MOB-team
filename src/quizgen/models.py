@@ -99,6 +99,21 @@ class Chunk:
     container: str = ""
     role_scope: str = "ALL"
 
+    # Which company owns this passage. Note the asymmetry with role_scope, which is
+    # deliberate and is the whole security property (see isolation.py and
+    # docs/company-isolation-gap.md):
+    #
+    #   role_scope  defaults to "ALL" — no stated audience means everyone WITHIN one
+    #               company should see it. A permissive default is correct.
+    #   company_id  defaults to EMPTY, which is invalid. "Visible to every company" is
+    #               never a sensible default, so an untagged chunk must fail rather
+    #               than fall back to something permissive.
+    #
+    # The empty default exists only because a dataclass cannot put a required field
+    # after defaulted ones. It is not a usable value: isolation.validate_company_id
+    # rejects it, and search_index.upload refuses to index it.
+    company_id: str = ""
+
     # Where this passage came from. "document" today; "web" once online sourcing is
     # wired up. Kept on the chunk rather than inferred later, because a question's
     # citation and its staleness both depend on it.
