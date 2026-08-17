@@ -72,6 +72,19 @@ jobs:
               echo "Skipping $fname - already applied"
             fi
           done
+      - name: Verify the schema matches what the migrations claim
+        # SchemaMigrations recorded 009 as applied when Companies had never been created,
+        # and 011 apparently went the same way. The exit-code fix above stops that
+        # happening again; it does not detect what is already missing.
+        #
+        # This runs AFTER the migrations and reports every gap in one pass, so a repair is
+        # one round trip instead of one per missing table — each of which otherwise costs
+        # a firewall rule and a workflow run.
+        run: |
+          sqlcmd -S mob-sql-server-02.database.windows.net -d mob-training-db \
+            -U mobsqladmin -P "${{ secrets.SQL_ADMIN_PASSWORD }}" \
+            -C -b -i db/verify_schema.sql
+
       - name: Close temporary firewall rule
         if: always()
         run: |
