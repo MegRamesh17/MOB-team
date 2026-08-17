@@ -51,6 +51,9 @@ PASSING_SCORE = float(os.getenv("QUIZGEN_PASSING_SCORE", "80"))
 QUIZ_LENGTH = int(os.getenv("QUIZGEN_QUIZ_LENGTH", "8"))
 WEAK_THRESHOLD = float(os.getenv("QUIZGEN_WEAK_THRESHOLD", "0.70"))
 MIN_ANSWERS = int(os.getenv("QUIZGEN_MIN_ANSWERS", "3"))
+# How long a certificate stays current. 12 months per docs/q-score.md; an env
+# override exists so expiry can be demonstrated without waiting a year.
+CERT_VALIDITY_MONTHS = int(os.getenv("QUIZGEN_CERT_VALIDITY_MONTHS", "12"))
 
 # In-flight quizzes: attempt_id -> question ids, in the order served.
 #
@@ -378,6 +381,10 @@ class Handler(BaseHTTPRequestHandler):
 
             if route == "/api/team":
                 return self._team()
+            if route == "/api/qscore":
+                return self._qscore(query)
+            if route == "/api/requirements":
+                return self._requirements()
             if route == "/api/me":
                 return self._me()
             if route == "/api/topics":
@@ -432,6 +439,8 @@ class Handler(BaseHTTPRequestHandler):
             if self._require() is None:
                 return None
 
+            if route == "/api/requirements":
+                return self._set_requirements()
             if route == "/api/quiz/start":
                 return self._start()
             if route == "/api/quiz/answer":
@@ -1025,37 +1034,153 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _certificates(self):
-        """Passed attempts. A certificate is a passed attempt, not a separate record."""
+        """
+        Real certificate records.
+
+        Previously this derived certificates from passed attempts on the fly, which meant
+        a certificate had no identity, no stored score, and no expiry of its own — it was
+        recomputed from whatever the attempt happened to say. Certificates are now rows
+        (CERT-01..06), so a retake issues a new one and the old remains as history.
+        """
+        from quizgen import qscore
+
         learner = self._learner()
         with Bank(DB) as bank:
-            rows = bank.conn.execute(
-                """SELECT attempt_id, submitted_at, score_percent
-                   FROM attempts
-                   WHERE learner_id = ? AND passed = 1 AND submitted_at IS NOT NULL
-                   ORDER BY submitted_at DESC""",
-                (learner,),
-            ).fetchall()
-            certs = []
-            for r in rows:
-                # Name the certificate after whatever the attempt actually covered.
-                topics = bank.conn.execute(
-                    """SELECT q.source_doc_title AS doc, COUNT(*) AS n
-                       FROM responses r JOIN questions q ON q.question_id = r.question_id
-                       WHERE r.attempt_id = ? AND q.source_doc_title != ''
-                       GROUP BY doc ORDER BY n DESC LIMIT 1""",
-                    (r["attempt_id"],),
-                ).fetchone()
-                expires = _plus_one_year(r["submitted_at"] or "")
-                certs.append({
-                    "title": topics["doc"] if topics else "General Compliance",
-                    "date": (r["submitted_at"] or "")[:10],
-                    "score": round(r["score_percent"], 1),
-                    # Certificates renew yearly; an expired one is shown, marked, and
-                    # owed again — not silently dropped from the list.
-                    "expiresAt": expires[:10],
-                    "expired": bool(expires and expires < _now()),
-                })
-        return self._send({"certificates": certs})
+            held = bank.certificates(learner)
+
+        best = qscore.best_certificates(held)
+        out = []
+        for cert in held:
+            expired = qscore.is_expired(cert["expires_at"])
+            out.append({
+                "certificateId": cert["certificate_id"],
+                "title": cert["doc_title"],
+                "date": (cert["issued_at"] or "")[:10],
+                "score": round(cert["attempt_score"], 1),
+                "category": cert["category"],
+                "expiresAt": (cert["expires_at"] or "")[:10],
+                "expired": expired,
+                "daysUntilExpiry": qscore.days_until_expiry(cert["expires_at"]),
+                # Which of several passes for the same training currently counts.
+                "ofRecord": best.get(cert["doc_title"], {}).get(
+                    "certificate_id") == cert["certificate_id"],
+                # Null until the artefact exists. An honest absence beats a link that 404s.
+                "certificateUrl": cert.get("certificate_url"),
+            })
+        return self._send({
+            "certificates": out,
+            "renewalsDue": qscore.renewal_candidates(held),
+        })
+
+    def _qscore(self, query):
+        """
+        Q Score for the caller, or for someone they manage.
+
+        ?employee=<email> is how a manager reads a report's score. Permitted only for
+        someone in their reporting subtree — QSCORE-08 says "everyone above you in the
+        chain", which is the same statement read from the other end. Anyone else is a
+        404, not a 403: whether a given person exists is not something to confirm to
+        someone with no business asking.
+        """
+        from quizgen import qscore
+
+        identity = self._require()
+        if identity is None:
+            return None
+
+        target_email = (query.get("employee", [""])[0] or "").strip().lower()
+        target = identity
+        if target_email and target_email != identity.email.lower():
+            reports = {p["email"].lower(): p
+                       for p in devauth.reports_of(identity.employee_id)}
+            person = reports.get(target_email)
+            if person is None:
+                return self._error(404, "Not found", "No such employee in your team.")
+            target = devauth.Identity(
+                employee_id=person["employee_id"], email=person["email"], company_id=1,
+                access_role=person.get("access_role"), name=person.get("name", ""),
+                role_code=(person.get("role_code") or "ALL").upper(),
+                manager_id=person.get("manager_id"))
+
+        with Bank(DB) as bank:
+            self._seed_requirements_if_empty(bank)
+            requirements = bank.role_requirements(target.role_code)
+            held = bank.certificates(target.email)
+
+        standing = qscore.standing(requirements, held)
+        return self._send({
+            "employee": {"email": target.email, "name": target.name,
+                         "roleCode": target.role_code},
+            "overall": standing["overall"].to_dict(),
+            "behavioural": standing["behavioural"].to_dict(),
+            "technical": standing["technical"].to_dict(),
+            # Stated rather than implied. A Q Score with no required list is 0 against a
+            # denominator of nothing, and a screen showing 0 without saying why reads as
+            # "you have done nothing" instead of "nobody has said what you must do".
+            "requirementsConfigured": bool(requirements),
+        })
+
+    def _seed_requirements_if_empty(self, bank):
+        """
+        Give every role a starting required list, once, if nobody has set one.
+
+        Without a denominator Q Score is 0 for everyone and the screen looks broken
+        rather than unconfigured. Seeded from what is actually in the bank: every
+        document scoped ALL becomes required of everyone, and each role-scoped document
+        becomes required of that role.
+
+        This is a DEV convenience and is honest about it — real requirements are a
+        compliance decision, and POST /api/requirements overwrites this entirely. It runs
+        only when the table is empty, so an admin's list is never quietly replaced.
+        """
+        if bank.all_role_requirements():
+            return
+        rows = bank.conn.execute(
+            "SELECT DISTINCT role_scope, doc_title FROM chunks WHERE doc_title != ''"
+        ).fetchall()
+        by_role = {}
+        for r in rows:
+            by_role.setdefault((r["role_scope"] or "ALL").upper(), []).append(
+                # Behavioural vs technical cannot be inferred from a title, so everything
+                # starts technical. An admin recategorises; guessing would put real
+                # conduct training in the wrong bucket and skew the split it exists for.
+                {"doc_title": r["doc_title"], "category": "technical"})
+        for role, items in by_role.items():
+            bank.set_role_requirements(role, items)
+
+    def _requirements(self):
+        """The required training list per role. Admin-set, never inferred."""
+        identity = self._require()
+        if identity is None:
+            return None
+        with Bank(DB) as bank:
+            self._seed_requirements_if_empty(bank)
+            return self._send({
+                "requirements": bank.all_role_requirements(),
+                "mine": bank.role_requirements(identity.role_code),
+            })
+
+    def _set_requirements(self):
+        """
+        Replace the required list for one role. Admin or executive only.
+
+        Not a manager action, deliberately: this is Coverage's denominator, so whoever
+        edits it moves everyone-in-that-role's Q Score. That is a compliance decision,
+        not a team one.
+        """
+        identity = self._require("admin")
+        if identity is None:
+            return None
+
+        body = self._body()
+        role = str(body.get("roleCode", "")).strip().upper()
+        items = body.get("requirements")
+        if not role or not isinstance(items, list):
+            return self._error(400, "Bad request",
+                               "roleCode and a requirements list are required.")
+        with Bank(DB) as bank:
+            count = bank.set_role_requirements(role, items)
+        return self._send({"roleCode": role, "count": count})
 
     def _answer(self):
         """
@@ -1192,6 +1317,55 @@ class Handler(BaseHTTPRequestHandler):
             } for q in plan.questions],
         })
 
+    def _issue_certificate(self, bank, learner, attempt_id, detail):
+        """
+        Issue a certificate for a passed attempt.
+
+        The training it certifies is the source DOCUMENT, not the topic — the same grain
+        trainings and mastery use, so a certificate lines up with the card the learner
+        pressed "start" on. A quiz spanning two documents certifies the one it drew most
+        of its questions from; mixed quizzes are an assembly artefact, not a thing to
+        certify twice.
+
+        attempt_score is the difficulty-weighted score from qscore.py, not the raw
+        percentage the results screen shows. Those differ on purpose: the raw score is
+        "how many did you get right", the attempt score is what feeds Q Score.
+        """
+        from quizgen import qscore
+
+        # "correct", not "isCorrect" — the deployed API uses the latter, this detail
+        # dict uses the former, and reading the wrong one scores every answer as wrong
+        # while still issuing the certificate. Silent, and only visible as a suspiciously
+        # round 0.0 on a passing attempt.
+        graded = [{"difficulty": d.get("difficulty", "Medium"),
+                   "correct": bool(d.get("correct"))} for d in detail]
+        score = qscore.attempt_score(graded)
+
+        titles = [d.get("sourceTitle") or d.get("topic") for d in detail]
+        titles = [t for t in titles if t]
+        if not titles:
+            return None
+        doc_title = max(set(titles), key=titles.count)
+
+        # Category comes from the role's requirement list, which is where an admin
+        # declared it. Defaulting to technical when nothing says otherwise keeps a
+        # certificate out of the behavioural bucket rather than guessing it into one.
+        category = "technical"
+        for req in bank.role_requirements(self._learner_role()):
+            if req["doc_title"] == doc_title:
+                category = req.get("category") or "technical"
+                break
+
+        return bank.issue_certificate(
+            certificate_id="cert_" + uuid.uuid4().hex[:12],
+            learner_id=learner,
+            doc_title=doc_title,
+            attempt_id=attempt_id,
+            attempt_score=score,
+            category=category,
+            expires_at=qscore.expiry_from(_now(), CERT_VALIDITY_MONTHS),
+        )
+
     def _submit(self):
         body = self._body()
         attempt_id = body.get("attemptId", "")
@@ -1253,6 +1427,11 @@ class Handler(BaseHTTPRequestHandler):
                     "topic": question.topic,
                     "prompt": question.prompt,
                     "correct": correct,
+                    # Needed by qscore.attempt_score. Without it every question weighs
+                    # 1.0 and the difficulty weighting is a no-op that looks like it
+                    # works — the score is plausible, just not what it claims to be.
+                    "difficulty": question.difficulty.value
+                    if hasattr(question.difficulty, "value") else str(question.difficulty),
                     "explanation": question.explanation,
                     "correctOptionIds": [o.option_id for o in question.options if o.is_correct],
                     "acceptedAnswers": question.accepted_answers,
@@ -1276,6 +1455,13 @@ class Handler(BaseHTTPRequestHandler):
             )
             bank.save_attempt(attempt)
 
+            # A pass earns a certificate. Issued here rather than by a later sweep so
+            # the learner sees it on the results screen — a certificate that appears
+            # minutes later reads as if something went wrong.
+            certificate = None
+            if attempt.passed:
+                certificate = self._issue_certificate(bank, learner, attempt_id, detail)
+
             mastery = bank.mastery(learner)
 
         _IN_FLIGHT.pop(attempt_id, None)
@@ -1292,6 +1478,7 @@ class Handler(BaseHTTPRequestHandler):
             "pointsPossible": possible,
             "passed": score >= PASSING_SCORE,
             "passingScore": PASSING_SCORE,
+            "certificate": certificate,
             "results": detail,
             "weakTopics": [
                 {"topic": m.topic, "accuracyPercent": round(m.accuracy * 100, 1)}

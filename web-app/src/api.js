@@ -121,6 +121,13 @@ export const certificates = () => call("/certificates");
 /** The team you manage, and the roles you may upload for. Empty for most people. */
 export const team = () => call("/team");
 
+/**
+ * Q Score. Pass an email to read a report's — permitted only inside your reporting
+ * subtree, and a 404 otherwise, so this cannot be used to discover who exists.
+ */
+export const qscore = (employeeEmail) =>
+  call("/qscore" + (employeeEmail ? `?employee=${encodeURIComponent(employeeEmail)}` : ""));
+
 // Neither learner nor role is sent: the server reads both from the token and ignores
 // anything the body claims. Sending them would only imply they were trusted.
 export const startQuiz = ({ training, length = 8 }) =>

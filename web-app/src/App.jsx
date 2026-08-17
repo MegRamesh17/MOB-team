@@ -1038,11 +1038,20 @@ function QuizResults({ result, onRetake, onDone }) {
 function Certificates() {
   const { data, loading, error, reload } = useAsync(() => api.certificates(), []);
   const certs = data?.certificates || [];
+  const due = data?.renewalsDue || [];
 
   return (
     <div className="p-8 max-w-3xl">
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Certificates</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">Everything you've completed and passed.</p>
+
+      {due.length > 0 && (
+        <div style={{ background: C.amberBg, color: C.amber }} className="rounded-xl px-4 py-3 text-sm mb-5">
+          <strong>{due.length === 1 ? "1 certificate needs" : `${due.length} certificates need`} renewing.</strong>{" "}
+          {due.map((d) => d.doc_title).join(", ")}. An expired certificate stops counting
+          towards your Q Score until you retake it.
+        </div>
+      )}
 
       {loading && <Loading />}
       {error && <ErrorBox error={error} onRetry={reload} />}
@@ -1061,11 +1070,33 @@ function Certificates() {
             <div style={{ background: C.amberBg }} className="w-10 h-10 rounded-xl flex items-center justify-center mb-3">
               <Award size={18} color={C.amber} />
             </div>
-            <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">{c.title}</p>
-            <p style={{ color: C.sub }} className="text-xs">Completed {c.date} · Score {c.score}%</p>
+            <div className="flex items-start justify-between gap-2 mb-1">
+              <p style={{ color: C.ink }} className="text-sm font-semibold">{c.title}</p>
+              {/* Several passes for one training can exist; only one counts towards
+                  Q Score. Saying which avoids "why is my 95 not showing?". */}
+              {!c.ofRecord && (
+                <span style={{ color: C.sub }} className="text-[10px] font-semibold shrink-0 mt-0.5">
+                  superseded
+                </span>
+              )}
+            </div>
+            <p style={{ color: C.sub }} className="text-xs">
+              Issued {c.date} · Score {c.score}
+              {c.category ? ` · ${c.category}` : ""}
+            </p>
             {c.expiresAt && (
               <p style={{ color: c.expired ? C.danger : C.sub }} className="text-xs font-semibold mt-1">
-                {c.expired ? `Expired ${c.expiresAt} — retake required` : `Valid until ${c.expiresAt}`}
+                {c.expired
+                  ? `Expired ${c.expiresAt} — retake required`
+                  : c.daysUntilExpiry !== null && c.daysUntilExpiry <= 30
+                    ? `Expires in ${c.daysUntilExpiry} days — ${c.expiresAt}`
+                    : `Valid until ${c.expiresAt}`}
+              </p>
+            )}
+            {/* No certificate artefact yet. Saying so beats a button that does nothing. */}
+            {!c.certificateUrl && (
+              <p style={{ color: C.sub }} className="text-[10px] mt-2">
+                Downloadable certificate not generated yet
               </p>
             )}
           </div>
@@ -1880,11 +1911,16 @@ function Profile({ principal }) {
   const certs = certData?.certificates || [];
   const completed = (trainData?.trainings || []).filter((t) => t.status === "completed").length;
 
-  // Q score is the learner's overall accuracy across everything answered — one
-  // number derived from real responses, not a stored field.
-  const totalAnswered = topics.reduce((s, t) => s + t.answered, 0);
-  const totalCorrect = topics.reduce((s, t) => s + t.correct, 0);
-  const qScore = totalAnswered ? Math.round((totalCorrect / totalAnswered) * 100) : 0;
+  // Q Score comes from the server (docs/q-score.md): Coverage x Quality, where Coverage
+  // is unexpired certificates over the ones your role requires.
+  //
+  // This used to be computed here as raw accuracy across every question answered — a
+  // THIRD definition of "Q Score", alongside the per-attempt score and the compliance
+  // rollup. It also could not fall when a certificate expired, because nothing about
+  // answering questions changes when time passes.
+  const { data: qData } = useAsync(() => api.qscore().catch(() => null), []);
+  const standing = qData?.overall;
+  const qScore = standing ? Math.round(standing.qScore) : 0;
   const earnedCount = BADGES.filter((b) => b.earned).length;
 
   return (
@@ -1910,9 +1946,42 @@ function Profile({ principal }) {
         <div className="text-center shrink-0">
           <MasteryRing value={qScore} size={92} stroke={8} />
           <p className="text-xs opacity-90 mt-1 font-semibold uppercase tracking-wide">Q Score</p>
-          <p className="text-[11px] opacity-70">{totalAnswered} answered</p>
+          {/* The two numbers behind it. A single composite is ambiguous — 40 could be
+              "half done, perfect scores" or "all done, poor scores" — and those call for
+              completely different things from the person reading it. */}
+          {standing ? (
+            <p className="text-[11px] opacity-70">
+              {standing.current}/{standing.required} current · avg {Math.round(standing.quality)}
+            </p>
+          ) : (
+            <p className="text-[11px] opacity-70">—</p>
+          )}
         </div>
       </div>
+
+      {qData && !qData.requirementsConfigured && (
+        <div style={{ background: C.amberBg, color: C.amber }} className="rounded-xl px-4 py-3 text-xs mb-6">
+          No required training has been set for your role yet, so there is nothing to
+          measure your Q Score against. It will stay at 0 until an admin sets one — that
+          is a missing configuration, not a reflection of your work.
+        </div>
+      )}
+
+      {qData && qData.requirementsConfigured && (
+        <div className="grid grid-cols-2 gap-4 mb-6">
+          {[["Behavioural", qData.behavioural], ["Technical", qData.technical]].map(([label, s]) => (
+            <div key={label} style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white">
+              <p style={{ color: C.sub }} className="text-xs font-semibold mb-1">{label}</p>
+              <p style={{ ...display, color: C.ink }} className="text-2xl font-bold">
+                {s.required ? Math.round(s.qScore) : "—"}
+              </p>
+              <p style={{ color: C.sub }} className="text-[11px]">
+                {s.required ? `${s.current}/${s.required} current` : "nothing required"}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
 
       <CompanionCard trainingsCompleted={completed} name={p.name} qScore={qScore} />
 

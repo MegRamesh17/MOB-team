@@ -121,6 +121,43 @@ CREATE TABLE IF NOT EXISTS responses (
 );
 CREATE INDEX IF NOT EXISTS ix_responses_learner ON responses(learner_id, topic);
 CREATE INDEX IF NOT EXISTS ix_responses_question ON responses(question_id);
+
+-- Which trainings a role must complete. This is Coverage's DENOMINATOR: without it
+-- "7 of 7 done" has no 7, and a Q Score cannot be computed at all. Set by an admin,
+-- never inferred from what happens to be in the bank — otherwise uploading a document
+-- silently moves everyone's score, and the number stops meaning "you are up to date".
+CREATE TABLE IF NOT EXISTS role_requirements (
+    role_code   TEXT NOT NULL,
+    doc_title   TEXT NOT NULL,
+    -- behavioural | technical. Tracked separately so "strong technically, thin on
+    -- conduct" stays visible instead of being averaged into one number.
+    category    TEXT NOT NULL DEFAULT 'technical',
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (role_code, doc_title)
+);
+CREATE INDEX IF NOT EXISTS ix_role_requirements_role ON role_requirements(role_code);
+
+-- Certificates. One row per pass, never edited afterwards.
+CREATE TABLE IF NOT EXISTS certificates (
+    certificate_id  TEXT PRIMARY KEY,
+    learner_id      TEXT NOT NULL,
+    doc_title       TEXT NOT NULL,
+    attempt_id      TEXT NOT NULL,
+    -- The difficulty-weighted score for THIS attempt (docs/q-score.md). Stored because
+    -- it is a fact about an event that happened; the Q Score built on top of it is not
+    -- stored, because it changes when nobody acts.
+    attempt_score   REAL NOT NULL,
+    category        TEXT NOT NULL DEFAULT 'technical',
+    issued_at       TEXT NOT NULL,
+    -- Absolute, computed at issue from validity_months. Storing the date rather than
+    -- the interval means changing the default validity later does not silently
+    -- re-date every certificate already earned.
+    expires_at      TEXT NOT NULL,
+    -- Placeholder until the certificate artefact exists. Deliberately nullable rather
+    -- than a fake URL: a link that 404s is worse than an honest absence.
+    certificate_url TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_certificates_learner ON certificates(learner_id, doc_title);
 """
 
 
@@ -525,3 +562,79 @@ class Bank:
             "attempts": one("SELECT COUNT(*) FROM attempts"),
             "responses": one("SELECT COUNT(*) FROM responses"),
         }
+
+    # --- role requirements & certificates -------------------------------------
+
+    def set_role_requirements(self, role_code: str, items: Iterable[dict]) -> int:
+        """
+        Replace the required training list for a role.
+
+        Replace rather than merge: the list is a statement of what a role must complete
+        now, and merging would make removing a requirement impossible through the same
+        interface that adds one.
+        """
+        role = (role_code or "").strip().upper()
+        rows = [(role, str(i["doc_title"]),
+                 (i.get("category") or "technical").strip().lower(), utcnow())
+                for i in items if i.get("doc_title")]
+        self.conn.execute("DELETE FROM role_requirements WHERE role_code = ?", (role,))
+        self.conn.executemany(
+            "INSERT INTO role_requirements (role_code, doc_title, category, created_at) "
+            "VALUES (?,?,?,?)", rows)
+        self.conn.commit()
+        return len(rows)
+
+    def role_requirements(self, role_code: str) -> List[dict]:
+        """
+        What this role must complete.
+
+        Includes the ALL requirements every role carries — company-wide training is
+        required of everyone, so it belongs in every role's denominator. Without this a
+        role with no specific requirements would score against an empty list and read
+        100% compliant while having done nothing.
+        """
+        role = (role_code or "ALL").strip().upper()
+        codes = ["ALL"] if role == "ALL" else [role, "ALL"]
+        placeholders = ",".join("?" for _ in codes)
+        return [dict(r) for r in self.conn.execute(
+            "SELECT DISTINCT doc_title, category FROM role_requirements "
+            "WHERE role_code IN ({}) ORDER BY doc_title".format(placeholders), codes)]
+
+    def all_role_requirements(self) -> Dict[str, List[dict]]:
+        out: Dict[str, List[dict]] = {}
+        for r in self.conn.execute(
+                "SELECT role_code, doc_title, category FROM role_requirements "
+                "ORDER BY role_code, doc_title"):
+            out.setdefault(r["role_code"], []).append(
+                {"doc_title": r["doc_title"], "category": r["category"]})
+        return out
+
+    def issue_certificate(self, *, certificate_id: str, learner_id: str, doc_title: str,
+                          attempt_id: str, attempt_score: float, category: str = "technical",
+                          expires_at: str = "") -> dict:
+        """
+        Record a pass. Never updated afterwards — a retake issues a NEW certificate.
+
+        Keeping every pass rather than overwriting is what makes best-score-of-record
+        possible, and leaves an audit trail: "which attempt earned this, and when" is
+        the first question anyone asks about a disputed certification.
+        """
+        row = dict(certificate_id=certificate_id, learner_id=learner_id,
+                   doc_title=doc_title, attempt_id=attempt_id,
+                   attempt_score=float(attempt_score),
+                   category=(category or "technical").lower(),
+                   issued_at=utcnow(), expires_at=expires_at, certificate_url=None)
+        self.conn.execute(
+            "INSERT OR REPLACE INTO certificates (certificate_id, learner_id, doc_title, "
+            "attempt_id, attempt_score, category, issued_at, expires_at, certificate_url) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (row["certificate_id"], row["learner_id"], row["doc_title"], row["attempt_id"],
+             row["attempt_score"], row["category"], row["issued_at"], row["expires_at"], None))
+        self.conn.commit()
+        return row
+
+    def certificates(self, learner_id: str) -> List[dict]:
+        """Every certificate this learner holds, expired ones included."""
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM certificates WHERE learner_id = ? ORDER BY issued_at DESC",
+            (learner_id,))]
