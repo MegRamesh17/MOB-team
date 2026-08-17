@@ -21,7 +21,7 @@ import os
 import azure.functions as func
 import bcrypt
 
-from shared.auth import create_token
+from shared.auth import create_token, get_current_employee
 
 bp = func.Blueprint()
 
@@ -96,7 +96,8 @@ def login(req: func.HttpRequest) -> func.HttpResponse:
         with _conn() as c:
             cur = c.cursor()
             cur.execute(
-                """SELECT e.id, e.email, e.company_id, e.password_hash, r.access_role
+                """SELECT e.id, e.email, e.name, e.company_id, e.password_hash, e.manager_id,
+                          r.access_role, r.role_code
                        FROM dbo.Employees e
                        LEFT JOIN dbo.Roles r ON r.id = e.role_id
                        WHERE e.email = ?""",
@@ -122,8 +123,29 @@ def login(req: func.HttpRequest) -> func.HttpResponse:
         email=row.email,
         company_id=row.company_id,
         access_role=row.access_role,
+        # Roles.role_code is nullable (016_add_role_code.sql): an org role with no
+        # training role mapped yet comes back NULL and becomes "ALL", which serves
+        # company-wide material only. Under-serving is the right direction to fail in.
+        role_code=row.role_code,
+        manager_id=row.manager_id,
+        name=row.name,
     )
-    return _json({"token": token, "expiresInHours": 12})
+
+    # The principal goes back with the token so the client does not have to decode a JWT
+    # to render a name, or make a second call to find out who it just signed in as.
+    return _json({
+        "token": token,
+        "expiresInHours": 12,
+        "principal": {
+            "employee_id": row.id,
+            "email": row.email,
+            "company_id": row.company_id,
+            "access_role": row.access_role,
+            "name": row.name,
+            "role_code": (row.role_code or "ALL").upper(),
+            "manager_id": row.manager_id,
+        },
+    })
 
 
 # --- The only change to the existing function_app.py. Add these two lines near the
@@ -131,3 +153,32 @@ def login(req: func.HttpRequest) -> func.HttpResponse:
 #
 #     from auth.login import bp as auth_bp
 #     app.register_functions(auth_bp)
+
+
+@bp.route(route="auth/me", methods=["GET"])
+def auth_me(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Who the bearer token says you are.
+
+    Exists so a browser holding a token can restore a session on refresh without either
+    decoding the JWT client-side or inferring identity from a data call. Reads the token
+    only -- no database round trip -- so it stays cheap enough to call on every page load.
+
+    A 401 here is the client's signal to drop its token and show sign-in, rather than
+    letting an expired token fail every subsequent request one at a time.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _error(401, "Unauthorized", "No valid bearer token.")
+
+    return _json({
+        "principal": {
+            "employee_id": identity.employee_id,
+            "email": identity.email,
+            "company_id": identity.company_id,
+            "access_role": identity.access_role,
+            "name": identity.name,
+            "role_code": identity.role_code,
+            "manager_id": identity.manager_id,
+        }
+    })

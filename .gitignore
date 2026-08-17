@@ -25,3 +25,7 @@ data/documents/*.md
 # frontend build artefacts
 node_modules/
 web-app/dist/
+
+# Local credential store and session signing key — never commit these.
+# (Re-added: a revert removed this line, and .auth/ was swept in by `git add -A`.)
+.auth/

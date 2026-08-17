@@ -1,0 +1,126 @@
+name: deploy-backend
+
+# Deploys api/ to the Function App. Until this existed, api/function_app.py and
+# api/auth/login.py were in git and not in Azure — terraform.yml provisions the Function
+# App but never puts code in it.
+#
+# Deliberately separate from terraform.yml. That workflow changes cloud resources; this
+# one only ships code, so shipping a fix does not also re-apply infrastructure.
+
+# MANUAL ONLY, on purpose. Deploying on every push means a half-finished commit reaches
+# the Function App the moment it is pushed, and the first sign is a broken demo rather
+# than a failed check. Run it from Actions when the branch is in a state worth deploying.
+#
+# The push trigger is commented out rather than deleted, so turning it back on later is
+# a one-line decision someone makes deliberately.
+#
+# on:
+#   push:
+#     branches: [ main ]
+#     paths: [ 'api/**' ]
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type the Function App name to confirm you mean to deploy'
+        required: true
+        default: 'mob-functions-dev'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  FUNCTION_APP_NAME: mob-functions-dev
+  PACKAGE_PATH: api
+
+# One deploy at a time. Two overlapping runs against one Function App leave you
+# guessing which commit is actually live.
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm the target
+        # Cheap guard against a mis-click on the wrong workflow. Costs one word to type
+        # and makes "I did not mean to run that" impossible to say afterwards.
+        run: |
+          if [ "${{ inputs.confirm }}" != "$FUNCTION_APP_NAME" ]; then
+            echo "::error::Typed '${{ inputs.confirm }}', expected '$FUNCTION_APP_NAME'. Not deploying."
+            exit 1
+          fi
+          echo "Deploying to $FUNCTION_APP_NAME."
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Matches site_config.application_stack.python_version in
+          # infra/modules/functions/main.tf. A mismatch here surfaces as a Function App
+          # that starts and then 500s on import, which is a miserable thing to debug.
+          python-version: "3.11"
+
+      - name: Check the package imports before shipping it
+        # Cheap guard against the failure this deploy path is worst at reporting: a
+        # missing dependency or a syntax error shows up as a healthy-looking deploy and
+        # a 500 on first request. Compiling every module catches both here instead.
+        working-directory: ${{ env.PACKAGE_PATH }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m compileall -q . && echo "All modules compile."
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to the Function App
+        uses: azure/functions-action@v1
+        with:
+          app-name: ${{ env.FUNCTION_APP_NAME }}
+          package: ${{ env.PACKAGE_PATH }}
+          # Build on the server. pyodbc and bcrypt are compiled extensions, so a package
+          # built on this runner would ship the wrong wheels for the Function App's
+          # image. Oryx builds them there against the right platform.
+          scm-do-build-during-deployment: true
+          enable-oryx-build: true
+
+      - name: Wait for the app to come back up
+        # A deploy returns before the worker has restarted, so an immediate health check
+        # reads the old process — or nothing at all.
+        run: sleep 45
+
+      - name: Health check
+        # The point of this step is that it can FAIL. A deploy that reports success while
+        # the app cannot reach its database is the failure mode worth catching, and it is
+        # invisible without an actual request.
+        run: |
+          URL="https://${FUNCTION_APP_NAME}.azurewebsites.net/api/health"
+          echo "GET $URL"
+
+          for attempt in 1 2 3 4 5; do
+            CODE=$(curl -s -o /tmp/health.json -w "%{http_code}" --max-time 30 "$URL" || echo "000")
+            if [ "$CODE" = "200" ]; then
+              echo "Healthy."
+              cat /tmp/health.json
+              exit 0
+            fi
+            echo "Attempt $attempt: HTTP $CODE — retrying in 15s"
+            sleep 15
+          done
+
+          echo "::error::Health check failed after 5 attempts (last HTTP $CODE)."
+          echo "Response body, if any:"
+          cat /tmp/health.json 2>/dev/null || true
+          echo ""
+          echo "Most likely causes, in the order they usually bite:"
+          echo "  * JWT_SIGNING_SECRET missing — api/shared/auth.py raises on import path"
+          echo "  * SQL firewall blocks the Function App outbound IP"
+          echo "  * A dependency in api/requirements.txt failed to build under Oryx"
+          echo "  * Migrations have not run, so a table the query needs does not exist"
+          exit 1

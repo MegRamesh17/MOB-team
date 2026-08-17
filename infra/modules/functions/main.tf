@@ -37,6 +37,11 @@ resource "azurerm_linux_function_app" "mob_functions" {
     "SQL_DATABASE"             = var.sql_database_name
     "SQL_USER"                 = var.sql_admin_username
     "SQL_PASSWORD"             = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/sql-password/)"
+    "JWT_SIGNING_SECRET"       = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/jwt-signing-secret/)"
+    # Both empty until the endpoint variable is set. Extraction falls back to
+    # pypdf when they are, so the app runs either way.
+    "DOCUMENT_INTELLIGENCE_ENDPOINT" = var.doc_intelligence_endpoint
+    "DOCUMENT_INTELLIGENCE_KEY"      = var.doc_intelligence_endpoint == "" ? "" : "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/doc-intelligence-key/)"
     "COMMS_CONNECTION_STRING"  = var.comms_connection_string
     "AZURE_STORAGE_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/storage-connection-string/)"
     "QUIZGEN_PASSING_SCORE"    = "80"

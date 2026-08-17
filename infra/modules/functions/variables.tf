@@ -30,3 +30,9 @@ variable "sql_admin_username" {
   type    = string
   default = "mobsqladmin"
 }
+
+
+variable "doc_intelligence_endpoint" {
+  type    = string
+  default = ""
+}

@@ -35,13 +35,16 @@ import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Dict
 from urllib.parse import urlparse, parse_qs
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
+import devauth  # noqa: E402  (scripts/ is on sys.path as the entry point's dir)
 from quizgen.adaptive import build_quiz  # noqa: E402
 from quizgen.bank import Bank  # noqa: E402
+from quizgen.config import CONFIG  # noqa: E402
 from quizgen.models import Attempt, QuestionType, Response, ReviewStatus  # noqa: E402
 
 DB = Path(os.getenv("QUIZGEN_DB", REPO / "data" / "output" / "quizgen.db"))
@@ -50,6 +53,9 @@ PASSING_SCORE = float(os.getenv("QUIZGEN_PASSING_SCORE", "80"))
 QUIZ_LENGTH = int(os.getenv("QUIZGEN_QUIZ_LENGTH", "8"))
 WEAK_THRESHOLD = float(os.getenv("QUIZGEN_WEAK_THRESHOLD", "0.70"))
 MIN_ANSWERS = int(os.getenv("QUIZGEN_MIN_ANSWERS", "3"))
+# How long a certificate stays current. 12 months per docs/q-score.md; an env
+# override exists so expiry can be demonstrated without waiting a year.
+CERT_VALIDITY_MONTHS = int(os.getenv("QUIZGEN_CERT_VALIDITY_MONTHS", "12"))
 
 # In-flight quizzes: attempt_id -> question ids, in the order served.
 #
@@ -156,6 +162,9 @@ def _start_generation_job(doc_title: str) -> str:
         from quizgen.pipeline import generate_questions, select_chunks
 
         try:
+            # No request here — this runs on a background thread after the response
+            # has gone out. Falls back to the configured company, which is correct
+            # for a single-tenant local bank and is the reason this is a DEV server.
             with Bank(DB) as bank:
                 chunks, _ = select_chunks(bank, doc_title=doc_title)
                 with _JOB_LOCK:
@@ -259,7 +268,7 @@ class Handler(BaseHTTPRequestHandler):
         # The UI is served from this same origin, but a teammate running a React dev
         # server on :3000 against this API would otherwise be blocked by CORS.
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, x-learner-id")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
         self.wfile.write(raw)
 
@@ -275,18 +284,90 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return {}
 
-    def _learner_role(self) -> str:
-        """
-        The signed-in employee's role, from a header the demo login sets.
+    def _identity(self):
+        """The authenticated caller, from a signed token, or None."""
+        return devauth.identity_from_header(self.headers.get("Authorization", ""))
 
-        Self-declared for now — the team knows an employee could lie and has parked
-        that until real identity (Entra) exists. What matters today is the serving
-        side: everything the employee sees is filtered to this role plus ALL.
+    def _company(self):
         """
-        return self.headers.get("x-learner-role", "").strip().upper()
+        The tenant every Bank in this request is scoped to.
+
+        Taken from the caller's token, so the dev server behaves like the deployed API
+        rather than trusting a process-wide config value. An unauthenticated request
+        falls back to the configured company — the only routes that reach a Bank without
+        a token are open ones, and there is nobody to scope them to.
+        """
+        identity = self._identity()
+        return str(identity.company_id) if identity else CONFIG.company_id
+
+    def _require(self, tier: str = "employee"):
+        """
+        Return the caller's identity, or send an error and return None.
+
+        Callers MUST stop when this returns None — the response has already gone out.
+        401 and 403 are kept distinct: a legitimately expired session looks like a
+        permissions bug otherwise.
+        """
+        identity = self._identity()
+        if identity is None:
+            self._error(401, "Unauthorized",
+                        "Sign in at POST /api/login and send the token as "
+                        "'Authorization: Bearer <token>'.")
+            return None
+        if not identity.at_least(tier):
+            self._error(403, "Forbidden",
+                        "Requires {} access or above; you have {}.".format(
+                            tier, identity.access_role))
+            return None
+        return identity
+
+    def _learner_role(self) -> str:
+        """The caller's TRAINING role, from the token. Not client-supplied any more."""
+        identity = self._identity()
+        return identity.role_code if identity else ""
 
     def _learner(self) -> str:
-        return self.headers.get("x-learner-id", "demo-learner")
+        """
+        The learner key for attempt history and mastery.
+
+        Email, matching what the deployed API uses (_learner_key in function_app.py), so
+        a learner's history means the same thing in both.
+        """
+        identity = self._identity()
+        return identity.email if identity else ""
+
+    # ------------------------------------------------------------------
+    # auth — mirrors api/auth/login.py's contract exactly
+    # ------------------------------------------------------------------
+
+    def _login(self):
+        body = self._body()
+        email = (body.get("email") or "").strip()
+        password = body.get("password") or ""
+        if not email or not password:
+            return self._error(400, "Bad Request", "email and password are required")
+
+        identity = devauth.authenticate(email, password)
+        if identity is None:
+            # Identical for unknown email and wrong password, as the deployed login is.
+            return self._error(401, "Unauthorized", "Invalid email or password")
+
+        return self._send({
+            "token": devauth.create_token(identity),
+            "expiresInHours": devauth.TOKEN_TTL_HOURS,
+            "principal": identity.to_public(),
+        })
+
+    def _auth_me(self):
+        identity = self._require()
+        if identity is None:
+            return None
+        return self._send({"principal": identity.to_public()})
+
+    def _logout(self):
+        # Honest about the limit: the client drops its token and that is all. Revoking it
+        # server-side needs shared state this single process does not have.
+        return self._send({"ok": True, "detail": "Discard the token client-side."})
 
     def do_OPTIONS(self):  # noqa: N802
         self._send(b"", 204, "text/plain")
@@ -305,8 +386,22 @@ class Handler(BaseHTTPRequestHandler):
             return self._static(route.lstrip("/"))
 
         try:
+            # /health stays open so the sign-in screen can tell "API is down" apart
+            # from "your password is wrong".
             if route == "/api/health":
                 return self._health()
+            if route == "/api/auth/me":
+                return self._auth_me()
+
+            if self._require() is None:
+                return None
+
+            if route == "/api/team":
+                return self._team()
+            if route == "/api/qscore":
+                return self._qscore(query)
+            if route == "/api/requirements":
+                return self._requirements()
             if route == "/api/me":
                 return self._me()
             if route == "/api/topics":
@@ -332,14 +427,37 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         route = urlparse(self.path).path.rstrip("/")
         try:
+            # Signing in is what you do when you have no token.
+            if route == "/api/login":
+                return self._login()
+            if route == "/api/auth/logout":
+                return self._logout()
+
+            # Uploading material and editing roles change what an entire role is taught
+            # and certified against. Manager tier or above, enforced here — the UI hides
+            # these too, but a hidden button is not a permission check.
             if route == "/api/documents":
+                if self._require("manager") is None:
+                    return None
                 return self._upload()
             if route == "/api/documents/confirm":
+                if self._require("manager") is None:
+                    return None
                 return self._confirm_document()
             if route == "/api/roles":
+                if self._require("manager") is None:
+                    return None
                 return self._add_role()
             if route.startswith("/api/roles/") and route.endswith("/delete"):
+                if self._require("manager") is None:
+                    return None
                 return self._remove_role(route.split("/")[3])
+
+            if self._require() is None:
+                return None
+
+            if route == "/api/requirements":
+                return self._set_requirements()
             if route == "/api/quiz/start":
                 return self._start()
             if route == "/api/quiz/answer":
@@ -349,6 +467,73 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             return self._error(500, type(exc).__name__, str(exc)[:300])
         self._error(404, "Not found", route)
+
+    def _team(self):
+        """
+        Who reports to me, and which roles I may upload for.
+
+        Two different questions, deliberately answered separately:
+
+          people        everyone below me in the reporting chain, however deep, so a
+                        director sees their managers' reports too
+          uploadTargets the roles those people hold, with the ones held by my DIRECT
+                        reports marked. The UI defaults to those, but the whole subtree
+                        is permitted — a director may want to push something to every
+                        engineer beneath them, not only their own managers.
+
+        An employee with nobody under them gets empty lists rather than a 403: "you
+        manage no one" is a fact about the org chart, not a permissions failure, and the
+        UI renders it as an empty state.
+        """
+        identity = self._require()
+        if identity is None:
+            return None
+
+        subtree = devauth.reports_of(identity.employee_id)
+        direct_ids = {p["employee_id"] for p in
+                      devauth.reports_of(identity.employee_id, direct_only=True)}
+
+        # Role -> whether anyone directly reporting to me holds it. A role held by both
+        # a direct report and someone deeper counts as direct: it is the closer
+        # relationship that decides the default.
+        # Must agree with _permitted_upload_roles, or the UI offers a target the
+        # server then refuses. A subtree member with an unmapped role surfaces as ALL,
+        # and ALL is company-wide — not something a manager controls.
+        permitted = self._permitted_upload_roles(identity)
+
+        targets = {}
+        for person in subtree:
+            code = (person.get("role_code") or "ALL").upper()
+            if code not in permitted:
+                continue
+            entry = targets.setdefault(code, {
+                "roleCode": code,
+                "title": person.get("title", code),
+                "direct": False,
+                "headcount": 0,
+            })
+            entry["headcount"] += 1
+            if person["employee_id"] in direct_ids:
+                entry["direct"] = True
+
+        return self._send({
+            "manages": bool(subtree),
+            "people": [
+                {
+                    "employeeId": p["employee_id"],
+                    "name": p.get("name", ""),
+                    "email": p.get("email", ""),
+                    "title": p.get("title", ""),
+                    "roleCode": (p.get("role_code") or "ALL").upper(),
+                    "accessRole": p.get("access_role", "employee"),
+                    "managerId": p.get("manager_id"),
+                    "direct": p["employee_id"] in direct_ids,
+                }
+                for p in subtree
+            ],
+            "uploadTargets": sorted(
+                targets.values(), key=lambda t: (not t["direct"], t["title"])),
+        })
 
     def _static(self, relative: str):
         target = (WEB / relative).resolve()
@@ -365,7 +550,7 @@ class Handler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
 
     def _health(self):
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             stats = bank.stats()
             approved = len(bank.questions(status=ReviewStatus.APPROVED))
         self._send({
@@ -381,7 +566,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _me(self):
         learner = self._learner()
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             mastery = bank.mastery(learner)
             attempts = bank.attempt_count(learner)
 
@@ -409,7 +594,7 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _topics(self):
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             approved = bank.questions(status=ReviewStatus.APPROVED)
         counts: dict = {}
         for q in approved:
@@ -423,7 +608,7 @@ class Handler(BaseHTTPRequestHandler):
         """Browse the bank. Never includes is_correct — see the note in _start."""
         topic = (query.get("topic") or [""])[0]
         limit = min(int((query.get("limit") or ["50"])[0]), 200)
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             items = bank.questions(topic=topic or None, status=ReviewStatus.APPROVED)
         self._send({
             "total": len(items),
@@ -447,7 +632,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _list_documents(self):
         """What has been uploaded, and how far each one got."""
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             chunks = bank.all_chunks()
             approved = bank.questions(status=ReviewStatus.APPROVED)
 
@@ -495,6 +680,10 @@ class Handler(BaseHTTPRequestHandler):
         on a background thread and the browser polls /api/jobs/<id>. Doing it inline
         would hold the request open for minutes and time out.
         """
+        identity = self._require("manager")
+        if identity is None:
+            return None
+
         ctype = self.headers.get("Content-Type", "")
         if "multipart/form-data" not in ctype or "boundary=" not in ctype:
             return self._error(400, "Expected a file upload",
@@ -556,7 +745,7 @@ class Handler(BaseHTTPRequestHandler):
         # training, mixing roles and letting set_chunk_roles tag the wrong sections.
         # A real pack of 16 role briefs all began with the same letterhead and would
         # have collapsed into a single module.
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             existing_ids = {
                 c.doc_title: c.doc_id for c in bank.all_chunks()
             }
@@ -571,11 +760,18 @@ class Handler(BaseHTTPRequestHandler):
         # NOT generated from. gpt-5 proposes a section->role mapping; the manager
         # confirms it in the UI; only then does /api/documents/confirm tag chunks
         # and start generation. The AI proposes, the manager decides.
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             bank.save_chunks(chunks)
             from quizgen.rolemap import analyze_document, seed_roles
             seed_roles(bank)
             known_roles = bank.roles()
+
+        # The AI proposes against every role the company has; the manager may only
+        # confirm the ones they control. Sending both lets the UI show a proposal it
+        # cannot accept and say why, rather than silently dropping it — a manager whose
+        # document genuinely belongs to another team needs to know that, not to watch a
+        # section quietly vanish.
+        permitted = self._permitted_upload_roles(identity)
 
         sections = {}
         for c in chunks:
@@ -600,6 +796,9 @@ class Handler(BaseHTTPRequestHandler):
             # topic -> proposed role ("ALL", a known code, or the document's own
             # words for a role the company hasn't defined)
             "proposedRoles": mapping.assignments,
+            # Role codes this manager may actually publish to, from their reporting
+            # subtree. The UI offers these and nothing else.
+            "permittedRoles": sorted(permitted),
             "unknownRoles": mapping.unknown_roles,
             # Sections too thin to build a module from. Per the team's rule this is
             # the manager's problem to solve with more material — never the web's.
@@ -608,6 +807,10 @@ class Handler(BaseHTTPRequestHandler):
             "generator": _generator_label(),
             "needsConfirmation": True,
         }, 201)
+
+    def _permitted_upload_roles(self, identity, extra=()):
+        """Thin wrapper — the rule lives in devauth so it can be tested directly."""
+        return devauth.permitted_upload_roles(identity, extra)
 
     def _confirm_document(self):
         """
@@ -619,13 +822,17 @@ class Handler(BaseHTTPRequestHandler):
         newRoles here are roles the MANAGER chose to add after seeing the document's
         unknown-role flags — the AI only ever surfaced them.
         """
+        identity = self._require("manager")
+        if identity is None:
+            return None
+
         body = self._body()
         doc_title = str(body.get("title", "")).strip()
         assignments = body.get("assignments") or {}
         if not doc_title or not isinstance(assignments, dict):
             return self._error(400, "Missing title or assignments")
 
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             for r in body.get("newRoles") or []:
                 code = str(r.get("roleCode", "")).strip().upper().replace(" ", "_")
                 if code:
@@ -645,6 +852,28 @@ class Handler(BaseHTTPRequestHandler):
 
             normalized = {t: str(r).upper().replace(" ", "_")
                           for t, r in assignments.items()}
+
+            # UPLOAD-03, enforced here rather than in the UI. The upload screen only
+            # offers roles this manager controls, but a hidden option is not a
+            # permission check — this is the same request re-sent with a different
+            # role_code in the body.
+            permitted = self._permitted_upload_roles(
+                identity,
+                extra=[str(r.get("roleCode", "")).strip().upper().replace(" ", "_")
+                       for r in body.get("newRoles") or []],
+            )
+            out_of_scope = sorted({r for r in normalized.values() if r not in permitted})
+            if out_of_scope:
+                return self._error(
+                    403, "Outside your team",
+                    "You can publish training to roles held by people who report to "
+                    "you. {} {} not among them. You can use: {}.".format(
+                        ", ".join(out_of_scope),
+                        "is" if len(out_of_scope) == 1 else "are",
+                        ", ".join(sorted(permitted)) or "no roles — nobody reports to you",
+                    ),
+                )
+
             tagged = bank.set_chunk_roles(doc_title, normalized)
 
             # Update-vs-add was decided by gpt-5 and shown to the manager before
@@ -665,7 +894,7 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _list_roles(self):
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             from quizgen.rolemap import seed_roles
             seed_roles(bank)
             roles = bank.roles()
@@ -687,12 +916,12 @@ class Handler(BaseHTTPRequestHandler):
         title = str(body.get("title", "")).strip()
         if not code or not title:
             return self._error(400, "roleCode and title are required")
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             bank.add_role(code, title, str(body.get("description", "")))
         return self._send({"roleCode": code, "title": title}, 201)
 
     def _remove_role(self, code: str):
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             removed = bank.remove_role(code)
         if not removed:
             return self._error(404, "No such role", code)
@@ -723,7 +952,7 @@ class Handler(BaseHTTPRequestHandler):
         """
         learner = self._learner()
         role = self._learner_role()
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             approved = bank.questions(status=ReviewStatus.APPROVED)
             mastery = bank.mastery(learner)
             chunks = bank.all_chunks()
@@ -795,7 +1024,7 @@ class Handler(BaseHTTPRequestHandler):
         from it" and be lying.
         """
         training = (query.get("training") or [""])[0]
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             chunks = [c for c in bank.all_chunks() if c.doc_title == training]
 
         if not chunks:
@@ -822,37 +1051,153 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _certificates(self):
-        """Passed attempts. A certificate is a passed attempt, not a separate record."""
+        """
+        Real certificate records.
+
+        Previously this derived certificates from passed attempts on the fly, which meant
+        a certificate had no identity, no stored score, and no expiry of its own — it was
+        recomputed from whatever the attempt happened to say. Certificates are now rows
+        (CERT-01..06), so a retake issues a new one and the old remains as history.
+        """
+        from quizgen import qscore
+
         learner = self._learner()
-        with Bank(DB) as bank:
-            rows = bank.conn.execute(
-                """SELECT attempt_id, submitted_at, score_percent
-                   FROM attempts
-                   WHERE learner_id = ? AND passed = 1 AND submitted_at IS NOT NULL
-                   ORDER BY submitted_at DESC""",
-                (learner,),
-            ).fetchall()
-            certs = []
-            for r in rows:
-                # Name the certificate after whatever the attempt actually covered.
-                topics = bank.conn.execute(
-                    """SELECT q.source_doc_title AS doc, COUNT(*) AS n
-                       FROM responses r JOIN questions q ON q.question_id = r.question_id
-                       WHERE r.attempt_id = ? AND q.source_doc_title != ''
-                       GROUP BY doc ORDER BY n DESC LIMIT 1""",
-                    (r["attempt_id"],),
-                ).fetchone()
-                expires = _plus_one_year(r["submitted_at"] or "")
-                certs.append({
-                    "title": topics["doc"] if topics else "General Compliance",
-                    "date": (r["submitted_at"] or "")[:10],
-                    "score": round(r["score_percent"], 1),
-                    # Certificates renew yearly; an expired one is shown, marked, and
-                    # owed again — not silently dropped from the list.
-                    "expiresAt": expires[:10],
-                    "expired": bool(expires and expires < _now()),
-                })
-        return self._send({"certificates": certs})
+        with Bank(DB, self._company()) as bank:
+            held = bank.certificates(learner)
+
+        best = qscore.best_certificates(held)
+        out = []
+        for cert in held:
+            expired = qscore.is_expired(cert["expires_at"])
+            out.append({
+                "certificateId": cert["certificate_id"],
+                "title": cert["doc_title"],
+                "date": (cert["issued_at"] or "")[:10],
+                "score": round(cert["attempt_score"], 1),
+                "category": cert["category"],
+                "expiresAt": (cert["expires_at"] or "")[:10],
+                "expired": expired,
+                "daysUntilExpiry": qscore.days_until_expiry(cert["expires_at"]),
+                # Which of several passes for the same training currently counts.
+                "ofRecord": best.get(cert["doc_title"], {}).get(
+                    "certificate_id") == cert["certificate_id"],
+                # Null until the artefact exists. An honest absence beats a link that 404s.
+                "certificateUrl": cert.get("certificate_url"),
+            })
+        return self._send({
+            "certificates": out,
+            "renewalsDue": qscore.renewal_candidates(held),
+        })
+
+    def _qscore(self, query):
+        """
+        Q Score for the caller, or for someone they manage.
+
+        ?employee=<email> is how a manager reads a report's score. Permitted only for
+        someone in their reporting subtree — QSCORE-08 says "everyone above you in the
+        chain", which is the same statement read from the other end. Anyone else is a
+        404, not a 403: whether a given person exists is not something to confirm to
+        someone with no business asking.
+        """
+        from quizgen import qscore
+
+        identity = self._require()
+        if identity is None:
+            return None
+
+        target_email = (query.get("employee", [""])[0] or "").strip().lower()
+        target = identity
+        if target_email and target_email != identity.email.lower():
+            reports = {p["email"].lower(): p
+                       for p in devauth.reports_of(identity.employee_id)}
+            person = reports.get(target_email)
+            if person is None:
+                return self._error(404, "Not found", "No such employee in your team.")
+            target = devauth.Identity(
+                employee_id=person["employee_id"], email=person["email"], company_id=1,
+                access_role=person.get("access_role"), name=person.get("name", ""),
+                role_code=(person.get("role_code") or "ALL").upper(),
+                manager_id=person.get("manager_id"))
+
+        with Bank(DB, self._company()) as bank:
+            self._seed_requirements_if_empty(bank)
+            requirements = bank.role_requirements(target.role_code)
+            held = bank.certificates(target.email)
+
+        standing = qscore.standing(requirements, held)
+        return self._send({
+            "employee": {"email": target.email, "name": target.name,
+                         "roleCode": target.role_code},
+            "overall": standing["overall"].to_dict(),
+            "behavioural": standing["behavioural"].to_dict(),
+            "technical": standing["technical"].to_dict(),
+            # Stated rather than implied. A Q Score with no required list is 0 against a
+            # denominator of nothing, and a screen showing 0 without saying why reads as
+            # "you have done nothing" instead of "nobody has said what you must do".
+            "requirementsConfigured": bool(requirements),
+        })
+
+    def _seed_requirements_if_empty(self, bank):
+        """
+        Give every role a starting required list, once, if nobody has set one.
+
+        Without a denominator Q Score is 0 for everyone and the screen looks broken
+        rather than unconfigured. Seeded from what is actually in the bank: every
+        document scoped ALL becomes required of everyone, and each role-scoped document
+        becomes required of that role.
+
+        This is a DEV convenience and is honest about it — real requirements are a
+        compliance decision, and POST /api/requirements overwrites this entirely. It runs
+        only when the table is empty, so an admin's list is never quietly replaced.
+        """
+        if bank.all_role_requirements():
+            return
+        rows = bank.conn.execute(
+            "SELECT DISTINCT role_scope, doc_title FROM chunks WHERE doc_title != ''"
+        ).fetchall()
+        by_role = {}
+        for r in rows:
+            by_role.setdefault((r["role_scope"] or "ALL").upper(), []).append(
+                # Behavioural vs technical cannot be inferred from a title, so everything
+                # starts technical. An admin recategorises; guessing would put real
+                # conduct training in the wrong bucket and skew the split it exists for.
+                {"doc_title": r["doc_title"], "category": "technical"})
+        for role, items in by_role.items():
+            bank.set_role_requirements(role, items)
+
+    def _requirements(self):
+        """The required training list per role. Admin-set, never inferred."""
+        identity = self._require()
+        if identity is None:
+            return None
+        with Bank(DB, self._company()) as bank:
+            self._seed_requirements_if_empty(bank)
+            return self._send({
+                "requirements": bank.all_role_requirements(),
+                "mine": bank.role_requirements(identity.role_code),
+            })
+
+    def _set_requirements(self):
+        """
+        Replace the required list for one role. Admin or executive only.
+
+        Not a manager action, deliberately: this is Coverage's denominator, so whoever
+        edits it moves everyone-in-that-role's Q Score. That is a compliance decision,
+        not a team one.
+        """
+        identity = self._require("admin")
+        if identity is None:
+            return None
+
+        body = self._body()
+        role = str(body.get("roleCode", "")).strip().upper()
+        items = body.get("requirements")
+        if not role or not isinstance(items, list):
+            return self._error(400, "Bad request",
+                               "roleCode and a requirements list are required.")
+        with Bank(DB, self._company()) as bank:
+            count = bank.set_role_requirements(role, items)
+        return self._send({"roleCode": role, "count": count})
 
     def _answer(self):
         """
@@ -883,7 +1228,7 @@ class Handler(BaseHTTPRequestHandler):
         if question_id not in served:
             return self._error(403, "Not part of this attempt", question_id)
 
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             question = bank.get_question(question_id)
         if question is None:
             return self._error(404, "Unknown question", question_id)
@@ -911,16 +1256,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def _start(self):
         body = self._body()
-        learner = body.get("learnerId") or self._learner()
+        # From the token only. Accepting it from the body would let a signed-in
+        # employee write into someone else's attempt history.
+        learner = self._learner()
         length = int(body.get("length") or QUIZ_LENGTH)
         role = body.get("role", "")
 
         training = body.get("training", "")
         # The header wins over the body: an employee cannot request another role's
         # quiz by editing the POST payload in devtools.
-        role = self._learner_role() or role
+        role = self._learner_role()
 
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             plan = build_quiz(bank, learner_id=learner, length=length, role=role)
 
             # Scoping to one training happens after assembly rather than inside
@@ -987,10 +1334,59 @@ class Handler(BaseHTTPRequestHandler):
             } for q in plan.questions],
         })
 
+    def _issue_certificate(self, bank, learner, attempt_id, detail):
+        """
+        Issue a certificate for a passed attempt.
+
+        The training it certifies is the source DOCUMENT, not the topic — the same grain
+        trainings and mastery use, so a certificate lines up with the card the learner
+        pressed "start" on. A quiz spanning two documents certifies the one it drew most
+        of its questions from; mixed quizzes are an assembly artefact, not a thing to
+        certify twice.
+
+        attempt_score is the difficulty-weighted score from qscore.py, not the raw
+        percentage the results screen shows. Those differ on purpose: the raw score is
+        "how many did you get right", the attempt score is what feeds Q Score.
+        """
+        from quizgen import qscore
+
+        # "correct", not "isCorrect" — the deployed API uses the latter, this detail
+        # dict uses the former, and reading the wrong one scores every answer as wrong
+        # while still issuing the certificate. Silent, and only visible as a suspiciously
+        # round 0.0 on a passing attempt.
+        graded = [{"difficulty": d.get("difficulty", "Medium"),
+                   "correct": bool(d.get("correct"))} for d in detail]
+        score = qscore.attempt_score(graded)
+
+        titles = [d.get("sourceTitle") or d.get("topic") for d in detail]
+        titles = [t for t in titles if t]
+        if not titles:
+            return None
+        doc_title = max(set(titles), key=titles.count)
+
+        # Category comes from the role's requirement list, which is where an admin
+        # declared it. Defaulting to technical when nothing says otherwise keeps a
+        # certificate out of the behavioural bucket rather than guessing it into one.
+        category = "technical"
+        for req in bank.role_requirements(self._learner_role()):
+            if req["doc_title"] == doc_title:
+                category = req.get("category") or "technical"
+                break
+
+        return bank.issue_certificate(
+            certificate_id="cert_" + uuid.uuid4().hex[:12],
+            learner_id=learner,
+            doc_title=doc_title,
+            attempt_id=attempt_id,
+            attempt_score=score,
+            category=category,
+            expires_at=qscore.expiry_from(_now(), CERT_VALIDITY_MONTHS),
+        )
+
     def _submit(self):
         body = self._body()
         attempt_id = body.get("attemptId", "")
-        learner = body.get("learnerId") or self._learner()
+        learner = self._learner()   # token only, as in _start
         answers = {a.get("questionId"): a for a in body.get("answers", [])}
 
         served = _IN_FLIGHT.get(attempt_id)
@@ -1000,7 +1396,7 @@ class Handler(BaseHTTPRequestHandler):
                 "Start a quiz first. Attempts are lost when the dev server restarts.",
             )
 
-        with Bank(DB) as bank:
+        with Bank(DB, self._company()) as bank:
             questions = {qid: bank.get_question(qid) for qid in served}
 
             responses = []
@@ -1048,6 +1444,11 @@ class Handler(BaseHTTPRequestHandler):
                     "topic": question.topic,
                     "prompt": question.prompt,
                     "correct": correct,
+                    # Needed by qscore.attempt_score. Without it every question weighs
+                    # 1.0 and the difficulty weighting is a no-op that looks like it
+                    # works — the score is plausible, just not what it claims to be.
+                    "difficulty": question.difficulty.value
+                    if hasattr(question.difficulty, "value") else str(question.difficulty),
                     "explanation": question.explanation,
                     "correctOptionIds": [o.option_id for o in question.options if o.is_correct],
                     "acceptedAnswers": question.accepted_answers,
@@ -1071,6 +1472,13 @@ class Handler(BaseHTTPRequestHandler):
             )
             bank.save_attempt(attempt)
 
+            # A pass earns a certificate. Issued here rather than by a later sweep so
+            # the learner sees it on the results screen — a certificate that appears
+            # minutes later reads as if something went wrong.
+            certificate = None
+            if attempt.passed:
+                certificate = self._issue_certificate(bank, learner, attempt_id, detail)
+
             mastery = bank.mastery(learner)
 
         _IN_FLIGHT.pop(attempt_id, None)
@@ -1087,6 +1495,7 @@ class Handler(BaseHTTPRequestHandler):
             "pointsPossible": possible,
             "passed": score >= PASSING_SCORE,
             "passingScore": PASSING_SCORE,
+            "certificate": certificate,
             "results": detail,
             "weakTopics": [
                 {"topic": m.topic, "accuracyPercent": round(m.accuracy * 100, 1)}
@@ -1101,6 +1510,7 @@ def main() -> int:
     # the one case where you most need the server is the case it rejected.
     DB.parent.mkdir(parents=True, exist_ok=True)
 
+    # Startup summary: no request here, so the configured company.
     with Bank(DB) as bank:
         approved = len(bank.questions(status=ReviewStatus.APPROVED))
         total = bank.stats().get("questions", 0)

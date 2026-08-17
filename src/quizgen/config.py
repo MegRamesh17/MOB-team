@@ -182,6 +182,45 @@ class Config:
         default="company-docs:ALL,software-engineering-docs:SWE",
     )
 
+    # --- Azure Document Intelligence ---
+    #
+    # Replaces pypdf for extraction. pypdf returns nothing at all for a scanned page and
+    # flattens tables and multi-column layouts into unreadable order — and a question can
+    # only be as good as the passage it was grounded in.
+    #
+    # Both empty by default, and that is meaningful: extraction falls back to pypdf when
+    # they are unset, so `QUIZGEN_PROVIDER=mock` with no Azure account keeps working.
+    # That offline path is a hard constraint in PROJECT.md and tests.yml depends on it.
+    doc_intelligence_endpoint: str = _base_endpoint(
+        _first("DOCUMENT_INTELLIGENCE_ENDPOINT", "AZURE_DOC_INTELLIGENCE_ENDPOINT"))
+    doc_intelligence_key: str = _first(
+        "DOCUMENT_INTELLIGENCE_KEY", "AZURE_DOC_INTELLIGENCE_KEY")
+
+    # prebuilt-layout is the model that earns its cost here: it does OCR, and it returns
+    # tables and heading roles rather than a flat text blob. prebuilt-read is cheaper and
+    # gives OCR without structure, which loses the section headings the chunker uses.
+    doc_intelligence_model: str = _first(
+        "DOCUMENT_INTELLIGENCE_MODEL", default="prebuilt-layout")
+
+    @property
+    def doc_intelligence_configured(self) -> bool:
+        return bool(self.doc_intelligence_endpoint and self.doc_intelligence_key)
+
+    # Which company the chunks produced by this process belong to.
+    #
+    # Defaults to "1" — Companies.id 1, "Quadrant Technologies", seeded by
+    # 009_add_multitenancy.sql. A string because the search index stores it as one
+    # (see docs/company-isolation-gap.md), and because the value that will eventually
+    # drive it is the company_id claim on a session token.
+    #
+    # A default is acceptable HERE and not on Chunk.company_id, which is the
+    # distinction worth keeping straight: this is "which company is this ingestion
+    # run for", answered once per process by whoever started it. Chunk.company_id is
+    # "which company does this passage belong to", and a passage that never got an
+    # answer must not fall back to one — it fails instead. Config supplies the value;
+    # it does not excuse its absence.
+    company_id: str = _first("QUIZGEN_COMPANY_ID", default="1")
+
     @property
     def document_containers(self) -> List[tuple]:
         """[(container_name, role_code), ...]"""

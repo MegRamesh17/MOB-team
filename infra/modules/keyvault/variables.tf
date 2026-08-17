@@ -43,6 +43,19 @@ variable "sql_admin_password" {
   sensitive = true
 }
 
+variable "jwt_signing_secret" {
+  description = "HS256 signing key for session tokens issued by api/shared/auth.py"
+  type        = string
+  sensitive   = true
+}
+
+variable "doc_intelligence_key" {
+  description = "Azure Document Intelligence key. Empty until the resource is wired up."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "storage_connection_string" {
   type      = string
   sensitive = true

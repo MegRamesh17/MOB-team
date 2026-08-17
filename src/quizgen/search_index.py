@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Sequence
 
 from .config import CONFIG
+from .isolation import IsolationError, validate_company_id
 from .models import Chunk
 
 INDEX_NAME_DEFAULT = "training-vetted-sources"
@@ -100,6 +101,10 @@ def create_index(recreate: bool = False) -> str:
             filterable=True,
             facetable=True,
         ),
+        # A plain string, NOT a collection like role_scope. A chunk can be approved for
+        # several roles at once; it belongs to exactly one company. Filterable because
+        # the whole point is a server-side filter that cannot be forgotten.
+        SimpleField(name="company_id", type=SearchFieldDataType.String, filterable=True),
         SimpleField(name="source_url", type=SearchFieldDataType.String),
         SimpleField(name="fetched_at", type=SearchFieldDataType.String, filterable=True, sortable=True),
         SimpleField(name="source_type", type=SearchFieldDataType.String, filterable=True),
@@ -143,10 +148,16 @@ def upload(chunks: Sequence[Chunk], with_embeddings: bool = True) -> int:
             "role_scope": [
                 r.strip().upper() for r in (chunk.role_scope or "ALL").split(",") if r.strip()
             ],
+            "company_id": chunk.company_id or "",
             "source_url": chunk.source_url or "",
             "fetched_at": chunk.fetched_at or "",
             "source_type": chunk.source_type or "document",
         }
+        # Hard gate, before anything reaches the index. An untagged chunk in a shared
+        # index is retrievable by every company, so this raises rather than dropping
+        # the chunk quietly — a partially-tagged batch is the failure that goes
+        # unnoticed until someone else's policy text turns up in your quiz.
+        validate_company_id(doc)
         if vector is not None:
             doc["embedding"] = vector
         documents.append(doc)
@@ -161,21 +172,34 @@ def upload(chunks: Sequence[Chunk], with_embeddings: bool = True) -> int:
     return uploaded
 
 
-def retrieve(query: str, role: str = "", topic: str = "", limit: int = 5) -> List[Chunk]:
+def retrieve(query: str, company_id: str, role: str = "", topic: str = "", limit: int = 5) -> List[Chunk]:
     """
-    Hybrid search over the vetted corpus.
+    Hybrid search over the vetted corpus, scoped to one company.
 
-    The role filter is applied by the service, not after the fact — a source approved
-    only for SDE1-3 is never returned for a Director, however well it matches.
+    Both filters are applied by the service, not after the fact — a source approved
+    only for SDE1-3 is never returned for a Director, however well it matches, and a
+    chunk belonging to another company is never returned at all.
+
+    `company_id` is positional and required, unlike `role` and `topic`. That is
+    deliberate: an optional company filter is one forgotten keyword argument away from
+    querying every company's data at once, and the call would look perfectly normal in
+    review. Making it structurally impossible to call unscoped is the only version of
+    this that stays true as the codebase grows.
     """
     from azure.search.documents import SearchClient
     from azure.search.documents.models import VectorizedQuery
+
+    if not company_id or not company_id.strip():
+        raise IsolationError(
+            "retrieve() requires a company_id — an unscoped query would search every "
+            "company's material in a shared index."
+        )
 
     client = SearchClient(
         endpoint=CONFIG.search_endpoint, index_name=_index_name(), credential=_credential()
     )
 
-    filters = []
+    filters = ["company_id eq '{}'".format(company_id.strip().replace("'", "''"))]
     if role:
         safe = role.upper().replace("'", "''")
         filters.append(
@@ -183,7 +207,7 @@ def retrieve(query: str, role: str = "", topic: str = "", limit: int = 5) -> Lis
         )
     if topic:
         filters.append("topic eq '{}'".format(topic.replace("'", "''")))
-    filter_expr = " and ".join(filters) if filters else None
+    filter_expr = " and ".join(filters)
 
     vector_queries = None
     try:
@@ -216,6 +240,7 @@ def retrieve(query: str, role: str = "", topic: str = "", limit: int = 5) -> Lis
                 text=r["text"],
                 container="vetted-sources",
                 role_scope=",".join(r.get("role_scope") or ["ALL"]),
+                company_id=r.get("company_id", ""),
                 source_type=r.get("source_type", "web"),
                 source_url=r.get("source_url", ""),
                 fetched_at=r.get("fetched_at", ""),

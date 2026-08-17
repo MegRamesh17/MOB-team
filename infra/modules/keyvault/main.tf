@@ -57,6 +57,19 @@ resource "azurerm_key_vault_secret" "sql_password" {
   key_vault_id = azurerm_key_vault.mob_kv.id
 }
 
+resource "azurerm_key_vault_secret" "jwt_signing_secret" {
+  name         = "jwt-signing-secret"
+  value        = var.jwt_signing_secret
+  key_vault_id = azurerm_key_vault.mob_kv.id
+}
+
+resource "azurerm_key_vault_secret" "doc_intelligence_key" {
+  count        = var.doc_intelligence_key != "" ? 1 : 0
+  name         = "doc-intelligence-key"
+  value        = var.doc_intelligence_key
+  key_vault_id = azurerm_key_vault.mob_kv.id
+}
+
 resource "azurerm_key_vault_secret" "storage_connection_string" {
   name         = "storage-connection-string"
   value        = var.storage_connection_string

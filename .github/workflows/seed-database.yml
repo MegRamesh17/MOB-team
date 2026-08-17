@@ -1,0 +1,105 @@
+name: seed-database
+
+# Loads db/seed/ into Azure SQL. Until this existed, migrate-database.yml applied schema
+# and nothing ever inserted a row — so Companies, Departments, Teams, Roles and Employees
+# were all empty, and api/auth/login.py had nobody to authenticate.
+#
+# Runs after migrate-database.yml rather than as part of it: applying schema and inserting
+# demo data are different decisions, and someone pointing this at a database with real
+# employees in it should have to opt in rather than have it happen as a side effect of a
+# migration.
+#
+# Safe to re-run. Every insert in db/seed/ is guarded by WHERE NOT EXISTS and resolves its
+# foreign keys by natural key, so a second run inserts nothing and changes nothing.
+
+on:
+  workflow_run:
+    workflows: ["migrate-database"]
+    types: [completed]
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  SQL_SERVER: mob-sql-server-02.database.windows.net
+  SQL_DATABASE: mob-training-db
+  SQL_USER: mobsqladmin
+  RESOURCE_GROUP: MOB
+  # Distinct from migrate-database.yml's rule. Sharing a name means whichever workflow
+  # finishes first deletes the other's access mid-run.
+  FIREWALL_RULE: github-actions-seed
+
+concurrency:
+  group: seed-database
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    # Never seed on the back of a failed migration — the tables may not exist yet.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get runner IP
+        id: ip
+        run: echo "ip=$(curl -s https://api.ipify.org)" >> "$GITHUB_OUTPUT"
+
+      - name: Open temporary firewall rule
+        run: |
+          az sql server firewall-rule create \
+            --resource-group "$RESOURCE_GROUP" --server mob-sql-server-02 \
+            --name "$FIREWALL_RULE" \
+            --start-ip-address ${{ steps.ip.outputs.ip }} \
+            --end-ip-address ${{ steps.ip.outputs.ip }}
+
+      - name: Install sqlcmd
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mssql-tools18 unixodbc-dev
+          echo "/opt/mssql-tools18/bin" >> "$GITHUB_PATH"
+
+      - name: Load seed files in order
+        # org_seed first: seed_data.sql resolves each employee's role by title and fails
+        # loudly if Companies is empty, rather than inserting employees with no role.
+        #
+        # -b makes sqlcmd exit non-zero on error. Without it a failed insert prints a
+        # message and the step still reports success, which is how a half-seeded database
+        # gets mistaken for a working one.
+        run: |
+          for file in db/seed/org_seed.sql db/seed/seed_data.sql; do
+            echo "--- $file"
+            sqlcmd -S "$SQL_SERVER" -d "$SQL_DATABASE" \
+              -U "$SQL_USER" -P "${{ secrets.SQL_ADMIN_PASSWORD }}" \
+              -C -b -i "$file"
+          done
+
+      - name: Report what is actually in the database
+        # The counts are the point. "Seed completed" tells you the script ran; these tell
+        # you whether anyone can sign in.
+        run: |
+          sqlcmd -S "$SQL_SERVER" -d "$SQL_DATABASE" \
+            -U "$SQL_USER" -P "${{ secrets.SQL_ADMIN_PASSWORD }}" -C -b -Q "
+            SET NOCOUNT ON;
+            SELECT 'companies'   AS entity, COUNT(*) AS rows FROM Companies
+            UNION ALL SELECT 'departments', COUNT(*) FROM Departments
+            UNION ALL SELECT 'teams',       COUNT(*) FROM Teams
+            UNION ALL SELECT 'roles',       COUNT(*) FROM Roles
+            UNION ALL SELECT 'employees',   COUNT(*) FROM Employees
+            UNION ALL SELECT 'employees with a password', COUNT(*) FROM Employees WHERE password_hash IS NOT NULL;"
+
+      - name: Close temporary firewall rule
+        if: always()
+        run: |
+          az sql server firewall-rule delete \
+            --resource-group "$RESOURCE_GROUP" --server mob-sql-server-02 \
+            --name "$FIREWALL_RULE"

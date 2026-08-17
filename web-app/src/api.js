@@ -17,26 +17,81 @@
 
 const BASE = import.meta.env.VITE_API_BASE || "";
 
-// Identifies the learner. A demo stand-in for Entra sign-in: the real deployment
-// reads the platform-injected x-ms-client-principal header instead, and this header
-// is ignored there.
-let learnerId = "demo-learner";
-let learnerRole = "";
-export const setLearner = (id) => { learnerId = id || "demo-learner"; };
-export const getLearner = () => learnerId;
-// Self-declared for now (the team has parked role verification until Entra).
-// Serving-side filtering keys on this header: employees only ever see their own
-// role's modules plus the ALL/miscellaneous ones.
-export const setLearnerRole = (role) => { learnerRole = (role || "").toUpperCase(); };
+/**
+ * The session token.
+ *
+ * Replaces the x-learner-id / x-learner-role pair, which let the browser declare who it
+ * was and what role it held. Both now travel inside a token the server signed, so editing
+ * them invalidates the signature rather than changing what you are served.
+ *
+ * localStorage so a refresh does not sign you out. Any script on this origin can read it;
+ * the mitigation is not running untrusted scripts here, and an httpOnly cookie once the
+ * API and app share an origin in deployment.
+ */
+const TOKEN_KEY = "quizgen.session";
+
+let token = null;
+try {
+  token = localStorage.getItem(TOKEN_KEY);
+} catch {
+  /* Safari private mode throws on access. In-memory only: sign-in still works, it
+     just does not survive a refresh. */
+}
+
+function setToken(value) {
+  token = value || null;
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch { /* see above */ }
+}
+
+const authHeaders = () => (token ? { Authorization: `Bearer ${token}` } : {});
+
+/** Sign in. Returns the principal: role_code, access_role, manager_id, company_id. */
+export async function login(email, password) {
+  const res = await fetch(BASE + "/api/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  let payload = {};
+  try { payload = await res.json(); } catch { /* non-JSON error body */ }
+  if (!res.ok) {
+    const err = new Error(payload.detail || payload.title || "Sign-in failed");
+    err.status = res.status;
+    throw err;
+  }
+  setToken(payload.token);
+  return payload.principal;
+}
+
+/**
+ * Sign out. Honest about the limit: this drops the token here. It stays valid on the
+ * server until it expires — revoking it needs shared state that does not exist yet.
+ */
+export async function logout() {
+  try {
+    await fetch(BASE + "/api/auth/logout", { method: "POST", headers: authHeaders() });
+  } catch { /* signing out must work even when the API is unreachable */ }
+  setToken(null);
+}
+
+/** Who the server thinks we are. Used on load to restore a session after a refresh. */
+export async function currentUser() {
+  if (!token) return null;
+  const res = await fetch(BASE + "/api/auth/me", { headers: authHeaders() });
+  if (!res.ok) {
+    setToken(null);   // expired: drop it rather than fail every later call with it
+    return null;
+  }
+  return (await res.json()).principal;
+}
 
 async function call(path, { method = "GET", body } = {}) {
   const res = await fetch(BASE + "/api" + path, {
     method,
-    headers: {
-      "Content-Type": "application/json",
-      "x-learner-id": learnerId,
-      ...(learnerRole ? { "x-learner-role": learnerRole } : {}),
-    },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
@@ -44,6 +99,9 @@ async function call(path, { method = "GET", body } = {}) {
   try { payload = await res.json(); } catch { /* empty or non-JSON body */ }
 
   if (!res.ok) {
+    // 401 means the token expired or was revoked. Clear it so the app falls back to
+    // sign-in rather than retrying every call with one that cannot work.
+    if (res.status === 401) setToken(null);
     // The server sends an actionable message (which CLI command to run when the
     // bank is empty, for instance). Prefer it over a generic HTTP error.
     const err = new Error(payload.detail || payload.title || `Request failed (${res.status})`);
@@ -60,8 +118,20 @@ export const trainings = () => call("/trainings");
 export const lesson = (training) => call(`/lesson?training=${encodeURIComponent(training)}`);
 export const certificates = () => call("/certificates");
 
-export const startQuiz = ({ training, length = 8, role = "" }) =>
-  call("/quiz/start", { method: "POST", body: { learnerId, training, length, role } });
+/** The team you manage, and the roles you may upload for. Empty for most people. */
+export const team = () => call("/team");
+
+/**
+ * Q Score. Pass an email to read a report's — permitted only inside your reporting
+ * subtree, and a 404 otherwise, so this cannot be used to discover who exists.
+ */
+export const qscore = (employeeEmail) =>
+  call("/qscore" + (employeeEmail ? `?employee=${encodeURIComponent(employeeEmail)}` : ""));
+
+// Neither learner nor role is sent: the server reads both from the token and ignores
+// anything the body claims. Sending them would only imply they were trusted.
+export const startQuiz = ({ training, length = 8 }) =>
+  call("/quiz/start", { method: "POST", body: { training, length } });
 
 /** Grade one question mid-quiz. The key stays on the server. */
 export const gradeAnswer = ({ attemptId, questionId, selectedOptionIds, textAnswer }) =>
@@ -72,7 +142,7 @@ export const gradeAnswer = ({ attemptId, questionId, selectedOptionIds, textAnsw
 
 /** Final score is computed server-side; the client's tally is never trusted. */
 export const submitQuiz = ({ attemptId, answers }) =>
-  call("/quiz/submit", { method: "POST", body: { attemptId, learnerId, answers } });
+  call("/quiz/submit", { method: "POST", body: { attemptId, answers } });
 
 export const documents = () => call("/documents");
 export const jobStatus = (jobId) => call(`/jobs/${encodeURIComponent(jobId)}`);
@@ -91,7 +161,7 @@ export async function uploadDocument(file) {
 
   const res = await fetch(BASE + "/api/documents", {
     method: "POST",
-    headers: { "x-learner-id": learnerId, ...(learnerRole ? { "x-learner-role": learnerRole } : {}) },
+    headers: authHeaders(),
     body: form,
   });
 
