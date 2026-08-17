@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import azure.functions as func
+from shared.auth import get_current_employee
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
@@ -119,21 +120,9 @@ def _error(status: int, title: str, detail: str = "") -> func.HttpResponse:
 
 
 def _caller_id(req: func.HttpRequest) -> str:
-    """
-    Who is calling.
-
-    DEMO STUB. Real deployments read the platform-injected x-ms-client-principal header
-    (App Service / Static Web Apps set it after validating the token) and match the
-    object id to an employee record. Until Entra is wired up this trusts a header, which
-    is fine behind a demo and unacceptable in production.
-    """
-    principal = req.headers.get("x-ms-client-principal")
-    if principal:
-        try:
-            claims = json.loads(base64.b64decode(principal).decode("utf-8"))
-            return claims.get("userId") or claims.get("userDetails") or "unknown"
-        except Exception:  # noqa: BLE001
-            pass
+    identity = get_current_employee(req)
+    if identity:
+        return identity.email
     return req.headers.get("x-learner-id", "demo-learner")
 
 
