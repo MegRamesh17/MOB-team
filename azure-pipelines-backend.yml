@@ -14,11 +14,12 @@
 #      or change that value to whatever you name it. It needs the same access the
 #      GitHub Actions pipeline identity has: SQL admin login, Key Vault read on
 #      mob-kv-dev, and Contributor (or Website Contributor) on mob-functions-dev.
-#   2. Pipelines -> Library -> new variable group named `mob-backend-secrets`,
-#      either with a secret variable `SQL_ADMIN_PASSWORD` set directly, or (better)
-#      linked to mob-kv-dev so it reads `sql-password` from Key Vault automatically.
-#      Either way the variable available to this pipeline must be named
-#      SQL_ADMIN_PASSWORD.
+#   2. Pipelines -> Library -> new variable group named `mob-backend-secrets`, linked
+#      to mob-kv-dev so it reads `sql-password` from Key Vault automatically. A
+#      Key-Vault-linked variable keeps the Key Vault secret's own name -- it shows up
+#      in this pipeline as $(sql-password), NOT $(SQL_ADMIN_PASSWORD), and can't be
+#      renamed on the DevOps side. The two Migrate/Seed steps that read it already
+#      account for this; if the Key Vault secret is ever renamed, update those too.
 #
 # Trigger: push to main. Same trigger terraform.yml's apply job uses, but this is
 # an independent DevOps pipeline -- it does NOT wait for a GitHub Actions terraform
@@ -134,8 +135,15 @@ stages:
             # tries to run the literal leftover text "$(SQL_ADMIN_PASSWORD)" as a command
             # substitution, so the error shows up as "SQL_ADMIN_PASSWORD: command not
             # found" followed by a SQL login failure -- easy to misread as a bad password.
+            #
+            # Sourced from $(sql-password), not $(SQL_ADMIN_PASSWORD): mob-backend-secrets
+            # links this from Key Vault, and a Key-Vault-linked variable keeps the Key
+            # Vault secret's own name (sql-password) -- it can't be renamed on the DevOps
+            # side. Referencing the wrong name here doesn't error either, it just resolves
+            # to empty, so sqlcmd runs with -P "" and fails with a clean "Login failed"
+            # that looks exactly like a wrong password.
             env:
-              SQL_ADMIN_PASSWORD: $(SQL_ADMIN_PASSWORD)
+              SQL_ADMIN_PASSWORD: $(sql-password)
 
           - task: AzureCLI@2
             displayName: 'Close temporary firewall rule'
@@ -190,9 +198,11 @@ stages:
               done
             displayName: 'Apply seed data (safe to re-run -- guarded by WHERE NOT EXISTS)'
             # See the same env: note on the Migrate stage's "Run only new migrations" step
-            # -- secret variables need this explicit mapping, $(...) alone won't work.
+            # -- secret variables need this explicit mapping, $(...) alone won't work, and
+            # it has to source from $(sql-password) (the Key Vault secret's own name), not
+            # $(SQL_ADMIN_PASSWORD).
             env:
-              SQL_ADMIN_PASSWORD: $(SQL_ADMIN_PASSWORD)
+              SQL_ADMIN_PASSWORD: $(sql-password)
 
           - task: AzureCLI@2
             displayName: 'Close temporary firewall rule'
