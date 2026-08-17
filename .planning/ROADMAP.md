@@ -195,13 +195,14 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Goal**: Every employee has a real, role-relative Q Score driven by unexpired certificate coverage, visible to them and to everyone above them in the reporting chain
 **Mode:** mvp
 **Depends on**: Phase 7
-**Requirements**: QSCORE-01, QSCORE-02, QSCORE-03, QSCORE-04, QSCORE-05, QSCORE-06, UI-03
+**Requirements**: QSCORE-01, QSCORE-02, QSCORE-03, QSCORE-04, QSCORE-05, QSCORE-06, QSCORE-07, QSCORE-08, QSCORE-09, UI-03
 **Success Criteria** (what must be TRUE):
-  1. The team has settled what "Q Score" names — the per-employee compliance rollup or the per-attempt performance score — and the chosen meaning is written down before any code in this phase is planned. (See the unresolved-conflict note above the QSCORE block in REQUIREMENTS.md.)
-  2. An employee opens the Q Score screen and sees a number computed as `100 x Coverage x (0.75 + 0.25 x Quality)` from their own unexpired certificates against their role's admin-configured required list — not sample data.
+  1. An employee opens the Q Score screen and sees `Coverage x Quality` computed from their own unexpired certificates against their role's required list — not sample data. Completing every required course at the pass mark shows roughly the pass mark, not a number that reads as failing.
+  2. Each certificate carries a difficulty-weighted attempt score that never changes after it is issued, and the Q Score is the average of those scaled by coverage.
   3. Behavioural and technical Q Scores are shown separately as well as combined, so a gap in one is visible rather than averaged away.
   4. A manager sees the Q Score of everyone in their `Employees.manager_id` reporting subtree, and cannot see the Q Score of anyone outside it or outside their company.
-  5. An employee who retakes an assessment and scores lower does not see their Q Score fall — the best score remains the score of record — and when a certificate expires, Coverage and Q Score drop on the next view.
+  5. An employee who retakes an assessment and scores lower does not see their Q Score fall — the best attempt score remains the one of record — and when a certificate expires, Coverage and Q Score drop on the next view with nobody having acted.
+  6. Q Score is read from a view, not a stored column: expiring a certificate directly in the database changes the number on the next read, with no recalculation step to run.
 **Plans**: TBD
 **UI hint**: yes
 
@@ -251,7 +252,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 
 ## Coverage
 
-All 55 v1 requirements map to exactly one phase. No orphans, no duplicates.
+All 58 v1 requirements map to exactly one phase. No orphans, no duplicates.
 
 | Phase | Requirements | Count |
 |-------|--------------|-------|
@@ -262,10 +263,10 @@ All 55 v1 requirements map to exactly one phase. No orphans, no duplicates.
 | 5 | DOC-01, DOC-02, DOC-03, DOC-04, DOC-05, DOC-06, DOC-07 | 7 |
 | 6 | UPLOAD-01, UPLOAD-02, UPLOAD-03, UPLOAD-04, UPLOAD-05, TENANT-04, UI-02 | 7 |
 | 7 | CERT-01, CERT-02, CERT-03, CERT-04, CERT-05, CERT-06, UI-04 | 7 |
-| 8 | QSCORE-01, QSCORE-02, QSCORE-03, QSCORE-04, QSCORE-05, QSCORE-06, UI-03 | 7 |
+| 8 | QSCORE-01, QSCORE-02, QSCORE-03, QSCORE-04, QSCORE-05, QSCORE-06, QSCORE-07, QSCORE-08, QSCORE-09, UI-03 | 10 |
 | 9 | RENEW-01, RENEW-02, RENEW-03 | 3 |
 | 10 | TENANT-05, UI-05 | 2 |
-| **Total** | | **55** |
+| **Total** | | **58** |
 
 ## Notes on Sequencing
 
@@ -295,10 +296,12 @@ All 55 v1 requirements map to exactly one phase. No orphans, no duplicates.
 - **Phase 7 depends on Phase 4, not Phase 6.** Certificates need assessments scoped to
   authenticated identity. They do not need manager upload. Phases 6 and 7 could run in either
   order; the stated order follows the user's declared sequence.
-- **Phase 8 is blocked on a naming decision, not on code.** Its first success criterion is that
-  the team settles what "Q Score" means. Two incompatible definitions are live — a per-employee
-  compliance rollup and a per-attempt performance score. They are reconcilable by renaming, but
-  shipping both under one name makes the number ambiguous.
+- **Phase 8's naming conflict is resolved.** Two definitions were live — a per-employee
+  compliance rollup and a per-attempt performance score. They are now two named levels, with the
+  attempt score feeding the rollup: `docs/q-score.md` is authoritative, and every other formula
+  in the repo is marked superseded. What remains is a coordination cost, not a design one: the
+  `add-certificates` branch computes the attempt score under the name `q_score`, so it needs the
+  rename plus two formula fixes listed in that document.
 - **Phase 9 needs Phase 5.** RENEW-02 prioritises questions whose source document changed. That
   requires document-version tracking established by the Document Intelligence ingestion path.
 - **Offline path is a standing constraint, not a phase.** `QUIZGEN_PROVIDER=mock` plus the SQLite

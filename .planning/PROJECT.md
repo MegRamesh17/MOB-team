@@ -61,7 +61,7 @@ The rebuild, in intended order. All are hypotheses until shipped.
 - [ ] Every query is tenant-scoped; a user of one company can never read another company's data
 - [ ] Employee earns a certificate on passing an assessment
 - [ ] Certificates carry `validity_months` and expire; an expired certificate stops counting toward Coverage and reopens training
-- [ ] Q Score computed per employee, role-relative, as `100 x Coverage x (0.75 + 0.25 x Quality)`
+- [ ] Q Score computed per employee as `Coverage x Quality` — see `docs/q-score.md`
 - [ ] Behavioural and technical certificates tracked separately, so a gap in one is visible rather than averaged away
 - [ ] Q Score visible to the employee and to everyone above them in the org chart
 - [ ] Renewal assessment draws from the current question bank, prioritising questions whose source changed since the certificate was issued
@@ -102,7 +102,9 @@ roadmap doc notes this was "true by accident of the design; it is now true on pu
 **A stale document.** `docs/roadmap-online-sourcing-and-renewal.md` argues that company
 PDFs are the wrong primary content source and the substance should come from online. This
 project keeps PDFs as the primary source and treats vetted online sources as a supplement.
-The doc's section 1 framing is superseded; its sections 2 (renewal) and 3 (Q Score) hold.
+The doc's section 1 framing is superseded, and so is its section 3 formula — Q Score is
+now defined in `docs/q-score.md`, which is the single source of truth for it. Section 2
+(renewal) still holds.
 
 **Local storage is not a migration burden.** The database work so far was implemented
 locally only, so moving to Azure SQL as the real backing store carries no data migration.
@@ -133,6 +135,7 @@ locally only, so moving to Azure SQL as the real backing store carries no data m
 | Azure Document Intelligence replaces pypdf for extraction | pypdf returns nothing for scanned PDFs and flattens tables and multi-column layouts. Defensible citation needs reliable page and section structure. | — Pending |
 | External sources restricted to the curated allowlist in `registry.py`; no open web search | This is the roadmap's own recommendation. The cost is maintaining a list; the cost of the alternative is certifying people against a stranger's blog post. | — Pending |
 | Upload permissions derived from the org chart, not an explicit grant list | Departments > Teams > Roles already encodes who manages whom. A separate permission list would duplicate it and drift from it. | — Pending |
+| Q Score is `Coverage x Quality`, defined in `docs/q-score.md`, and that definition is authoritative | Two different numbers were being built under one name — a per-attempt performance score on the `add-certificates` branch, and a per-employee compliance rollup in the roadmap doc. They are now two named levels, with the attempt score feeding the rollup. Any other definition in the repo is superseded, including this project's own earlier `0.75`-floor formula. Work on `add-certificates` needs three changes, listed in `docs/q-score.md`. | — Pending |
 | Best score counts for retakes | Rewards mastery and re-learning. **Known tradeoff:** `docs/roadmap-online-sourcing-and-renewal.md` argues the opposite — if best score counts, retaking until the number looks good is rational and the score stops meaning anything. Chosen deliberately with that objection on the record. Revisit if Q Score inflation appears. | ⚠️ Revisit |
 | Multi-tenancy built properly from the start, not deferred | Migration 009 already added the Companies root and `company_id` columns. **Known tradeoff:** this adds tenant-scoping work to every phase rather than concentrating it in one later migration. Chosen deliberately. | ⚠️ Revisit |
 | Q Score visible to the employee and everyone above them in the org chart | Full hierarchy visibility. **Note:** the roadmap flags that once a manager sees it, it is de facto performance data and likely needs HR sign-off. That sign-off is not yet obtained. | ⚠️ Revisit |

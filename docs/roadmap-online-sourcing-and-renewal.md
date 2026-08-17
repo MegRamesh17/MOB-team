@@ -85,13 +85,25 @@ regeneration must run before renewal season, and therefore the cost and the sche
 
 ## 3. Q Score
 
+> **SUPERSEDED — see `docs/q-score.md` for the definition in use.**
+>
+> The formula below is kept as a record of the design session. It is no longer what gets
+> built. Two things changed: the `0.75` floor was removed (it made an employee who
+> completed every required course at the pass mark score 75, and it was unnecessary
+> because a certificate is only issued on a pass, so the average is already floored
+> there), and `Quality` now comes from a difficulty-weighted attempt score rather than a
+> raw percentage. The shape — coverage scaled by quality — survived unchanged.
+>
+> Of the three open questions below, retakes and visibility have since been decided and
+> are recorded in `docs/q-score.md`. Pace remains open.
+
 Single 0-100 number per employee, role-relative.
 
 ```
 Coverage = current certificates / required certificates
 Quality  = (average score - pass mark) / (100 - pass mark)
 
-Q Score  = 100 x Coverage x (0.75 + 0.25 x Quality)
+Q Score  = 100 x Coverage x (0.75 + 0.25 x Quality)      <-- superseded
 ```
 
 Coverage dominates because compliance is the point; quality modulates.
