@@ -30,6 +30,9 @@ import azure.functions as func
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
+from auth.login import bp as auth_bp
+app.register_functions(auth_bp)
+
 PASSING_SCORE = float(os.getenv("QUIZGEN_PASSING_SCORE", "80"))
 QUIZ_LENGTH = int(os.getenv("QUIZGEN_QUIZ_LENGTH", "8"))
 WEAK_THRESHOLD = float(os.getenv("QUIZGEN_WEAK_THRESHOLD", "0.70"))
