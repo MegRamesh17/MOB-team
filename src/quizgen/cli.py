@@ -52,7 +52,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             return 1
     else:
         print("Reading documents from {}".format(directory))
-        chunks = ingest_directory(directory)
+        chunks = ingest_directory(directory, role_scope=getattr(args, "role_scope", "ALL"))
     with _bank() as bank:
         bank.save_chunks(chunks)
 
@@ -457,6 +457,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     p = sub.add_parser("ingest", help="extract and chunk documents")
     p.add_argument("--pdf-dir", help="with --source local: folder to read (default: data/documents)")
+    p.add_argument("--role-scope", default="ALL",
+                   help="with --source local: tag this batch for a role (default: ALL, "
+                        "company-wide). Blob ingestion takes this from the container.")
     p.add_argument("--source", choices=["blob", "local"], default="blob",
                    help="where documents come from (default: blob)")
     p.add_argument("--container", help="blob container name (with --source blob)")

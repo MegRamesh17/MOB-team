@@ -40,6 +40,7 @@ from urllib.parse import urlparse, parse_qs
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
+import devauth  # noqa: E402  (scripts/ is on sys.path as the entry point's dir)
 from quizgen.adaptive import build_quiz  # noqa: E402
 from quizgen.bank import Bank  # noqa: E402
 from quizgen.models import Attempt, QuestionType, Response, ReviewStatus  # noqa: E402
@@ -259,7 +260,7 @@ class Handler(BaseHTTPRequestHandler):
         # The UI is served from this same origin, but a teammate running a React dev
         # server on :3000 against this API would otherwise be blocked by CORS.
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, x-learner-id")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
         self.wfile.write(raw)
 
@@ -275,18 +276,78 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return {}
 
-    def _learner_role(self) -> str:
-        """
-        The signed-in employee's role, from a header the demo login sets.
+    def _identity(self):
+        """The authenticated caller, from a signed token, or None."""
+        return devauth.identity_from_header(self.headers.get("Authorization", ""))
 
-        Self-declared for now — the team knows an employee could lie and has parked
-        that until real identity (Entra) exists. What matters today is the serving
-        side: everything the employee sees is filtered to this role plus ALL.
+    def _require(self, tier: str = "employee"):
         """
-        return self.headers.get("x-learner-role", "").strip().upper()
+        Return the caller's identity, or send an error and return None.
+
+        Callers MUST stop when this returns None — the response has already gone out.
+        401 and 403 are kept distinct: a legitimately expired session looks like a
+        permissions bug otherwise.
+        """
+        identity = self._identity()
+        if identity is None:
+            self._error(401, "Unauthorized",
+                        "Sign in at POST /api/login and send the token as "
+                        "'Authorization: Bearer <token>'.")
+            return None
+        if not identity.at_least(tier):
+            self._error(403, "Forbidden",
+                        "Requires {} access or above; you have {}.".format(
+                            tier, identity.access_role))
+            return None
+        return identity
+
+    def _learner_role(self) -> str:
+        """The caller's TRAINING role, from the token. Not client-supplied any more."""
+        identity = self._identity()
+        return identity.role_code if identity else ""
 
     def _learner(self) -> str:
-        return self.headers.get("x-learner-id", "demo-learner")
+        """
+        The learner key for attempt history and mastery.
+
+        Email, matching what the deployed API uses (_learner_key in function_app.py), so
+        a learner's history means the same thing in both.
+        """
+        identity = self._identity()
+        return identity.email if identity else ""
+
+    # ------------------------------------------------------------------
+    # auth — mirrors api/auth/login.py's contract exactly
+    # ------------------------------------------------------------------
+
+    def _login(self):
+        body = self._body()
+        email = (body.get("email") or "").strip()
+        password = body.get("password") or ""
+        if not email or not password:
+            return self._error(400, "Bad Request", "email and password are required")
+
+        identity = devauth.authenticate(email, password)
+        if identity is None:
+            # Identical for unknown email and wrong password, as the deployed login is.
+            return self._error(401, "Unauthorized", "Invalid email or password")
+
+        return self._send({
+            "token": devauth.create_token(identity),
+            "expiresInHours": devauth.TOKEN_TTL_HOURS,
+            "principal": identity.to_public(),
+        })
+
+    def _auth_me(self):
+        identity = self._require()
+        if identity is None:
+            return None
+        return self._send({"principal": identity.to_public()})
+
+    def _logout(self):
+        # Honest about the limit: the client drops its token and that is all. Revoking it
+        # server-side needs shared state this single process does not have.
+        return self._send({"ok": True, "detail": "Discard the token client-side."})
 
     def do_OPTIONS(self):  # noqa: N802
         self._send(b"", 204, "text/plain")
@@ -305,8 +366,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._static(route.lstrip("/"))
 
         try:
+            # /health stays open so the sign-in screen can tell "API is down" apart
+            # from "your password is wrong".
             if route == "/api/health":
                 return self._health()
+            if route == "/api/auth/me":
+                return self._auth_me()
+
+            if self._require() is None:
+                return None
+
+            if route == "/api/team":
+                return self._team()
             if route == "/api/me":
                 return self._me()
             if route == "/api/topics":
@@ -332,14 +403,35 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         route = urlparse(self.path).path.rstrip("/")
         try:
+            # Signing in is what you do when you have no token.
+            if route == "/api/login":
+                return self._login()
+            if route == "/api/auth/logout":
+                return self._logout()
+
+            # Uploading material and editing roles change what an entire role is taught
+            # and certified against. Manager tier or above, enforced here — the UI hides
+            # these too, but a hidden button is not a permission check.
             if route == "/api/documents":
+                if self._require("manager") is None:
+                    return None
                 return self._upload()
             if route == "/api/documents/confirm":
+                if self._require("manager") is None:
+                    return None
                 return self._confirm_document()
             if route == "/api/roles":
+                if self._require("manager") is None:
+                    return None
                 return self._add_role()
             if route.startswith("/api/roles/") and route.endswith("/delete"):
+                if self._require("manager") is None:
+                    return None
                 return self._remove_role(route.split("/")[3])
+
+            if self._require() is None:
+                return None
+
             if route == "/api/quiz/start":
                 return self._start()
             if route == "/api/quiz/answer":
@@ -349,6 +441,66 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             return self._error(500, type(exc).__name__, str(exc)[:300])
         self._error(404, "Not found", route)
+
+    def _team(self):
+        """
+        Who reports to me, and which roles I may upload for.
+
+        Two different questions, deliberately answered separately:
+
+          people        everyone below me in the reporting chain, however deep, so a
+                        director sees their managers' reports too
+          uploadTargets the roles those people hold, with the ones held by my DIRECT
+                        reports marked. The UI defaults to those, but the whole subtree
+                        is permitted — a director may want to push something to every
+                        engineer beneath them, not only their own managers.
+
+        An employee with nobody under them gets empty lists rather than a 403: "you
+        manage no one" is a fact about the org chart, not a permissions failure, and the
+        UI renders it as an empty state.
+        """
+        identity = self._require()
+        if identity is None:
+            return None
+
+        subtree = devauth.reports_of(identity.employee_id)
+        direct_ids = {p["employee_id"] for p in
+                      devauth.reports_of(identity.employee_id, direct_only=True)}
+
+        # Role -> whether anyone directly reporting to me holds it. A role held by both
+        # a direct report and someone deeper counts as direct: it is the closer
+        # relationship that decides the default.
+        targets = {}
+        for person in subtree:
+            code = (person.get("role_code") or "ALL").upper()
+            entry = targets.setdefault(code, {
+                "roleCode": code,
+                "title": person.get("title", code),
+                "direct": False,
+                "headcount": 0,
+            })
+            entry["headcount"] += 1
+            if person["employee_id"] in direct_ids:
+                entry["direct"] = True
+
+        return self._send({
+            "manages": bool(subtree),
+            "people": [
+                {
+                    "employeeId": p["employee_id"],
+                    "name": p.get("name", ""),
+                    "email": p.get("email", ""),
+                    "title": p.get("title", ""),
+                    "roleCode": (p.get("role_code") or "ALL").upper(),
+                    "accessRole": p.get("access_role", "employee"),
+                    "managerId": p.get("manager_id"),
+                    "direct": p["employee_id"] in direct_ids,
+                }
+                for p in subtree
+            ],
+            "uploadTargets": sorted(
+                targets.values(), key=lambda t: (not t["direct"], t["title"])),
+        })
 
     def _static(self, relative: str):
         target = (WEB / relative).resolve()
@@ -911,14 +1063,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _start(self):
         body = self._body()
-        learner = body.get("learnerId") or self._learner()
+        # From the token only. Accepting it from the body would let a signed-in
+        # employee write into someone else's attempt history.
+        learner = self._learner()
         length = int(body.get("length") or QUIZ_LENGTH)
         role = body.get("role", "")
 
         training = body.get("training", "")
         # The header wins over the body: an employee cannot request another role's
         # quiz by editing the POST payload in devtools.
-        role = self._learner_role() or role
+        role = self._learner_role()
 
         with Bank(DB) as bank:
             plan = build_quiz(bank, learner_id=learner, length=length, role=role)
@@ -990,7 +1144,7 @@ class Handler(BaseHTTPRequestHandler):
     def _submit(self):
         body = self._body()
         attempt_id = body.get("attemptId", "")
-        learner = body.get("learnerId") or self._learner()
+        learner = self._learner()   # token only, as in _start
         answers = {a.get("questionId"): a for a in body.get("answers", [])}
 
         served = _IN_FLIGHT.get(attempt_id)

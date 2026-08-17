@@ -398,10 +398,23 @@ def _chunk_pages(pages: List[str], source_name: str, doc_title: str) -> List[Chu
     return chunks
 
 
-def ingest_directory(source_dir: Optional[Path] = None) -> List[Chunk]:
-    """Ingest every .pdf, .txt and .md in a directory."""
+def ingest_directory(source_dir: Optional[Path] = None,
+                     role_scope: str = "ALL") -> List[Chunk]:
+    """
+    Ingest every .pdf, .txt and .md in a directory.
+
+    `role_scope` tags the batch. Blob ingestion gets this for free — the container a
+    document was filed in IS the role decision (sources.py). A local folder carries no
+    such signal, so it has to be passed, and it defaults to ALL: company-wide material
+    that every role takes.
+
+    That default is why local sample data shows the same trainings to everyone. Ingest
+    a folder per role to see role scoping actually do something.
+    """
     directory = Path(source_dir) if source_dir else DOCUMENT_DIR
     del _NO_HEADINGS[:]
+
+    scope = (role_scope or "ALL").strip().upper() or "ALL"
 
     files = sorted(
         p for p in directory.iterdir()
@@ -414,7 +427,12 @@ def ingest_directory(source_dir: Optional[Path] = None) -> List[Chunk]:
         )
     out: List[Chunk] = []
     for path in files:
-        out.extend(ingest_document(path))
+        for chunk in ingest_document(path):
+            # Tagged here rather than inside ingest_document, which has no idea which
+            # folder it was handed. Mirrors sources.py, where the blob container carries
+            # the same decision.
+            chunk.role_scope = scope
+            out.append(chunk)
     return out
 
 

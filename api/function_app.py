@@ -888,3 +888,90 @@ def get_lesson(req: func.HttpRequest) -> func.HttpResponse:
         })
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="team", methods=["GET"])
+def get_team(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Who reports to me, and which roles I may upload for.
+
+    Two questions, answered separately:
+
+      people         everyone below me in the Employees.manager_id chain, however deep,
+                     so a director sees their managers' reports too
+      uploadTargets  the roles those people hold, with roles held by my DIRECT reports
+                     marked. The UI defaults to those; the whole subtree is permitted,
+                     because a director may want to push something to every engineer
+                     beneath them rather than only to their own managers.
+
+    An employee with nobody under them gets empty lists and a 200, not a 403. "You manage
+    no one" is a fact about the org chart, not a permissions failure, and the UI renders
+    it as an empty state. Gating this on manager tier would also be wrong: the tier and
+    the reporting line are different things, and it is the reporting line that decides
+    whose training you are responsible for.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            # Recursive CTE rather than repeated round trips. MAXRECURSION 32 is a
+            # deliberate cap: manager_id is a self-referencing FK with nothing stopping a
+            # cycle, and a malformed org chart should error rather than spin.
+            cur.execute(
+                """WITH subtree AS (
+                       SELECT e.id, e.name, e.email, e.role_id, e.manager_id, 1 AS depth
+                         FROM dbo.Employees e
+                        WHERE e.manager_id = ?
+                       UNION ALL
+                       SELECT e.id, e.name, e.email, e.role_id, e.manager_id, s.depth + 1
+                         FROM dbo.Employees e
+                         JOIN subtree s ON e.manager_id = s.id
+                   )
+                   SELECT s.id, s.name, s.email, s.depth, s.manager_id,
+                          r.title, r.access_role, r.role_code
+                     FROM subtree s
+                     LEFT JOIN dbo.Roles r ON r.id = s.role_id
+                    ORDER BY s.depth, s.name
+                   OPTION (MAXRECURSION 32)""",
+                identity.employee_id,
+            )
+            people = _rows(cur)
+
+        targets: Dict[str, Dict[str, Any]] = {}
+        for person in people:
+            code = (person.get("role_code") or "ALL").upper()
+            entry = targets.setdefault(code, {
+                "roleCode": code,
+                "title": person.get("title") or code,
+                "direct": False,
+                "headcount": 0,
+            })
+            entry["headcount"] += 1
+            # A role held by both a direct report and someone deeper counts as direct:
+            # the closer relationship decides whether it is a default target.
+            if person["depth"] == 1:
+                entry["direct"] = True
+
+        return _json({
+            "manages": bool(people),
+            "people": [
+                {
+                    "employeeId": p["id"],
+                    "name": p["name"],
+                    "email": p["email"],
+                    "title": p.get("title"),
+                    "roleCode": (p.get("role_code") or "ALL").upper(),
+                    "accessRole": p.get("access_role"),
+                    "managerId": p.get("manager_id"),
+                    "direct": p["depth"] == 1,
+                }
+                for p in people
+            ],
+            "uploadTargets": sorted(
+                targets.values(), key=lambda t: (not t["direct"], t["title"])),
+        })
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
