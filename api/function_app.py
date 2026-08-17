@@ -330,6 +330,17 @@ def start_quiz(req: func.HttpRequest) -> func.HttpResponse:
                    VALUES (?, ?, SYSUTCDATETIME())""",
                 attempt_id, learner,
             )
+            # Record what was served. POST /quiz/answer reveals the key for one question,
+            # so it has to be able to check that the question was actually in this
+            # attempt -- otherwise it answers for any question in the bank, which is an
+            # oracle. devserver.py keeps this in memory; a multi-instance Function App
+            # cannot, so it lives in the database (017_create_attempt_questions.sql).
+            cur.executemany(
+                """INSERT INTO dbo.GeneratedQuizAttemptQuestions
+                       (attempt_id, question_id, sort_order)
+                   VALUES (?, ?, ?)""",
+                [(attempt_id, q["question_id"], i) for i, q in enumerate(chosen, 1)],
+            )
             questions = []
             for i, q in enumerate(chosen, 1):
                 # Options come from the answer-safe view: no is_correct column exists.
@@ -601,5 +612,279 @@ def review_decide(req: func.HttpRequest) -> func.HttpResponse:
                 )
             c.commit()
         return _json({"updated": len(ids), "decision": decision, "reviewedBy": reviewer})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+# --------------------------------------------------------------------------
+# product surface — what the web app actually renders
+# --------------------------------------------------------------------------
+# These existed only in scripts/devserver.py, which reads the SQLite bank. Ported
+# against Azure SQL rather than copied: the queries differ, the answer-safety rules do
+# not.
+
+
+@app.route(route="quiz/answer", methods=["POST"])
+def answer_question(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Grade ONE question mid-quiz, so the UI can give immediate feedback.
+
+    This endpoint exists because the alternative is worse. The React app shows a verdict
+    as each question is answered, and it used to do that against a correct-answer index
+    held in the browser — which puts every answer one devtools panel away. Here the
+    browser sends what was picked and gets back a verdict, so the key is revealed for
+    that one question, only after an answer was committed.
+
+    That makes the two checks below load-bearing rather than defensive. The endpoint
+    reveals an answer, so it must be impossible to ask it about a question you were not
+    served, or about somebody else's attempt. Without either check it is a way to read
+    the whole answer key without taking a quiz.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    learner = _learner_key(identity)
+
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+
+    attempt_id = (body.get("attemptId") or "").strip()
+    question_id = (body.get("questionId") or "").strip()
+    if not attempt_id or not question_id:
+        return _error(400, "Bad request", "attemptId and questionId are required")
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+
+            # Check 1: the attempt is this caller's. Same 404 for "no such attempt" and
+            # "someone else's" — distinguishing them confirms an attempt id exists.
+            cur.execute(
+                "SELECT learner_id FROM dbo.GeneratedQuizAttempts WHERE attempt_id = ?",
+                attempt_id,
+            )
+            attempt = cur.fetchone()
+            if attempt is None or attempt.learner_id != learner:
+                return _error(404, "Unknown attempt", "Start a quiz first.")
+
+            # Check 2: the question was served in it.
+            cur.execute(
+                """SELECT 1 FROM dbo.GeneratedQuizAttemptQuestions
+                   WHERE attempt_id = ? AND question_id = ?""",
+                attempt_id, question_id,
+            )
+            if cur.fetchone() is None:
+                return _error(403, "Not part of this attempt", question_id)
+
+            cur.execute(
+                """SELECT question_id, question_type, explanation, source_doc_title,
+                          source_page, source_quote, source_url, provenance_class
+                     FROM dbo.GeneratedQuestions WHERE question_id = ?""",
+                question_id,
+            )
+            question = cur.fetchone()
+            if question is None:
+                return _error(404, "Unknown question", question_id)
+
+            cur.execute(
+                """SELECT option_id, is_correct FROM dbo.GeneratedOptions
+                   WHERE question_id = ?""",
+                question_id,
+            )
+            options = _rows(cur)
+
+            cur.execute(
+                "SELECT accepted_answer FROM dbo.GeneratedAnswerKeys WHERE question_id = ?",
+                question_id,
+            )
+            accepted = [r["accepted_answer"] for r in _rows(cur)]
+
+        if (question.question_type or "").lower() in ("fill_in_blank", "fillintheblank"):
+            typed = str(body.get("textAnswer") or "").strip().lower()
+            correct = bool(typed) and typed in {a.strip().lower() for a in accepted}
+        else:
+            # Exact set match, not overlap. Partial credit on a compliance question lets
+            # someone pass while still believing something false — the same rule
+            # submit_quiz grades by.
+            selected = set(body.get("selectedOptionIds") or [])
+            key = {o["option_id"] for o in options if o["is_correct"]}
+            correct = bool(key) and selected == key
+
+        return _json({
+            "questionId": question_id,
+            "correct": correct,
+            "correctOptionIds": [o["option_id"] for o in options if o["is_correct"]],
+            "acceptedAnswers": accepted,
+            "explanation": question.explanation,
+            "sourceTitle": question.source_doc_title,
+            "sourcePage": question.source_page,
+            "sourceQuote": question.source_quote,
+            "sourceUrl": question.source_url,
+            "provenance": question.provenance_class,
+        })
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="trainings", methods=["GET"])
+def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Source documents, presented as the UI's "trainings".
+
+        training = source document        (Behavioral Compliance for Employees)
+        module   = section heading in it  (Recognising Phishing Attempts)
+
+    Deliberately the same grain mastery is measured on, so a training card's progress
+    ring and the quiz engine's weak-topic targeting agree. Deriving it any other way lets
+    the UI show 90% on a subject the engine considers weak.
+
+    Role isolation happens here, on the serving side: a Sales Manager should not see that
+    Cloud DevOps modules exist, never mind be able to take them.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    learner = _learner_key(identity)
+    role = (identity.role_code or "ALL").upper()
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+
+            # Approved questions in scope, grouped by the document they came from.
+            # role_scope 'ALL' is company-wide material everyone takes.
+            cur.execute(
+                """SELECT COALESCE(q.source_doc_title, q.topic) AS doc,
+                          COUNT(*) AS question_count
+                     FROM dbo.GeneratedQuestions q
+                     LEFT JOIN dbo.SourceChunks c ON c.chunk_id = q.source_chunk_id
+                    WHERE q.review_status = 'Approved'
+                      AND (COALESCE(c.role_scope, 'ALL') IN ('ALL', ?))
+                    GROUP BY COALESCE(q.source_doc_title, q.topic)
+                    ORDER BY doc""",
+                role,
+            )
+            docs = _rows(cur)
+            if not docs:
+                return _json({"trainings": []})
+
+            visible = {d["doc"] for d in docs}
+
+            cur.execute(
+                """SELECT DISTINCT doc_title, topic FROM dbo.SourceChunks
+                    WHERE COALESCE(role_scope, 'ALL') IN ('ALL', ?)
+                    ORDER BY doc_title, topic""",
+                role,
+            )
+            modules: Dict[str, List[str]] = {}
+            for row in _rows(cur):
+                if row["doc_title"] in visible:
+                    modules.setdefault(row["doc_title"], []).append(row["topic"])
+
+            # Mastery is per topic; a training is a document. Roll the topics up.
+            cur.execute(
+                """SELECT m.topic, m.answered, m.correct
+                     FROM dbo.vw_LearnerTopicMastery m
+                    WHERE m.learner_id = ?""",
+                learner,
+            )
+            by_topic = {r["topic"]: r for r in _rows(cur)}
+
+            cur.execute(
+                """SELECT DISTINCT doc_title, topic FROM dbo.SourceChunks""")
+            topic_to_doc = {r["topic"]: r["doc_title"] for r in _rows(cur)}
+
+        rolled: Dict[str, Dict[str, int]] = {}
+        for topic, row in by_topic.items():
+            doc = topic_to_doc.get(topic, topic)
+            acc = rolled.setdefault(doc, {"answered": 0, "correct": 0})
+            acc["answered"] += int(row["answered"] or 0)
+            acc["correct"] += int(row["correct"] or 0)
+
+        out = []
+        for d in docs:
+            doc = d["doc"]
+            acc = rolled.get(doc, {"answered": 0, "correct": 0})
+            answered = acc["answered"]
+            accuracy = round(100.0 * acc["correct"] / answered, 1) if answered else 0.0
+            # Status comes from evidence, not a stored flag: nothing answered means not
+            # started, and at or above the pass mark means done.
+            if answered == 0:
+                status = "not-started"
+            elif accuracy >= PASSING_SCORE:
+                status = "completed"
+            else:
+                status = "in-progress"
+            out.append({
+                "id": doc,
+                "title": doc,
+                "status": status,
+                "mastery": int(accuracy),
+                "answered": answered,
+                "questionCount": d["question_count"],
+                "modules": modules.get(doc, []),
+            })
+        return _json({"trainings": out})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="lesson", methods=["GET"])
+def get_lesson(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    The reading material for one training, before its quiz.
+
+    Source passages, in document order — not model-generated prose. The whole provenance
+    model rests on a learner being tested against text somebody approved, so the lesson
+    is that same text rather than a summary of it.
+
+    Scoped to the caller's role for the same reason the training list is: a document out
+    of scope should not be readable by guessing its title.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    role = (identity.role_code or "ALL").upper()
+
+    training = (req.params.get("training") or "").strip()
+    if not training:
+        return _error(400, "Bad request", "training is required")
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """SELECT chunk_id, topic, section, page_start, page_end, chunk_text
+                     FROM dbo.SourceChunks
+                    WHERE doc_title = ?
+                      AND COALESCE(role_scope, 'ALL') IN ('ALL', ?)
+                    ORDER BY page_start, section""",
+                training, role,
+            )
+            sections = _rows(cur)
+
+        if not sections:
+            # Same response whether the document does not exist or is out of scope.
+            # Different ones would let a learner enumerate other roles' material by
+            # title, which is what role scoping exists to prevent.
+            return _error(404, "No lesson available",
+                          "No readable sections for this training.")
+
+        return _json({
+            "training": training,
+            "sections": [
+                {
+                    "id": s["chunk_id"],
+                    "topic": s["topic"],
+                    "heading": s["section"],
+                    "pageStart": s["page_start"],
+                    "pageEnd": s["page_end"],
+                    "text": s["chunk_text"],
+                }
+                for s in sections
+            ],
+        })
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
