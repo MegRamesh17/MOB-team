@@ -940,9 +940,16 @@ def get_team(req: func.HttpRequest) -> func.HttpResponse:
             )
             people = _rows(cur)
 
+        # ALL is company-wide, not a role anyone "controls", so it is not an upload
+        # target for a manager — only for admin and executive. A subtree member whose
+        # role_code is unmapped surfaces as ALL and must not smuggle it in.
+        company_wide_allowed = (identity.access_role or "") in ("admin", "executive")
+
         targets: Dict[str, Dict[str, Any]] = {}
         for person in people:
             code = (person.get("role_code") or "ALL").upper()
+            if code == "ALL" and not company_wide_allowed:
+                continue
             entry = targets.setdefault(code, {
                 "roleCode": code,
                 "title": person.get("title") or code,

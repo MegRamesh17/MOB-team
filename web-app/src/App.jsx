@@ -1143,7 +1143,15 @@ function RoleManager({ roles, onChanged }) {
 
 /** The manager reviews the AI's proposed mapping before anything is generated. */
 function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
-  const knownCodes = new Set(roles.map((r) => r.role_code));
+  // The AI proposes against every role the company has; this manager may only publish to
+  // the roles their reports hold (analysis.permittedRoles, from the server). Offering the
+  // full list would let them pick something the confirm call then refuses with a 403 —
+  // and, worse, imply they had a say over another team's training.
+  const permitted = new Set(analysis.permittedRoles || []);
+  const selectable = roles.filter((r) => permitted.has(r.role_code));
+  const canPublishCompanyWide = permitted.has("ALL");
+
+  const knownCodes = new Set(selectable.map((r) => r.role_code));
   const [assignments, setAssignments] = useState(() => {
     const init = {};
     for (const [topic, role] of Object.entries(analysis.proposedRoles || {})) {
@@ -1158,8 +1166,9 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
 
-  const allCodes = [...roles.map((r) => r.role_code), ...newRoles.map((r) => r.roleCode)];
+  const allCodes = [...selectable.map((r) => r.role_code), ...newRoles.map((r) => r.roleCode)];
   const unresolved = Object.entries(assignments).filter(([, v]) => !v);
+  const nobodyToPublishTo = selectable.length === 0 && !canPublishCompanyWide;
 
   const addInlineRole = (name) => {
     const roleCode = name.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "");
@@ -1185,6 +1194,14 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
         The AI read “{analysis.title}” and proposed this. Nothing is generated until you confirm.
       </p>
       {analysis.summary && <p style={{ color: C.sub }} className="text-xs italic mb-4">“{analysis.summary}”</p>}
+
+      {nobodyToPublishTo && (
+        <div style={{ background: C.amberBg, color: C.amber }} className="rounded-lg px-3 py-2.5 text-xs mb-4">
+          <strong>You have no roles to publish to.</strong> Training goes to the roles held
+          by people who report to you, and nobody does yet. The document is saved — nothing
+          is generated from it until it can be assigned.
+        </div>
+      )}
 
       {analysis.thinTopics?.length > 0 && (
         <div style={{ background: C.amberBg, color: C.amber }} className="rounded-lg px-3 py-2.5 text-xs mb-4">
@@ -1223,8 +1240,8 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
                 className="border rounded-lg px-2.5 py-1.5 text-xs"
               >
                 <option value="">— choose role —</option>
-                <option value="ALL">Everyone (miscellaneous)</option>
-                {roles.map((r) => <option key={r.role_code} value={r.role_code}>{r.title}</option>)}
+                {canPublishCompanyWide && <option value="ALL">Everyone (company-wide)</option>}
+                {selectable.map((r) => <option key={r.role_code} value={r.role_code}>{r.title}</option>)}
                 {newRoles.map((r) => <option key={r.roleCode} value={r.roleCode}>{r.title} (new)</option>)}
                 <option value="__new__">+ Add as new role…</option>
               </select>

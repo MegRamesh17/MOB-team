@@ -310,3 +310,38 @@ def identity_from_header(authorization: str) -> Optional[Identity]:
     if not authorization or not authorization.startswith("Bearer "):
         return None
     return decode_token(authorization[len("Bearer "):].strip())
+
+
+def permitted_upload_roles(identity, extra=()) -> set:
+    """
+    The role codes this caller may publish training to.
+
+    Roles held by anyone in their reporting subtree, however deep. A manager with SDE1s
+    and SDE2s under them can publish to both; they cannot publish to Finance.
+
+    "ALL" is deliberately NOT in this set for most people. ALL is not a role you control
+    — it is every employee in the company, including everyone outside your chain. Making
+    company-wide material an admin or executive act is the whole difference between "I
+    look after these people's training" and "I can push a document to the entire company".
+
+    A subtree member whose role is unmapped surfaces as "ALL" (016_add_role_code.sql
+    leaves several roles NULL). That must not quietly become permission to publish
+    company-wide, so ALL is discarded before the tier check rather than after.
+
+    `extra` carries roles created in the same request. A manager may add a role after the
+    AI flags one the document names, and assigning to it immediately is the documented
+    flow. Not a meaningful bypass: creating a role gives nobody that role, so nothing
+    reaches anyone until an admin assigns a person to it.
+
+    Note the ORDER below — extras are merged before "ALL" is discarded, so declaring
+    "ALL" as a newly created role grants nothing. Swapping those two lines would open
+    company-wide publishing to any manager willing to type it, which is why there is a
+    test for it.
+    """
+    allowed = {str(code).upper() for code in extra if code}
+    for person in reports_of(identity.employee_id):
+        allowed.add((person.get("role_code") or "ALL").upper())
+    allowed.discard("ALL")
+    if identity.at_least("admin"):
+        allowed.add("ALL")
+    return allowed

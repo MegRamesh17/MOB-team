@@ -470,9 +470,16 @@ class Handler(BaseHTTPRequestHandler):
         # Role -> whether anyone directly reporting to me holds it. A role held by both
         # a direct report and someone deeper counts as direct: it is the closer
         # relationship that decides the default.
+        # Must agree with _permitted_upload_roles, or the UI offers a target the
+        # server then refuses. A subtree member with an unmapped role surfaces as ALL,
+        # and ALL is company-wide — not something a manager controls.
+        permitted = self._permitted_upload_roles(identity)
+
         targets = {}
         for person in subtree:
             code = (person.get("role_code") or "ALL").upper()
+            if code not in permitted:
+                continue
             entry = targets.setdefault(code, {
                 "roleCode": code,
                 "title": person.get("title", code),
@@ -647,6 +654,10 @@ class Handler(BaseHTTPRequestHandler):
         on a background thread and the browser polls /api/jobs/<id>. Doing it inline
         would hold the request open for minutes and time out.
         """
+        identity = self._require("manager")
+        if identity is None:
+            return None
+
         ctype = self.headers.get("Content-Type", "")
         if "multipart/form-data" not in ctype or "boundary=" not in ctype:
             return self._error(400, "Expected a file upload",
@@ -729,6 +740,13 @@ class Handler(BaseHTTPRequestHandler):
             seed_roles(bank)
             known_roles = bank.roles()
 
+        # The AI proposes against every role the company has; the manager may only
+        # confirm the ones they control. Sending both lets the UI show a proposal it
+        # cannot accept and say why, rather than silently dropping it — a manager whose
+        # document genuinely belongs to another team needs to know that, not to watch a
+        # section quietly vanish.
+        permitted = self._permitted_upload_roles(identity)
+
         sections = {}
         for c in chunks:
             sections.setdefault(c.topic, c.text)
@@ -752,6 +770,9 @@ class Handler(BaseHTTPRequestHandler):
             # topic -> proposed role ("ALL", a known code, or the document's own
             # words for a role the company hasn't defined)
             "proposedRoles": mapping.assignments,
+            # Role codes this manager may actually publish to, from their reporting
+            # subtree. The UI offers these and nothing else.
+            "permittedRoles": sorted(permitted),
             "unknownRoles": mapping.unknown_roles,
             # Sections too thin to build a module from. Per the team's rule this is
             # the manager's problem to solve with more material — never the web's.
@@ -760,6 +781,10 @@ class Handler(BaseHTTPRequestHandler):
             "generator": _generator_label(),
             "needsConfirmation": True,
         }, 201)
+
+    def _permitted_upload_roles(self, identity, extra=()):
+        """Thin wrapper — the rule lives in devauth so it can be tested directly."""
+        return devauth.permitted_upload_roles(identity, extra)
 
     def _confirm_document(self):
         """
@@ -771,6 +796,10 @@ class Handler(BaseHTTPRequestHandler):
         newRoles here are roles the MANAGER chose to add after seeing the document's
         unknown-role flags — the AI only ever surfaced them.
         """
+        identity = self._require("manager")
+        if identity is None:
+            return None
+
         body = self._body()
         doc_title = str(body.get("title", "")).strip()
         assignments = body.get("assignments") or {}
@@ -797,6 +826,28 @@ class Handler(BaseHTTPRequestHandler):
 
             normalized = {t: str(r).upper().replace(" ", "_")
                           for t, r in assignments.items()}
+
+            # UPLOAD-03, enforced here rather than in the UI. The upload screen only
+            # offers roles this manager controls, but a hidden option is not a
+            # permission check — this is the same request re-sent with a different
+            # role_code in the body.
+            permitted = self._permitted_upload_roles(
+                identity,
+                extra=[str(r.get("roleCode", "")).strip().upper().replace(" ", "_")
+                       for r in body.get("newRoles") or []],
+            )
+            out_of_scope = sorted({r for r in normalized.values() if r not in permitted})
+            if out_of_scope:
+                return self._error(
+                    403, "Outside your team",
+                    "You can publish training to roles held by people who report to "
+                    "you. {} {} not among them. You can use: {}.".format(
+                        ", ".join(out_of_scope),
+                        "is" if len(out_of_scope) == 1 else "are",
+                        ", ".join(sorted(permitted)) or "no roles — nobody reports to you",
+                    ),
+                )
+
             tagged = bank.set_chunk_roles(doc_title, normalized)
 
             # Update-vs-add was decided by gpt-5 and shown to the manager before
