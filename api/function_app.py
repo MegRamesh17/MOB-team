@@ -613,3 +613,100 @@ def review_decide(req: func.HttpRequest) -> func.HttpResponse:
         return _json({"updated": len(ids), "decision": decision, "reviewedBy": reviewer})
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
+
+
+def _get_employee_info(learner_identifier):
+    """Looks up an employee by email; falls back to the raw identifier
+    if no match (covers demo-mode learner ids)."""
+    with _conn() as c:
+        cur = c.cursor()
+        cur.execute("SELECT id, name, email FROM Employees WHERE email = ?", learner_identifier)
+        row = cur.fetchone()
+    if row:
+        return {"id": row[0], "name": row[1], "email": row[2]}
+    return {"id": None, "name": learner_identifier, "email": learner_identifier}
+
+
+def _generate_certificate(learner, attempt_id, q_score):
+    """Generates a minimal certificate PDF, uploads it to Blob Storage,
+    and records it in Certificates. Returns the new id, or None on
+    failure - a failed certificate must never block the quiz result
+    itself from being returned."""
+    try:
+        import logging
+        import uuid as uuid_module
+        from io import BytesIO
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.pagesizes import letter
+        from azure.storage.blob import BlobServiceClient
+
+        employee = _get_employee_info(learner)
+
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT TOP 1 topic FROM dbo.GeneratedQuizResponses WHERE attempt_id = ?",
+                attempt_id,
+            )
+            row = cur.fetchone()
+        training_title = row[0] if row else "Training Module"
+
+        buffer = BytesIO()
+        pdf = canvas.Canvas(buffer, pagesize=letter)
+        width, height = letter
+        pdf.setFont("Helvetica-Bold", 20)
+        pdf.drawCentredString(width / 2, height - 150, "Certificate of Completion")
+        pdf.setFont("Helvetica", 14)
+        pdf.drawCentredString(width / 2, height - 200, employee["name"])
+        pdf.drawCentredString(width / 2, height - 230, f"has completed: {training_title}")
+        pdf.drawCentredString(width / 2, height - 260, f"Q Score: {q_score}")
+        pdf.drawCentredString(width / 2, height - 290, f"Issued: {_now()[:10]}")
+        pdf.save()
+        buffer.seek(0)
+
+        blob_name = f"{uuid_module.uuid4().hex[:12]}_{employee[\'id\'] or \'demo\'}.pdf"
+        blob_service = BlobServiceClient.from_connection_string(os.environ["AZURE_STORAGE_CONNECTION_STRING"])
+        blob_client = blob_service.get_blob_client("certificates", blob_name)
+        blob_client.upload_blob(buffer.read(), overwrite=True)
+        certificate_url = blob_client.url
+
+        issued_at = datetime.now(timezone.utc)
+        expires_at = issued_at.replace(year=issued_at.year + 2)
+
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """INSERT INTO Certificates
+                   (employee_id, attempt_id, q_score, issued_at, expires_at, certificate_url, status)
+                   OUTPUT INSERTED.id
+                   VALUES (?, ?, ?, ?, ?, ?, \'Active\')""",
+                employee["id"], attempt_id, q_score, issued_at, expires_at, certificate_url,
+            )
+            certificate_id = cur.fetchone()[0]
+            c.commit()
+
+        return certificate_id
+    except Exception as exc:  # noqa: BLE001
+        logging.error(f"Certificate generation failed: {type(exc).__name__}: {exc}")
+        return None
+
+
+@app.route(route="certificates", methods=["GET"])
+def get_certificates(req: func.HttpRequest) -> func.HttpResponse:
+    learner = _caller_id(req)
+    try:
+        employee = _get_employee_info(learner)
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """SELECT id, attempt_id, q_score, issued_at, expires_at,
+                          certificate_url, status
+                   FROM Certificates
+                   WHERE employee_id = ?
+                   ORDER BY issued_at DESC""",
+                employee["id"],
+            )
+            certs = _rows(cur)
+        return _json({"certificates": certs})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
