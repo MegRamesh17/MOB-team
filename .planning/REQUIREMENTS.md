@@ -92,26 +92,20 @@ stays in this roadmap.
 
 ### Q Score
 
-> ⚠️ **UNRESOLVED — settle with the team before this phase is planned.** "Q Score" currently
-> names two different things. `docs/roadmap-online-sourcing-and-renewal.md` §3 defines it as
-> a **per-employee compliance rollup**: `100 x Coverage x (0.75 + 0.25 x Quality)`, one number
-> per person, driven by unexpired certificate coverage. A teammate's task breakdown defines it
-> as a **per-attempt performance score**: `raw score % x difficulty weight x consistency
-> factor`, computed in `POST /quiz/submit` and stored as a `q_score` column on the Certificates
-> row beside `attempt_id`.
->
-> These differ in grain, subject, and consumer. They are compatible if renamed — the per-attempt
-> number is a natural input to the `Quality` term of the rollup — but shipping both under one
-> name makes "Q Score 82" ambiguous between "82% compliant" and "scored 82 on one quiz".
-> Requirements below assume the rollup definition. If the team picks the other, QSCORE-01,
-> QSCORE-02, and QSCORE-04 all change.
+> Defined in full in `docs/q-score.md`. That document replaces the two competing
+> definitions that were in flight — the per-attempt score on the `add-certificates`
+> branch and the per-employee rollup in `docs/roadmap-online-sourcing-and-renewal.md`.
+> They are now two named levels rather than one ambiguous name.
 
-- [ ] **QSCORE-01**: Q Score is computed as `100 x Coverage x (0.75 + 0.25 x Quality)`
-- [ ] **QSCORE-02**: Coverage counts only unexpired certificates, against the role's admin-configured required list
-- [ ] **QSCORE-03**: When an assessment is retaken, the best score is the score of record
-- [ ] **QSCORE-04**: Behavioural and technical Q Scores are reported separately as well as combined
-- [ ] **QSCORE-05**: An employee can see their own Q Score
-- [ ] **QSCORE-06**: Everyone above an employee in the `Employees.manager_id` reporting chain can see that employee's Q Score
+- [ ] **QSCORE-01**: Attempt Score is computed per quiz as `100 x sum(weight of correct questions) / sum(weight of all questions)`, with weights Easy 0.95, Medium 1.0, Hard 1.08
+- [ ] **QSCORE-02**: Attempt Score is stored on the certificate and never changes
+- [ ] **QSCORE-03**: Q Score is computed per employee as `Coverage x Quality`, where Coverage is unexpired certificates over required certificates (capped at 1) and Quality is the average Attempt Score across those certificates
+- [ ] **QSCORE-04**: Expired certificates leave both Coverage and the Quality average, so Q Score falls on expiry without anyone acting
+- [ ] **QSCORE-05**: When an assessment is retaken, the best Attempt Score is the one of record
+- [ ] **QSCORE-06**: Behavioural and technical Q Scores are reported separately as well as combined
+- [ ] **QSCORE-07**: An employee can see their own Q Score
+- [ ] **QSCORE-08**: Everyone above an employee in the `Employees.manager_id` chain can see that employee's Q Score
+- [ ] **QSCORE-09**: Q Score is exposed as a database view rather than a stored column, so it is never stale
 
 ### Renewal
 
@@ -145,7 +139,7 @@ Deferred. Tracked but not in the current roadmap.
 
 ### Q Score Refinements
 
-- **QSCORE-07**: A pace indicator sits alongside Q Score, distinguishing 2-of-7 in January from 2-of-7 in November
+- **QSCORE-10**: A pace indicator sits alongside Q Score, distinguishing 2-of-7 in January from 2-of-7 in November
 
 ## Out of Scope
 
@@ -208,12 +202,15 @@ Which phases cover which requirements. Populated during roadmap creation.
 | CERT-04 | Phase 7 — Certificates with Expiry | Pending |
 | CERT-05 | Phase 7 — Certificates with Expiry | Pending |
 | CERT-06 | Phase 7 — Certificates with Expiry | Pending |
-| QSCORE-01 | Phase 8 — Q Score | Pending |
-| QSCORE-02 | Phase 8 — Q Score | Pending |
-| QSCORE-03 | Phase 8 — Q Score | Pending |
-| QSCORE-04 | Phase 8 — Q Score | Pending |
-| QSCORE-05 | Phase 8 — Q Score | Pending |
-| QSCORE-06 | Phase 8 — Q Score | Pending |
+| QSCORE-01 | Phase 9 — Q Score | Pending |
+| QSCORE-02 | Phase 9 — Q Score | Pending |
+| QSCORE-03 | Phase 9 — Q Score | Pending |
+| QSCORE-04 | Phase 9 — Q Score | Pending |
+| QSCORE-05 | Phase 9 — Q Score | Pending |
+| QSCORE-06 | Phase 9 — Q Score | Pending |
+| QSCORE-07 | Phase 9 — Q Score | Pending |
+| QSCORE-08 | Phase 9 — Q Score | Pending |
+| QSCORE-09 | Phase 9 — Q Score | Pending |
 | RENEW-01 | Phase 9 — Renewal | Pending |
 | RENEW-02 | Phase 9 — Renewal | Pending |
 | RENEW-03 | Phase 9 — Renewal | Pending |
