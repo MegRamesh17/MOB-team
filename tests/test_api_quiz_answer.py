@@ -116,13 +116,23 @@ from azure.functions import HttpRequest  # noqa: E402
 
 
 class Row(dict):
-    """pyodbc rows support both attribute and key access; so does this."""
+    """
+    Stands in for a pyodbc row: attribute access, key access, AND iteration by VALUE.
+
+    That last part matters. function_app._rows does dict(zip(cols, r)), which iterates
+    the row — and a plain dict subclass iterates its KEYS, so every column came back
+    holding its own name. The test failed in a way that looked like a bug in the code
+    under test rather than in the fake.
+    """
 
     def __getattr__(self, name):
         try:
             return self[name]
         except KeyError as exc:
             raise AttributeError(name) from exc
+
+    def __iter__(self):
+        return iter(self.values())
 
 
 class FakeCursor:
@@ -384,3 +394,95 @@ class TestFillInBlank(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCertificateIssuance(unittest.TestCase):
+    """
+    _issue_certificate reads the results list submit_quiz builds.
+
+    Both halves of this were wrong in the local implementation and neither errored: the
+    key holding correctness was read under the wrong name so every answer scored as
+    wrong, and difficulty was absent so every question weighed 1.0 and the weighting was
+    a no-op. Both produce a plausible number, which is why they need asserting rather
+    than eyeballing.
+    """
+
+    def _results(self, correct=True, difficulty="Hard", title="Security Policy"):
+        return [{
+            "questionId": "q1",
+            "topic": "Passwords",
+            "isCorrect": correct,
+            "difficulty": difficulty,
+            "source": {"documentTitle": title},
+        }]
+
+    def _identity(self):
+        return shared_auth.decode_token(_token())
+
+    def test_a_full_pass_scores_100(self):
+        cur = FakeCursor({})
+        cert = function_app._issue_certificate(cur, self._identity(), "att_1", self._results())
+        self.assertEqual(cert["attemptScore"], 100.0)
+
+    def test_all_wrong_scores_zero_not_100(self):
+        # The "correct" vs "isCorrect" bug reversed exactly this.
+        cur = FakeCursor({})
+        cert = function_app._issue_certificate(
+            cur, self._identity(), "att_1", self._results(correct=False))
+        self.assertEqual(cert["attemptScore"], 0.0)
+
+    def test_difficulty_actually_changes_the_score(self):
+        # If difficulty were dropped, these two would be equal.
+        cur = FakeCursor({})
+        mixed = [
+            {"questionId": "a", "topic": "T", "isCorrect": True, "difficulty": "Hard",
+             "source": {"documentTitle": "D"}},
+            {"questionId": "b", "topic": "T", "isCorrect": False, "difficulty": "Easy",
+             "source": {"documentTitle": "D"}},
+        ]
+        flipped = [
+            {"questionId": "a", "topic": "T", "isCorrect": False, "difficulty": "Hard",
+             "source": {"documentTitle": "D"}},
+            {"questionId": "b", "topic": "T", "isCorrect": True, "difficulty": "Easy",
+             "source": {"documentTitle": "D"}},
+        ]
+        hard_right = function_app._issue_certificate(cur, self._identity(), "a1", mixed)
+        easy_right = function_app._issue_certificate(cur, self._identity(), "a2", flipped)
+        self.assertGreater(hard_right["attemptScore"], easy_right["attemptScore"])
+
+    def test_it_certifies_the_document_not_the_topic(self):
+        cur = FakeCursor({})
+        cert = function_app._issue_certificate(
+            cur, self._identity(), "att_1", self._results(title="Incident Response"))
+        self.assertEqual(cert["docTitle"], "Incident Response")
+
+    def test_a_mixed_quiz_certifies_the_dominant_document(self):
+        results = ([{"questionId": str(i), "topic": "T", "isCorrect": True,
+                     "difficulty": "Medium", "source": {"documentTitle": "Mostly This"}}
+                    for i in range(3)]
+                   + [{"questionId": "x", "topic": "T", "isCorrect": True,
+                       "difficulty": "Medium", "source": {"documentTitle": "Only Once"}}])
+        cur = FakeCursor({})
+        cert = function_app._issue_certificate(cur, self._identity(), "att_1", results)
+        self.assertEqual(cert["docTitle"], "Mostly This")
+
+    def test_nothing_to_certify_returns_none_rather_than_raising(self):
+        # A certificate that cannot be issued must never cost the learner their result.
+        cur = FakeCursor({})
+        self.assertIsNone(function_app._issue_certificate(cur, self._identity(), "a", []))
+
+    def test_the_artefact_url_is_null_not_a_dead_link(self):
+        cur = FakeCursor({})
+        cert = function_app._issue_certificate(cur, self._identity(), "att_1", self._results())
+        self.assertIsNone(cert["certificateUrl"])
+
+    def test_category_defaults_to_technical_when_nothing_declares_one(self):
+        cur = FakeCursor({})   # no RoleRequirements rows
+        cert = function_app._issue_certificate(cur, self._identity(), "att_1", self._results())
+        self.assertEqual(cert["category"], "technical")
+
+    def test_category_comes_from_the_role_requirement_when_declared(self):
+        cur = FakeCursor({"FROM dbo.RoleRequirements": [
+            {"doc_title": "Security Policy", "category": "behavioural"}]})
+        cert = function_app._issue_certificate(cur, self._identity(), "att_1", self._results())
+        self.assertEqual(cert["category"], "behavioural")

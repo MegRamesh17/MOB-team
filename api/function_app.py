@@ -34,12 +34,15 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
 from auth.login import bp as auth_bp
 from shared.auth import get_current_employee, require_manager
+from shared import qscore
 
 app.register_functions(auth_bp)
 
 PASSING_SCORE = float(os.getenv("QUIZGEN_PASSING_SCORE", "80"))
 QUIZ_LENGTH = int(os.getenv("QUIZGEN_QUIZ_LENGTH", "8"))
 WEAK_THRESHOLD = float(os.getenv("QUIZGEN_WEAK_THRESHOLD", "0.70"))
+# How long a certificate stays current. 12 months per docs/q-score.md.
+CERT_VALIDITY_MONTHS = int(os.getenv("QUIZGEN_CERT_VALIDITY_MONTHS", "12"))
 MIN_ANSWERS = int(os.getenv("QUIZGEN_MIN_ANSWERS", "3"))
 
 
@@ -388,6 +391,62 @@ def start_quiz(req: func.HttpRequest) -> func.HttpResponse:
         return _error(500, "Internal error", type(exc).__name__)
 
 
+def _issue_certificate(cur, identity, attempt_id, results):
+    """
+    Record a pass as a certificate.
+
+    Certifies the source DOCUMENT, not the topic — the same grain trainings and mastery
+    use, so a certificate lines up with the card the learner pressed "start" on. A quiz
+    spanning two documents certifies the one most of its questions came from; mixed
+    quizzes are an assembly artefact, not something to certify twice.
+
+    attempt_score is the difficulty-weighted score, not the raw percentage the results
+    screen shows. Those differ on purpose: the raw score is "how many did you get right",
+    the attempt score is what feeds Q Score.
+
+    Returns None rather than raising if there is nothing to certify. A certificate that
+    cannot be issued must never lose the learner their quiz result.
+    """
+    graded = [{"difficulty": r.get("difficulty"), "correct": bool(r.get("isCorrect"))}
+              for r in results]
+    score = qscore.attempt_score(graded)
+
+    titles = [(r.get("source") or {}).get("documentTitle") or r.get("topic")
+              for r in results]
+    titles = [t for t in titles if t]
+    if not titles:
+        return None
+    doc_title = max(set(titles), key=titles.count)
+
+    # Category comes from the role's requirement list, where an admin declared it.
+    # Defaulting to technical when nothing says otherwise keeps a certificate out of the
+    # behavioural bucket rather than guessing it into one.
+    category = "technical"
+    for req in _role_requirements(cur, identity.role_code, identity.company_id):
+        if req["doc_title"] == doc_title:
+            category = req.get("category") or "technical"
+            break
+
+    expires_at = qscore.expiry_from(
+        datetime.now(timezone.utc).isoformat(timespec="seconds"), CERT_VALIDITY_MONTHS)
+
+    cur.execute(
+        """INSERT INTO dbo.Certificates
+               (employee_id, attempt_id, doc_title, attempt_score, category,
+                issued_at, expires_at, status)
+           VALUES (?, ?, ?, ?, ?, SYSUTCDATETIME(), ?, 'Active')""",
+        identity.employee_id, attempt_id, doc_title, score, category, expires_at,
+    )
+    return {
+        "docTitle": doc_title,
+        "attemptScore": score,
+        "category": category,
+        "expiresAt": expires_at,
+        # No artefact yet. Null beats a link that 404s.
+        "certificateUrl": None,
+    }
+
+
 @app.route(route="quiz/submit", methods=["POST"])
 def submit_quiz(req: func.HttpRequest) -> func.HttpResponse:
     """
@@ -433,7 +492,7 @@ def submit_quiz(req: func.HttpRequest) -> func.HttpResponse:
                 cur.execute(
                     """SELECT question_id, question_type, topic, points, explanation,
                               source_doc_title, source_page, source_quote, source_url,
-                              provenance_class
+                              provenance_class, difficulty
                        FROM dbo.GeneratedQuestions WHERE question_id = ?""",
                     qid,
                 )
@@ -492,6 +551,10 @@ def submit_quiz(req: func.HttpRequest) -> func.HttpResponse:
                         "questionId": qid,
                         "topic": q["topic"],
                         "isCorrect": is_correct,
+                        # Carried because shared/qscore.py weights by it. Omitting it
+                        # does not error — every question silently weighs 1.0 and the
+                        # difficulty weighting becomes a no-op that still looks right.
+                        "difficulty": q["difficulty"],
                         "pointsAwarded": points,
                         "yourAnswer": [
                             o["option_text"] for o in options if o["option_id"] in selected
@@ -523,6 +586,11 @@ def submit_quiz(req: func.HttpRequest) -> func.HttpResponse:
                    WHERE attempt_id = ?""",
                 percent, awarded, possible, 1 if passed else 0, attempt_id,
             )
+
+            certificate = None
+            if passed:
+                certificate = _issue_certificate(cur, identity, attempt_id, results)
+
             c.commit()
 
         return _json(
@@ -533,6 +601,7 @@ def submit_quiz(req: func.HttpRequest) -> func.HttpResponse:
                 "pointsPossible": possible,
                 "passed": passed,
                 "passingScorePercent": PASSING_SCORE,
+                "certificate": certificate,
                 "results": results,
             }
         )
@@ -981,5 +1050,241 @@ def get_team(req: func.HttpRequest) -> func.HttpResponse:
             "uploadTargets": sorted(
                 targets.values(), key=lambda t: (not t["direct"], t["title"])),
         })
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+# --------------------------------------------------------------------------
+# certificates, requirements and Q Score
+# --------------------------------------------------------------------------
+# Mirrors what scripts/devserver.py serves, against Azure SQL. The arithmetic is shared
+# via shared/qscore.py; only the queries differ.
+
+
+def _role_requirements(cur, role_code: str, company_id: int) -> List[Dict[str, Any]]:
+    """
+    What this role must complete.
+
+    Always includes the ALL requirements. Company-wide training is required of everyone,
+    so it belongs in every role's denominator — without it a role with no specific
+    requirements scores against an empty list and reads 100% compliant having done
+    nothing.
+    """
+    role = (role_code or "ALL").upper()
+    if role == "ALL":
+        cur.execute(
+            """SELECT DISTINCT doc_title, category FROM dbo.RoleRequirements
+                WHERE company_id = ? AND role_code = 'ALL' ORDER BY doc_title""",
+            company_id)
+    else:
+        cur.execute(
+            """SELECT DISTINCT doc_title, category FROM dbo.RoleRequirements
+                WHERE company_id = ? AND role_code IN (?, 'ALL') ORDER BY doc_title""",
+            company_id, role)
+    return _rows(cur)
+
+
+def _certificates_for(cur, employee_id: int) -> List[Dict[str, Any]]:
+    cur.execute(
+        """SELECT id, doc_title, attempt_id, attempt_score, category,
+                  issued_at, expires_at, certificate_url, status
+             FROM dbo.Certificates
+            WHERE employee_id = ? AND doc_title IS NOT NULL
+            ORDER BY issued_at DESC""",
+        employee_id)
+    return [
+        {
+            "certificate_id": str(r["id"]),
+            "doc_title": r["doc_title"],
+            "attempt_id": r["attempt_id"],
+            "attempt_score": float(r["attempt_score"] or 0),
+            "category": r["category"] or "technical",
+            "issued_at": str(r["issued_at"]),
+            "expires_at": str(r["expires_at"]),
+            "certificate_url": r["certificate_url"],
+            "status": r["status"],
+        }
+        for r in _rows(cur)
+    ]
+
+
+@app.route(route="certificates", methods=["GET"])
+def list_certificates(req: func.HttpRequest) -> func.HttpResponse:
+    """Certificates this learner holds, expired ones included and marked."""
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+
+    try:
+        with _conn() as c:
+            held = _certificates_for(c.cursor(), identity.employee_id)
+
+        best = qscore.best_certificates(held)
+        return _json({
+            "certificates": [
+                {
+                    "certificateId": cert["certificate_id"],
+                    "title": cert["doc_title"],
+                    "date": (cert["issued_at"] or "")[:10],
+                    "score": round(cert["attempt_score"], 1),
+                    "category": cert["category"],
+                    "expiresAt": (cert["expires_at"] or "")[:10],
+                    "expired": qscore.is_expired(cert["expires_at"]),
+                    "daysUntilExpiry": qscore.days_until_expiry(cert["expires_at"]),
+                    "ofRecord": best.get(cert["doc_title"], {}).get(
+                        "certificate_id") == cert["certificate_id"],
+                    "certificateUrl": cert["certificate_url"],
+                }
+                for cert in held
+            ],
+            "renewalsDue": qscore.renewal_candidates(held),
+        })
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="qscore", methods=["GET"])
+def get_qscore(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Q Score for the caller, or for someone they manage.
+
+    ?employee=<email> reads a report's score. Permitted only inside the caller's
+    reporting subtree — QSCORE-08's "everyone above you in the chain", read from the
+    other end. Anyone else is a 404 rather than a 403: whether a given person exists is
+    not something to confirm to someone with no business asking.
+
+    Computed on read, never stored. It has to fall when a certificate expires and nobody
+    has done anything, and a stored copy cannot do that — it would go stale silently,
+    and a stale compliance number reads as "you are fine" while you are not.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+
+    wanted = (req.params.get("employee") or "").strip().lower()
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+
+            target_id, target_email = identity.employee_id, identity.email
+            target_role, target_name = identity.role_code, identity.name
+
+            if wanted and wanted != identity.email.lower():
+                # Recursive walk down the reporting chain, same shape as /team.
+                cur.execute(
+                    """WITH subtree AS (
+                           SELECT e.id, e.email, e.name, e.role_id
+                             FROM dbo.Employees e WHERE e.manager_id = ?
+                           UNION ALL
+                           SELECT e.id, e.email, e.name, e.role_id
+                             FROM dbo.Employees e
+                             JOIN subtree s ON e.manager_id = s.id
+                       )
+                       SELECT TOP 1 s.id, s.email, s.name, r.role_code
+                         FROM subtree s
+                         LEFT JOIN dbo.Roles r ON r.id = s.role_id
+                        WHERE LOWER(s.email) = ?
+                       OPTION (MAXRECURSION 32)""",
+                    identity.employee_id, wanted)
+                person = cur.fetchone()
+                if person is None:
+                    return _error(404, "Not found", "No such employee in your team.")
+                target_id, target_email = person.id, person.email
+                target_name = person.name
+                target_role = (person.role_code or "ALL").upper()
+
+            requirements = _role_requirements(cur, target_role, identity.company_id)
+            held = _certificates_for(cur, target_id)
+
+        standing = qscore.standing(requirements, held)
+        return _json({
+            "employee": {"email": target_email, "name": target_name,
+                         "roleCode": target_role},
+            "overall": standing["overall"].to_dict(),
+            "behavioural": standing["behavioural"].to_dict(),
+            "technical": standing["technical"].to_dict(),
+            # Stated rather than implied: a Q Score of 0 against an empty required list
+            # is a missing configuration, not a judgement on the person.
+            "requirementsConfigured": bool(requirements),
+        })
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="requirements", methods=["GET"])
+def list_requirements(req: func.HttpRequest) -> func.HttpResponse:
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """SELECT role_code, doc_title, category FROM dbo.RoleRequirements
+                    WHERE company_id = ? ORDER BY role_code, doc_title""",
+                identity.company_id)
+            grouped: Dict[str, List[Dict[str, Any]]] = {}
+            for row in _rows(cur):
+                grouped.setdefault(row["role_code"], []).append(
+                    {"doc_title": row["doc_title"], "category": row["category"]})
+            mine = _role_requirements(cur, identity.role_code, identity.company_id)
+        return _json({"requirements": grouped, "mine": mine})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="requirements", methods=["POST"])
+def set_requirements(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Replace the required list for one role. Admin or executive only.
+
+    Not a manager action, deliberately: this is Coverage's denominator, so editing it
+    moves the Q Score of everyone in that role. That is a compliance decision, not a
+    team one.
+
+    Replace rather than merge, so removing a requirement is possible through the same
+    interface that adds one.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    if (identity.access_role or "") not in ("admin", "executive"):
+        return _error(403, "Forbidden",
+                      "Setting required training changes the Q Score of everyone in that "
+                      "role. Requires admin access or above.")
+
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+
+    role = str(body.get("roleCode") or "").strip().upper()
+    items = body.get("requirements")
+    if not role or not isinstance(items, list):
+        return _error(400, "Bad request", "roleCode and a requirements list are required.")
+
+    rows = [(identity.company_id, role, str(i["doc_title"]),
+             (i.get("category") or "technical").strip().lower())
+            for i in items if i.get("doc_title")]
+    bad = [r[3] for r in rows if r[3] not in qscore.CATEGORIES]
+    if bad:
+        return _error(422, "Unknown category",
+                      "category must be behavioural or technical; got {}.".format(
+                          ", ".join(sorted(set(bad)))))
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "DELETE FROM dbo.RoleRequirements WHERE company_id = ? AND role_code = ?",
+                identity.company_id, role)
+            if rows:
+                cur.executemany(
+                    """INSERT INTO dbo.RoleRequirements
+                           (company_id, role_code, doc_title, category)
+                       VALUES (?, ?, ?, ?)""",
+                    rows)
+            c.commit()
+        return _json({"roleCode": role, "count": len(rows)})
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
