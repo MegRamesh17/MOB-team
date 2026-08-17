@@ -33,6 +33,10 @@ trigger:
     include:
       - web-app/*
 
+# Same reasoning as azure-pipelines-backend.yml's pr: none -- without this, opening
+# any PR against this repo would also deploy the frontend before merge.
+pr: none
+
 pool:
   vmImage: 'ubuntu-latest'
 
