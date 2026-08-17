@@ -3,6 +3,7 @@ CREATE TABLE Certificates (
     employee_id     INT NOT NULL,
     course_id       INT NULL,
     attempt_id      NVARCHAR(50) NOT NULL,
+    training_title  NVARCHAR(300) NULL,
     q_score         DECIMAL(5,2) NOT NULL,
     issued_at       DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
     expires_at      DATETIME2 NOT NULL,

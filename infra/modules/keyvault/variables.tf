@@ -37,3 +37,8 @@ variable "local_dev_object_ids" {
   type        = list(string)
   default     = []
 }
+
+variable "storage_connection_string" {
+  type      = string
+  sensitive = true
+}

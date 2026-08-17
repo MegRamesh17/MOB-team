@@ -617,10 +617,16 @@ def review_decide(req: func.HttpRequest) -> func.HttpResponse:
 
 def _get_employee_info(learner_identifier):
     """Looks up an employee by email; falls back to the raw identifier
-    if no match (covers demo-mode learner ids)."""
+    if no match (covers demo-mode learner ids).
+
+    x-learner-id is sometimes "email:role" (set at login when a company role is
+    picked - see web-app/src/App.jsx), so only the part before the first ":" is
+    ever a real email.
+    """
+    email = learner_identifier.split(":", 1)[0]
     with _conn() as c:
         cur = c.cursor()
-        cur.execute("SELECT id, name, email FROM Employees WHERE email = ?", learner_identifier)
+        cur.execute("SELECT id, name, email FROM Employees WHERE email = ?", email)
         row = cur.fetchone()
     if row:
         return {"id": row[0], "name": row[1], "email": row[2]}
@@ -664,7 +670,7 @@ def _generate_certificate(learner, attempt_id, q_score):
         pdf.save()
         buffer.seek(0)
 
-        blob_name = f"{uuid_module.uuid4().hex[:12]}_{employee[\'id\'] or \'demo\'}.pdf"
+        blob_name = f"{uuid_module.uuid4().hex[:12]}_{employee['id'] or 'demo'}.pdf"
         blob_service = BlobServiceClient.from_connection_string(os.environ["AZURE_STORAGE_CONNECTION_STRING"])
         blob_client = blob_service.get_blob_client("certificates", blob_name)
         blob_client.upload_blob(buffer.read(), overwrite=True)
@@ -677,10 +683,10 @@ def _generate_certificate(learner, attempt_id, q_score):
             cur = c.cursor()
             cur.execute(
                 """INSERT INTO Certificates
-                   (employee_id, attempt_id, q_score, issued_at, expires_at, certificate_url, status)
+                   (employee_id, attempt_id, training_title, q_score, issued_at, expires_at, certificate_url, status)
                    OUTPUT INSERTED.id
-                   VALUES (?, ?, ?, ?, ?, ?, \'Active\')""",
-                employee["id"], attempt_id, q_score, issued_at, expires_at, certificate_url,
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'Active')""",
+                employee["id"], attempt_id, training_title, q_score, issued_at, expires_at, certificate_url,
             )
             certificate_id = cur.fetchone()[0]
             c.commit()
@@ -699,14 +705,31 @@ def get_certificates(req: func.HttpRequest) -> func.HttpResponse:
         with _conn() as c:
             cur = c.cursor()
             cur.execute(
-                """SELECT id, attempt_id, q_score, issued_at, expires_at,
+                """SELECT id, attempt_id, training_title, q_score, issued_at, expires_at,
                           certificate_url, status
                    FROM Certificates
                    WHERE employee_id = ?
                    ORDER BY issued_at DESC""",
                 employee["id"],
             )
-            certs = _rows(cur)
+            rows = _rows(cur)
+
+        now = datetime.now(timezone.utc)
+        certs = []
+        for r in rows:
+            expires_at = r["expires_at"]
+            expired = bool(expires_at and expires_at.replace(tzinfo=timezone.utc) < now)
+            certs.append({
+                "id": r["id"],
+                "attemptId": r["attempt_id"],
+                "title": r["training_title"] or "Training Module",
+                "score": r["q_score"],
+                "date": r["issued_at"].date().isoformat() if r["issued_at"] else None,
+                "expiresAt": expires_at.date().isoformat() if expires_at else None,
+                "expired": expired,
+                "certificateUrl": r["certificate_url"],
+                "status": r["status"],
+            })
         return _json({"certificates": certs})
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)

@@ -34,3 +34,8 @@ resource "azurerm_storage_container" "certificates" {
   storage_account_name  = azurerm_storage_account.mob_storage.name
   container_access_type = "private"
 }
+
+output "primary_connection_string" {
+  value     = azurerm_storage_account.mob_storage.primary_connection_string
+  sensitive = true
+}
