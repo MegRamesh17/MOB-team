@@ -38,3 +38,17 @@ variable "local_dev_object_ids" {
   type        = list(string)
   default     = []
 }
+
+
+variable "doc_intelligence_key" {
+  description = "Azure Document Intelligence key (portal-created resource)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "doc_intelligence_endpoint" {
+  description = "Azure Document Intelligence endpoint, e.g. https://<name>.cognitiveservices.azure.com/"
+  type        = string
+  default     = ""
+}

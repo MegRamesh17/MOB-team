@@ -20,6 +20,7 @@ from typing import Iterable, List, Optional, Tuple
 from pypdf import PdfReader
 
 from .config import CONFIG, DOCUMENT_DIR
+from .extract import HEADING_PREFIX as _HEADING_MARKER
 from .models import Chunk, stable_id
 
 # Ligatures and layout artefacts pypdf leaves behind.
@@ -55,7 +56,15 @@ def looks_like_heading(line: str) -> bool:
     Headings in policy PDFs are short, title-cased or upper-cased, and unpunctuated.
     Deliberately conservative — a false positive fragments a section, which costs more
     than a false negative.
+
+    Document Intelligence labels headings itself, and extract.py marks those with a
+    sentinel. When the marker is there this stops guessing: an extractor that examined
+    the page geometry beats heuristics over capitalisation, and the heuristics stay for
+    the pypdf path where nothing else knows.
     """
+    if line.startswith(_HEADING_MARKER):
+        return True
+
     s = line.strip()
     if not (3 <= len(s) <= 70):
         return False
@@ -101,14 +110,28 @@ def split_sentences(text: str) -> List[str]:
 
 
 def _pages(pdf_path: Path) -> List[str]:
-    reader = PdfReader(str(pdf_path))
-    out = []
-    for page in reader.pages:
-        try:
-            out.append(clean_text(page.extract_text() or ""))
-        except Exception:
-            out.append("")
-    return out
+    """
+    Pages of text, via Document Intelligence when configured and pypdf otherwise.
+
+    The engine is reported per document rather than left implicit: "why did this file
+    extract badly" is the first question anyone asks, and the answer is usually which
+    engine ran. A scan that produced nothing is called out for the same reason — it used
+    to be indistinguishable from a document that simply had no teachable content.
+    """
+    from .extract import extract
+
+    result = extract(pdf_path)
+
+    if result.is_empty and result.engine == "pypdf":
+        print("      {} produced no text with pypdf — probably a scan. "
+              "Set DOCUMENT_INTELLIGENCE_ENDPOINT and _KEY to OCR it."
+              .format(pdf_path.name))
+    elif result.empty_pages and result.engine == "pypdf":
+        print("      {}: {} page(s) empty under pypdf ({}) — likely scanned."
+              .format(pdf_path.name, len(result.empty_pages),
+                      ", ".join(str(p) for p in result.empty_pages[:6])))
+
+    return result.pages
 
 
 # Letterhead lines: the same on every document a company produces, so using one as
@@ -165,7 +188,9 @@ def _sections(pages: List[str], doc_title: str) -> List[Tuple[str, int, str]]:
             if looks_like_heading(line):
                 if buffer:
                     sections.append((current_name, current_page, buffer))
-                current_name = line
+                # Strip the extractor's marker — it exists to tell the chunker this is a
+                # heading, not to appear in a topic name, a citation or a question.
+                current_name = line.lstrip(_HEADING_MARKER).strip()
                 current_page = page_no
                 buffer = []
             else:

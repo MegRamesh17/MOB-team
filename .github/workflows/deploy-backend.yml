@@ -4,19 +4,27 @@ name: deploy-backend
 # api/auth/login.py were in git and not in Azure — terraform.yml provisions the Function
 # App but never puts code in it.
 #
-# Deliberately separate from terraform.yml. That workflow changes cloud resources and is
-# gated to main on purpose (commit 4a601c1, to stop pull requests applying
-# infrastructure). Deploying code is lower risk and higher frequency, so it runs from the
-# working branch instead. Keeping them apart means shipping a code fix does not also
-# re-apply infrastructure.
+# Deliberately separate from terraform.yml. That workflow changes cloud resources; this
+# one only ships code, so shipping a fix does not also re-apply infrastructure.
 
+# MANUAL ONLY, on purpose. Deploying on every push means a half-finished commit reaches
+# the Function App the moment it is pushed, and the first sign is a broken demo rather
+# than a failed check. Run it from Actions when the branch is in a state worth deploying.
+#
+# The push trigger is commented out rather than deleted, so turning it back on later is
+# a one-line decision someone makes deliberately.
+#
+# on:
+#   push:
+#     branches: [ main ]
+#     paths: [ 'api/**' ]
 on:
-  push:
-    branches: [ ai-retry ]
-    paths:
-      - 'api/**'
-      - '.github/workflows/deploy-backend.yml'
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type the Function App name to confirm you mean to deploy'
+        required: true
+        default: 'mob-functions-dev'
 
 permissions:
   id-token: write
@@ -36,6 +44,16 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Confirm the target
+        # Cheap guard against a mis-click on the wrong workflow. Costs one word to type
+        # and makes "I did not mean to run that" impossible to say afterwards.
+        run: |
+          if [ "${{ inputs.confirm }}" != "$FUNCTION_APP_NAME" ]; then
+            echo "::error::Typed '${{ inputs.confirm }}', expected '$FUNCTION_APP_NAME'. Not deploying."
+            exit 1
+          fi
+          echo "Deploying to $FUNCTION_APP_NAME."
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
