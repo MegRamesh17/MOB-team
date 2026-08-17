@@ -269,7 +269,6 @@ def create_token(identity: Identity) -> str:
             "company_id": identity.company_id,
             "access_role": identity.access_role,
             "name": identity.name,
-            "name": identity.name,
             "role_code": identity.role_code,
             "manager_id": identity.manager_id,
             "iat": now,

@@ -35,6 +35,7 @@ import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Dict
 from urllib.parse import urlparse, parse_qs
 
 REPO = Path(__file__).resolve().parents[1]
@@ -43,6 +44,7 @@ sys.path.insert(0, str(REPO / "src"))
 import devauth  # noqa: E402  (scripts/ is on sys.path as the entry point's dir)
 from quizgen.adaptive import build_quiz  # noqa: E402
 from quizgen.bank import Bank  # noqa: E402
+from quizgen.config import CONFIG  # noqa: E402
 from quizgen.models import Attempt, QuestionType, Response, ReviewStatus  # noqa: E402
 
 DB = Path(os.getenv("QUIZGEN_DB", REPO / "data" / "output" / "quizgen.db"))

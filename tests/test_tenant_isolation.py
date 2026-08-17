@@ -235,7 +235,14 @@ class TestEveryDeployedQueryIsScoped(unittest.TestCase):
     """
 
     ENDPOINT = __import__("re").compile(r'route="([^"]+)"')
-    TOUCHES_DB = __import__("re").compile(r"\bFROM dbo\.|\bINSERT INTO dbo\.")
+    # UPDATE and DELETE belong here as much as FROM and INSERT. An earlier version of this
+    # pattern matched only reads and inserts, and reported "every data query is
+    # tenant-scoped" while POST /review/decide was updating GeneratedQuestions with
+    # `WHERE question_id = ?` and no company filter at all — a manager in one company
+    # could change another company's question by guessing its id. The audit did not miss
+    # it by being wrong about that endpoint; it never looked at it.
+    TOUCHES_DB = __import__("re").compile(
+        r"\bFROM dbo\.|\bINSERT INTO dbo\.|\bUPDATE dbo\.|\bDELETE FROM dbo\.")
 
     def _endpoints(self):
         src = (Path(__file__).resolve().parents[1] / "api" / "function_app.py").read_text(

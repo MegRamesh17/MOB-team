@@ -28,7 +28,6 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import azure.functions as func
-from shared.auth import get_current_employee
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
@@ -250,7 +249,8 @@ def list_topics(req: func.HttpRequest) -> func.HttpResponse:
     """Approved question counts per topic and role — what a catalogue screen needs."""
     # No answer keys here, but it does enumerate every role and topic the company
     # trains on, which is not something to hand out unauthenticated.
-    if get_current_employee(req) is None:
+    identity = get_current_employee(req)
+    if identity is None:
         return _unauthorized()
     try:
         with _conn() as c:
@@ -696,17 +696,23 @@ def review_decide(req: func.HttpRequest) -> func.HttpResponse:
         return _error(400, "Bad request", "questionIds is required")
 
     try:
+        updated = 0
         with _conn() as c:
             cur = c.cursor()
             for qid in ids:
                 cur.execute(
                     """UPDATE dbo.GeneratedQuestions
                        SET review_status = ?, reviewed_by = ?, reviewed_at = SYSUTCDATETIME()
-                       WHERE question_id = ?""",
-                    decision, reviewer, qid,
+                       WHERE question_id = ? AND company_id = ?""",
+                    decision, reviewer, qid, identity.company_id,
                 )
+                updated += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
             c.commit()
-        return _json({"updated": len(ids), "decision": decision, "reviewedBy": reviewer})
+        # rowcount, not len(ids): a question id belonging to another company now matches
+        # nothing, and reporting it as updated would hide exactly the case the filter is
+        # there to catch.
+        return _json({"updated": updated, "requested": len(ids),
+                      "decision": decision, "reviewedBy": reviewer})
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
 

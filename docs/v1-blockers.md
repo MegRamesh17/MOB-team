@@ -112,6 +112,13 @@ The two things that document scoped out are also done now:
 - **Azure SQL** — `020_add_company_to_quizgen.sql` puts `company_id` on SourceChunks,
   GeneratedQuestions, GeneratedQuizAttempts, GeneratedQuizResponses and Certificates, and
   every endpoint filters on it. Seven endpoints had no filter at all before this.
+
+  An eighth was missed on the first pass: `POST /review/decide` updated
+  `GeneratedQuestions` with `WHERE question_id = ?` and no company check, so a manager in
+  one company could change another company's question by guessing its id. The structural
+  audit did not catch it because its pattern matched `FROM` and `INSERT` but not `UPDATE`
+  — it never looked at that endpoint rather than looking and getting it wrong. Both are
+  fixed, and the endpoint now reports rows actually changed rather than ids submitted.
 - Both SQL **views** had to change too, which is the easy thing to miss — a view is a
   stored query, and `vw_LearnerTopicMastery` was aggregating responses across every
   learner regardless of how carefully its callers were scoped.

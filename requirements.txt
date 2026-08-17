@@ -33,3 +33,7 @@ typing_extensions==4.16.0
 urllib3==2.7.0
 azure-identity
 azure-keyvault-secrets
+
+# Catches undefined names, which compileall and a successful import both miss.
+# tests/test_no_undefined_names.py fails rather than skips without it.
+pyflakes==3.2.0
