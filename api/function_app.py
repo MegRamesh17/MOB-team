@@ -142,6 +142,33 @@ def _now() -> str:
 # health
 # --------------------------------------------------------------------------
 
+DIFFICULTY_MULTIPLIERS = {"Easy": 0.95, "Medium": 1.0, "Hard": 1.08}
+
+def _calculate_q_score(percent, results):
+    """
+    Q Score = raw score % x difficulty weight x consistency factor.
+    """
+    if not results:
+        return round(percent, 2)
+
+    correct = [r for r in results if r["isCorrect"]]
+    if correct:
+        avg_multiplier = sum(
+            DIFFICULTY_MULTIPLIERS.get(r.get("difficulty", "Medium"), 1.0)
+            for r in correct
+        ) / len(correct)
+    else:
+        avg_multiplier = 1.0
+
+    topics = {}
+    for r in results:
+        topics.setdefault(r["topic"], []).append(r["isCorrect"])
+    topic_rates = [sum(v) / len(v) for v in topics.values()]
+    consistency = 1.0 if not topic_rates or min(topic_rates) >= 0.5 else 0.92
+
+    return round(min(100.0, percent * avg_multiplier * consistency), 2)
+
+
 @app.route(route="health", methods=["GET"])
 def health(req: func.HttpRequest) -> func.HttpResponse:
     try:
@@ -403,8 +430,8 @@ def submit_quiz(req: func.HttpRequest) -> func.HttpResponse:
 
                 cur.execute(
                     """SELECT question_id, question_type, topic, points, explanation,
-                              source_doc_title, source_page, source_quote, source_url,
-                              provenance_class
+                              difficulty, source_doc_title, source_page, source_quote,
+                              source_url, provenance_class
                        FROM dbo.GeneratedQuestions WHERE question_id = ?""",
                     qid,
                 )
@@ -462,6 +489,7 @@ def submit_quiz(req: func.HttpRequest) -> func.HttpResponse:
                     {
                         "questionId": qid,
                         "topic": q["topic"],
+                        "difficulty": q.get("difficulty", "Medium"),
                         "isCorrect": is_correct,
                         "pointsAwarded": points,
                         "yourAnswer": [
@@ -494,16 +522,27 @@ def submit_quiz(req: func.HttpRequest) -> func.HttpResponse:
                    WHERE attempt_id = ?""",
                 percent, awarded, possible, 1 if passed else 0, attempt_id,
             )
+
+            q_score = _calculate_q_score(percent, results)
+            certificate_id = None
+            certificate_generated = False
+
+            if passed:
+                certificate_id = _generate_certificate(learner, attempt_id, q_score)
+                certificate_generated = certificate_id is not None
             c.commit()
 
         return _json(
             {
                 "attemptId": attempt_id,
                 "scorePercent": percent,
+                "qScore": q_score,
                 "pointsAwarded": awarded,
                 "pointsPossible": possible,
                 "passed": passed,
                 "passingScorePercent": PASSING_SCORE,
+                "certificateGenerated": certificate_generated,
+                "certificateId": certificate_id,
                 "results": results,
             }
         )
