@@ -40,7 +40,6 @@ from urllib.parse import urlparse, parse_qs
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-from quizgen import auth  # noqa: E402
 from quizgen.adaptive import build_quiz  # noqa: E402
 from quizgen.bank import Bank  # noqa: E402
 from quizgen.models import Attempt, QuestionType, Response, ReviewStatus  # noqa: E402
@@ -260,7 +259,7 @@ class Handler(BaseHTTPRequestHandler):
         # The UI is served from this same origin, but a teammate running a React dev
         # server on :3000 against this API would otherwise be blocked by CORS.
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, x-learner-id")
         self.end_headers()
         self.wfile.write(raw)
 
@@ -276,96 +275,18 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return {}
 
-    def _principal(self):
-        """
-        The authenticated caller, or None.
-
-        Read from a signed session token, never from a client-supplied header. This
-        replaces the old `x-learner-id` / `x-learner-role` pair, which let the browser
-        declare its own identity and role — an employee could read another role's
-        material by editing one request. The role now arrives inside a token the server
-        signed, so changing it invalidates the signature.
-        """
-        return auth.principal_from_header(self.headers.get("Authorization", ""))
-
-    def _require(self, tier: str = "employee"):
-        """
-        Return the caller's principal, or send an error and return None.
-
-        Callers MUST stop when this returns None — the response has already been sent.
-        Two distinct failures: 401 means "you are not signed in", 403 means "you are,
-        but not at a high enough tier". Collapsing them into one status makes a
-        legitimately expired session look like a permissions bug.
-        """
-        principal = self._principal()
-        if principal is None:
-            self._error(401, "Not signed in",
-                        "Sign in at /api/auth/login and send the token as "
-                        "'Authorization: Bearer <token>'.")
-            return None
-        if not principal.at_least(tier):
-            self._error(403, "Not permitted",
-                        "This action needs {} access or above; you have {}.".format(
-                            tier, principal.access_role))
-            return None
-        return principal
-
     def _learner_role(self) -> str:
-        """The caller's training role, from the signed token. Empty when not signed in."""
-        principal = self._principal()
-        return principal.role_code if principal else ""
+        """
+        The signed-in employee's role, from a header the demo login sets.
+
+        Self-declared for now — the team knows an employee could lie and has parked
+        that until real identity (Entra) exists. What matters today is the serving
+        side: everything the employee sees is filtered to this role plus ALL.
+        """
+        return self.headers.get("x-learner-role", "").strip().upper()
 
     def _learner(self) -> str:
-        """
-        The learner key used for attempt history and mastery.
-
-        This is the username from the signed token. It is no longer forgeable, so one
-        learner's mastery can no longer be read or polluted by another.
-        """
-        principal = self._principal()
-        return principal.username if principal else ""
-
-    # ------------------------------------------------------------------
-    # auth endpoints
-    # ------------------------------------------------------------------
-
-    def _login(self):
-        body = self._body()
-        username = (body.get("username") or "").strip()
-        password = body.get("password") or ""
-
-        if not username or not password:
-            return self._error(400, "Missing credentials",
-                               "Both username and password are required.")
-
-        principal = auth.get_provider().authenticate(username, password)
-        if principal is None:
-            # Deliberately identical for "no such user" and "wrong password". Telling
-            # them apart hands an attacker a way to enumerate valid usernames.
-            return self._error(401, "Sign-in failed",
-                               "That username and password combination is not valid.")
-
-        return self._send({
-            "token": auth.issue_token(principal),
-            "principal": principal.to_public(),
-        })
-
-    def _logout(self):
-        """
-        Sign out.
-
-        Honest about what this does: the client drops its token, and that is all. The
-        token stays valid until it expires, because revoking it needs shared server
-        state this single-process dev server does not have. Saying so here beats
-        implying a server-side session was destroyed.
-        """
-        return self._send({"ok": True, "detail": "Discard the token client-side."})
-
-    def _auth_me(self):
-        principal = self._require()
-        if principal is None:
-            return None
-        return self._send({"principal": principal.to_public()})
+        return self.headers.get("x-learner-id", "demo-learner")
 
     def do_OPTIONS(self):  # noqa: N802
         self._send(b"", 204, "text/plain")
@@ -384,17 +305,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._static(route.lstrip("/"))
 
         try:
-            # Open routes. /health is deliberately unauthenticated so the sign-in
-            # screen can tell "API is down" apart from "your password is wrong".
             if route == "/api/health":
                 return self._health()
-            if route == "/api/auth/me":
-                return self._auth_me()
-
-            # Everything below requires a signed-in caller.
-            if self._require() is None:
-                return None
-
             if route == "/api/me":
                 return self._me()
             if route == "/api/topics":
@@ -420,37 +332,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         route = urlparse(self.path).path.rstrip("/")
         try:
-            # Open route: signing in is what you do when you have no token.
-            if route == "/api/auth/login":
-                return self._login()
-            if route == "/api/auth/logout":
-                return self._logout()
-
-            # Uploading material and editing the role list change what everyone in a
-            # role is taught and certified against. Manager tier or above, enforced
-            # here on the server — the UI also hides these controls, but hiding a
-            # button is not a permission check.
             if route == "/api/documents":
-                if self._require("manager") is None:
-                    return None
                 return self._upload()
             if route == "/api/documents/confirm":
-                if self._require("manager") is None:
-                    return None
                 return self._confirm_document()
             if route == "/api/roles":
-                if self._require("manager") is None:
-                    return None
                 return self._add_role()
             if route.startswith("/api/roles/") and route.endswith("/delete"):
-                if self._require("manager") is None:
-                    return None
                 return self._remove_role(route.split("/")[3])
-
-            # Taking a quiz is every signed-in employee's business.
-            if self._require() is None:
-                return None
-
             if route == "/api/quiz/start":
                 return self._start()
             if route == "/api/quiz/answer":
@@ -1022,17 +911,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _start(self):
         body = self._body()
-        # Identity comes from the signed token and nowhere else. This used to read
-        # `body["learnerId"]` first, which was harmless while identity was a forgeable
-        # header but is a real hole now that it is authenticated: a signed-in employee
-        # could name someone else and write into their attempt history.
-        learner = self._learner()
+        learner = body.get("learnerId") or self._learner()
         length = int(body.get("length") or QUIZ_LENGTH)
+        role = body.get("role", "")
 
         training = body.get("training", "")
-        # Same rule for role: the token wins, so an employee cannot request another
-        # role's quiz by editing the POST payload in devtools.
-        role = self._learner_role()
+        # The header wins over the body: an employee cannot request another role's
+        # quiz by editing the POST payload in devtools.
+        role = self._learner_role() or role
 
         with Bank(DB) as bank:
             plan = build_quiz(bank, learner_id=learner, length=length, role=role)
@@ -1104,10 +990,7 @@ class Handler(BaseHTTPRequestHandler):
     def _submit(self):
         body = self._body()
         attempt_id = body.get("attemptId", "")
-        # From the token only — see the note in _start. A submitted score is written
-        # against this learner, so accepting it from the body would let anyone signed
-        # in post a passing score to somebody else's record.
-        learner = self._learner()
+        learner = body.get("learnerId") or self._learner()
         answers = {a.get("questionId"): a for a in body.get("answers", [])}
 
         served = _IN_FLIGHT.get(attempt_id)

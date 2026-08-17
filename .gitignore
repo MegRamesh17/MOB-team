@@ -25,6 +25,3 @@ data/documents/*.md
 # frontend build artefacts
 node_modules/
 web-app/dist/
-
-# Credential store and session signing key — never commit these.
-.auth/

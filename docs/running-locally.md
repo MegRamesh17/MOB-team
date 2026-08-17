@@ -7,12 +7,8 @@ credentials, no Key Vault access, no SQL firewall rule.
 python scripts/make_sample_pdfs.py                                    # sample documents
 PYTHONPATH=src python -m quizgen.cli ingest --source local --pdf-dir data/documents
 QUIZGEN_PROVIDER=mock PYTHONPATH=src python -m quizgen.cli generate
-python scripts/manage_users.py seed-demo                              # sign-in accounts
 python scripts/devserver.py                                           # http://localhost:8000
 ```
-
-`seed-demo` prints one password covering eight accounts that mirror
-`db/seed/seed_data.sql`. Note it — only the hash is stored, so it cannot be recovered.
 
 `QUIZGEN_PROVIDER=mock` needs no API key and no network — it builds questions by pattern
 matching over the text. Drop it to generate with gpt-5, which needs the `.env` described
@@ -195,49 +191,10 @@ without the answer key ever reaching the browser.
 If you rebuild the quiz screen, keep this. A key in the client is a key in devtools,
 and no score is trustworthy after that.
 
-### Sign-in is real
+### Sign-in is not real
 
-Passwords are checked. `scripts/manage_users.py seed-demo` writes eight accounts to
-`.auth/users.json` — gitignored, PBKDF2 hashes only, no plaintext anywhere.
-
-| Account | Role | Access |
-|---|---|---|
-| `dana.whitfield@demo.com` | SWE_MANAGER | manager |
-| `priya.n@demo.com` | MANAGER | director |
-| `ethan.brooks@demo.com` | SDE2 | employee |
-| `maya.osei@demo.com` | SDE1 | employee |
-| `liam.chen@demo.com` | SEC_ANALYST | employee |
-| `sofia.delgado@demo.com` | ALL | employee |
-| `noah.whitaker@demo.com` | ALL | employee |
-| `ava.thompson@demo.com` | ALL | employee |
-
-Signing in as different people is still the quickest way to watch adaptive targeting
-diverge against the same bank — and now also the quickest way to see role scoping and
-manager permissions differ, because neither is client-declared any more.
-
-**The `x-learner-id` header is gone.** It let the browser declare its own identity and
-role, so an employee could read another role's material by editing one request. Identity
-now arrives in a token the server signed:
-
-```
-POST /api/auth/login   {username, password}  ->  {token, principal}
-GET  /api/auth/me      Authorization: Bearer <token>
-POST /api/auth/logout
-```
-
-Every other endpoint except `/api/health` requires that token. Uploading documents and
-editing roles additionally require manager tier or above, enforced server-side — the UI
-hides those controls too, but hiding a button is not a permission check.
-
-Two limits worth stating plainly. The token is stored in `localStorage`, so any script
-running on this origin can read it; an httpOnly cookie is the stronger answer once the
-API and app share an origin in deployment. And signing out drops the client's copy
-without invalidating the token server-side, because revocation needs shared state the
-single-process dev server does not have.
-
-### Still not Entra
-
-This is a local credential store behind a provider interface, not SSO. `CredentialProvider`
-in `src/quizgen/auth.py` has two methods; an Entra implementation satisfies the same
-interface and drops in without any caller changing, because callers only ever see a
-`Principal`.
+Both personas are demo stand-ins; no password is checked. The learner is passed as the
+`x-learner-id` header, which the deployed API ignores in favour of the
+platform-injected Entra principal. Signing in as each persona keeps their quiz
+histories separate, which is the quickest way to watch adaptive targeting diverge
+between two people against the same bank.
