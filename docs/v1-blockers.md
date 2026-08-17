@@ -1,150 +1,122 @@
-# What is blocking v1, and who owns it
+# v1 blockers
 
-Everything below is someone else's file. Nothing here can be unblocked from the
-`quizgen`/frontend side, which is why it is a list of asks rather than a list of work.
-
-Sorted by what unblocks the most people.
+All six blockers are closed on `ai-retry`. What remains is running things against
+Azure, which needs credentials this branch does not have.
 
 ---
 
-## 1. Seed data into Azure SQL — owner: Megha
+## Closed
 
-`migrate-database.yml` applies schema and stops. `db/seed/org_seed.sql` and
-`seed_data.sql` have never run against Azure SQL, so `Companies`, `Departments`, `Teams`,
-`Roles`, and `Employees` are all empty.
+| Blocker | How |
+|---|---|
+| `JWT_SIGNING_SECRET` unprovisioned — `/login` 500s | `random_password` at the Terraform root → `jwt-signing-secret` in Key Vault → `JWT_SIGNING_SECRET` app setting, following the `SQL_PASSWORD` pattern |
+| `api/` never deployed | `.github/workflows/deploy-backend.yml`, from `ai-retry`, with a health check that fails the run |
+| Seed data never loaded | `db/seed/*.sql` rewritten idempotent; `.github/workflows/seed-database.yml` runs them |
+| Nobody has a password | `scripts/set_passwords.py` |
+| Token missing `role_code` / `manager_id` | Added to `create_token`, `Identity`, and `login.py`'s query; `016_add_role_code.sql` supplies the mapping |
+| Nothing actually protected | `_caller_id` deleted; every route resolves identity from the token |
 
-**This blocks almost everything else.** With no `Employees` rows:
+## Route posture now
 
-- there is nobody to give a `password_hash` to, so the auth backfill cannot start
-- `login.py`'s query returns no row, so sign-in cannot be tested even once the signing
-  secret exists
-- no role can be resolved, so role-scoped training cannot be demonstrated
+| Route | Auth |
+|---|---|
+| `health`, `login` | open — deliberately |
+| `auth/me`, `me`, `topics`, `quiz/start`, `quiz/submit` | signed in |
+| `review/pending`, `review/decide` | manager or above |
 
-Both files are plain `INSERT` with no `IF NOT EXISTS` or `MERGE` guard, so a second run
-duplicates every row. `migrate-database.yml`'s `SchemaMigrations` pattern solves exactly
-this for migrations and would work for seeds — a `SeedRuns` table, or a `WHERE NOT EXISTS`
-guard on each insert.
-
-Worth deciding: whether seeding runs automatically after migrations, or manually via
-`workflow_dispatch`. Seeding is a one-time bootstrap, not a per-deploy step.
-
----
-
-## 2. `JWT_SIGNING_SECRET` — owner: Megha (infra)
-
-`api/shared/auth.py` raises `RuntimeError("JWT_SIGNING_SECRET is not set")` when the
-variable is absent, which is correct behaviour. Nothing sets it:
-
-- `infra/modules/keyvault/main.tf` defines `sql-connection-string`, `openai-api-key`,
-  `sql-password`. No `jwt-signing-secret`.
-- `infra/modules/functions/main.tf` `app_settings` has no `JWT_SIGNING_SECRET`.
-
-So `POST /login` returns 500 on every call. The fix follows the `SQL_PASSWORD` pattern
-already in that file:
-
-```hcl
-"JWT_SIGNING_SECRET" = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/jwt-signing-secret/)"
-```
-
-The secret must be **stable** — regenerating it on each `terraform apply` signs every
-user out on every deploy.
+`health` has to be open or `deploy-backend.yml` cannot tell "app is down" from "app needs
+a password". `login` is what you call when you have no token.
 
 ---
 
-## 3. Deploy `api/` and `web-app/` — owner: Megha / Track G
+## Found along the way
 
-No workflow deploys the Function App. `terraform.yml`, `migrate-database.yml` and
-`tests.yml` are the three that exist; `tests.yml` builds the frontend purely to catch
-syntax errors and discards the artefact.
+**`review/pending` was publishing the answer key.** It returns
+`GeneratedOptions.is_correct` for the whole bank and had no authentication at all —
+anyone who could reach the Function App could read every correct answer, no sign-in, no
+role, no rate limit. It now takes the manager gate.
 
-`api/auth/login.py` exists in git and does not exist in Azure. Blockers 1 and 2 cannot be
-verified until this lands.
+**`_caller_id`'s fallback was worse than a missing check.** A client sending no
+`x-learner-id` header did not get an error; it silently became the string
+`"demo-learner"`. Every user would have shared one identity and one quiz history, and
+nothing anywhere would have reported a problem.
 
-Track G notes an open team decision — Azure DevOps pipelines versus the existing GitHub
-Actions — and flags that running both against the same resource risks conflicting
-deployments. That decision is upstream of this work, not part of it.
+**The two role registries had no link.** `Roles.title` is `'SDE 2'`; quizgen's is
+`'Software Development Engineer 2'`. Roles like Security Analyst have no quizgen code at
+all. So no title match could work, and a fuzzy one would serve the wrong role's material.
+`016_add_role_code.sql` maps the unambiguous ones and leaves the rest NULL, which becomes
+`"ALL"` — company-wide training only, so a missing mapping under-serves rather than leaks.
 
----
-
-## 4. Two claims missing from the auth token — owner: sureshalampur
-
-`create_token()` carries `access_role` (the permission tier) but not:
-
-- **`role_code`** — the *training* role (SDE2, SWE_MANAGER, ALL). Every chunk carries a
-  `role_scope`; serving the right training means filtering on it, and the value to filter
-  by is the caller's training role, not their permission tier. Without the claim, every
-  training endpoint re-queries the database for something already known at login.
-- **`manager_id`** — needed for the manager's team view, for scoping which roles a
-  manager may upload for, and for Q Score visibility.
-
-The join is already in `login.py`'s query; it needs `r.title` added to the SELECT and one
-line in the payload. Default `role_code` to `"ALL"` when unmapped — that serves
-company-wide training only, so a missing role under-serves rather than leaking.
-
-Do not derive one role from the other: an employee whose title contains "lead" is not a
-manager, and a `SWE_MANAGER` training role does not by itself grant `manager` access.
-
-Full detail in `docs/auth-integration-notes.md`.
+**The seed could only ever run once.** Both files hardcoded surrogate ids — `team_id 8`
+meaning the eighth row inserted, `employee_id 3`, `question_id 7`. Correct on an empty
+database populated in exactly that order, wrong everywhere else.
 
 ---
 
-## 5. Nobody has a password — owner: sureshalampur
+## What has NOT been verified
 
-`012_add_auth.sql` adds `password_hash` nullable and nothing ever writes one.
-`login.py:114` returns 401 when it is `NULL`, which is every row. The migration comment
-already anticipates this ("backfill via a one-off admin script, or an interactive set
-your password first-login flow") — it just has not been written.
+Everything below was written against the schema and the Azure SDK contracts, and none of
+it has run against Azure — there are no credentials on this branch and no local SQL
+Server or Docker to stand one up.
 
-Depends on blocker 1: there are no employees to give passwords to yet.
-
----
-
-## 6. Nothing is actually protected — owner: sureshalampur
-
-`get_current_employee()` is defined in `api/shared/auth.py` and called nowhere.
-`function_app.py` still resolves identity through `_caller_id()` at lines 182, 268, 376
-and 559.
-
-`_caller_id()` falls back to the `x-learner-id` header and then to the literal string
-`"demo-learner"`. That fallback is the part that matters: a client sending no header does
-not get an error, it silently becomes `demo-learner`. Every user would share one identity
-and one quiz history, and nothing would report a problem.
-
-Document upload and role editing additionally want `require_manager()` — both change what
-an entire role is taught and certified against.
+- **The SQL has never executed.** Syntax and `VALUES`-arity are checked programmatically;
+  that is not the same as running. `016_add_role_code.sql` uses `GO` batch separators,
+  which `sqlcmd` handles and some other runners do not.
+- **The workflows have never run.** `deploy-backend.yml` and `seed-database.yml` are
+  written against the patterns in `terraform.yml` and `migrate-database.yml` and reuse
+  the same three secrets, but a workflow's first real run always finds something.
+- **`terraform apply` has not been run.** `terraform validate` passes.
+- **No end-to-end sign-in has happened**, because that needs all of the above first.
 
 ---
 
-## 7. Q Score means two things — owner: whoever owns `add-certificates`
+## The order to run it in
 
-`_calculate_q_score()` on that branch computes a per-attempt performance score. This
-project's Q Score is a per-employee compliance rollup. Both were being built under one
-name, so "Q Score 82" was ambiguous between "82% compliant" and "scored 82 on one quiz".
+Each step depends on the one before, and each has a way to tell whether it worked.
 
-Resolved in `docs/q-score.md`, which is now authoritative: they become two named levels,
-and the per-attempt score feeds the rollup. Three changes needed on that branch:
+1. **`terraform apply`** — creates `jwt-signing-secret` and sets `JWT_SIGNING_SECRET`.
+   *Check:* the secret exists in `mob-kv-dev`.
+2. **`migrate-database`** — applies `016_add_role_code.sql` along with anything else
+   outstanding. *Check:* `Roles` has a `role_code` column.
+3. **`seed-database`** — loads companies, departments, teams, roles, employees. It prints
+   its own counts, including how many employees have a password. *Check:* 8 employees, 0
+   with a password.
+4. **`deploy-backend`** — publishes `api/`. *Check:* the health step passes; it fails the
+   run if the app cannot reach the database.
+5. **`python scripts/set_passwords.py --all --generate`** — needs `SQL_PASSWORD` and a SQL
+   firewall rule for your IP. Prints the passwords once. *Check:* `--status` shows
+   everyone able to sign in.
+6. **`POST /api/login`** with one of those. *Check:* a token comes back, and
+   `GET /api/auth/me` with it returns that person's `role_code` and `manager_id`.
 
-1. Rename `_calculate_q_score` → `_calculate_attempt_score`, and the column to
-   `attempt_score`
-2. Weight questions by difficulty in both numerator and denominator, rather than averaging
-   the multiplier over correct answers only (today, getting fewer easy questions right
-   raises your multiplier)
-3. Drop the consistency factor — a topic at 51% costs nothing, at 49% it costs a flat 8%,
-   and the adaptive engine already concentrates quizzes on weak topics
-
-`014_create_certificates.sql` also needs a `category` column for the
-behavioural/technical split.
+If step 6 works, the auth half of v1 works.
 
 ---
 
-## Not blocked any more
+## Still open, and not auth
 
-**Shyam's isolation work.** `docs/company-isolation-gap.md` asked whoever owns
-`search_index.py` to add a `company_id` field. Done — `Chunk.company_id`, a filterable
-index field, `upload()` validating through `isolation.validate_company_id`, and
-`retrieve()` taking `company_id` positionally so it cannot be called unscoped.
-`isolation.py` itself is untouched, only imported. 13 tests in `tests/test_isolation.py`.
+**The deployed API is missing most of the product surface.** `api/function_app.py` is the
+quiz engine; `scripts/devserver.py` is the product. The frontend calls these, and they do
+not exist deployed:
 
-Still separate work, as that document says: Azure SQL needs the same `company_id`
-filtering, and blob containers should be company-scoped before a second company's
-documents are ingested.
+| Endpoint | What breaks |
+|---|---|
+| `GET /trainings` | the employee home screen |
+| `GET /lesson?training=` | lesson content |
+| `POST /quiz/answer` | per-question feedback — the round trip that keeps the key server-side |
+| `GET`/`POST /documents`, `POST /documents/confirm` | manager upload |
+| `GET /jobs/{id}` | generation progress |
+| `GET`/`POST /roles`, `POST /roles/{code}/delete` | role management |
+| `GET /certificates` | on `add-certificates`, not on `main` |
+
+This is larger than the auth work was, and it is not a port: the dev server reads a SQLite
+bank and the Function App reads Azure SQL.
+
+**The frontend still uses the demo sign-in.** `web-app/` has not been pointed at
+`POST /api/login`. Worth doing after step 6 above proves the contract.
+
+**Q Score.** `docs/q-score.md` is authoritative; the `add-certificates` branch needs the
+rename and two formula fixes listed there.
+
+**Azure SQL and blob isolation.** `docs/company-isolation-gap.md` scoped both out of the
+search-index work. `Chunk.company_id` and the index filter are done; the SQL side is not.
