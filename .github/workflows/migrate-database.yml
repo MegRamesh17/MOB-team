@@ -47,6 +47,7 @@ jobs:
             );"
       - name: Run only new migrations
         run: |
+          set -euo pipefail
           for file in db/migrations/*.sql; do
             fname=$(basename "$file")
             already_applied=$(sqlcmd -S mob-sql-server-02.database.windows.net -d mob-training-db \
@@ -54,8 +55,16 @@ jobs:
               -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM dbo.SchemaMigrations WHERE filename = '$fname'" | tr -d '[:space:]')
             if [ "$already_applied" = "0" ]; then
               echo "Applying $fname"
-              sqlcmd -S mob-sql-server-02.database.windows.net -d mob-training-db \
-                -U mobsqladmin -P "${{ secrets.SQL_ADMIN_PASSWORD }}" -C -b -i "$file"
+              # Explicit exit-code check, not just `set -e`: this is the line that
+              # decides whether $fname gets recorded as applied. A migration that
+              # fails partway must never reach the INSERT below, or SchemaMigrations
+              # ends up lying about what's actually in the database -- which is
+              # exactly how 009 and 011 went missing while marked "applied".
+              if ! sqlcmd -S mob-sql-server-02.database.windows.net -d mob-training-db \
+                -U mobsqladmin -P "${{ secrets.SQL_ADMIN_PASSWORD }}" -C -b -i "$file"; then
+                echo "::error file=$file::Migration failed -- NOT recording it as applied. Fix the migration (or repair the database) and re-run this job."
+                exit 1
+              fi
               sqlcmd -S mob-sql-server-02.database.windows.net -d mob-training-db \
                 -U mobsqladmin -P "${{ secrets.SQL_ADMIN_PASSWORD }}" -C -b \
                 -Q "INSERT INTO dbo.SchemaMigrations (filename) VALUES ('$fname')"
