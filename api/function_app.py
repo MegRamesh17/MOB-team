@@ -134,6 +134,33 @@ def _now() -> str:
 # health
 # --------------------------------------------------------------------------
 
+DIFFICULTY_MULTIPLIERS = {"Easy": 0.95, "Medium": 1.0, "Hard": 1.08}
+
+def _calculate_q_score(percent, results):
+    """
+    Q Score = raw score % x difficulty weight x consistency factor.
+    """
+    if not results:
+        return round(percent, 2)
+
+    correct = [r for r in results if r["isCorrect"]]
+    if correct:
+        avg_multiplier = sum(
+            DIFFICULTY_MULTIPLIERS.get(r.get("difficulty", "Medium"), 1.0)
+            for r in correct
+        ) / len(correct)
+    else:
+        avg_multiplier = 1.0
+
+    topics = {}
+    for r in results:
+        topics.setdefault(r["topic"], []).append(r["isCorrect"])
+    topic_rates = [sum(v) / len(v) for v in topics.values()]
+    consistency = 1.0 if not topic_rates or min(topic_rates) >= 0.5 else 0.92
+
+    return round(min(100.0, percent * avg_multiplier * consistency), 2)
+
+
 @app.route(route="health", methods=["GET"])
 def health(req: func.HttpRequest) -> func.HttpResponse:
     try:
@@ -395,8 +422,8 @@ def submit_quiz(req: func.HttpRequest) -> func.HttpResponse:
 
                 cur.execute(
                     """SELECT question_id, question_type, topic, points, explanation,
-                              source_doc_title, source_page, source_quote, source_url,
-                              provenance_class
+                              difficulty, source_doc_title, source_page, source_quote,
+                              source_url, provenance_class
                        FROM dbo.GeneratedQuestions WHERE question_id = ?""",
                     qid,
                 )
@@ -454,6 +481,7 @@ def submit_quiz(req: func.HttpRequest) -> func.HttpResponse:
                     {
                         "questionId": qid,
                         "topic": q["topic"],
+                        "difficulty": q.get("difficulty", "Medium"),
                         "isCorrect": is_correct,
                         "pointsAwarded": points,
                         "yourAnswer": [
@@ -486,16 +514,27 @@ def submit_quiz(req: func.HttpRequest) -> func.HttpResponse:
                    WHERE attempt_id = ?""",
                 percent, awarded, possible, 1 if passed else 0, attempt_id,
             )
+
+            q_score = _calculate_q_score(percent, results)
+            certificate_id = None
+            certificate_generated = False
+
+            if passed:
+                certificate_id = _generate_certificate(learner, attempt_id, q_score)
+                certificate_generated = certificate_id is not None
             c.commit()
 
         return _json(
             {
                 "attemptId": attempt_id,
                 "scorePercent": percent,
+                "qScore": q_score,
                 "pointsAwarded": awarded,
                 "pointsPossible": possible,
                 "passed": passed,
                 "passingScorePercent": PASSING_SCORE,
+                "certificateGenerated": certificate_generated,
+                "certificateId": certificate_id,
                 "results": results,
             }
         )
@@ -564,5 +603,125 @@ def review_decide(req: func.HttpRequest) -> func.HttpResponse:
                 )
             c.commit()
         return _json({"updated": len(ids), "decision": decision, "reviewedBy": reviewer})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+def _get_employee_info(learner_identifier):
+    """Looks up an employee by email; falls back to the raw identifier
+    if no match (covers demo-mode learner ids).
+
+    x-learner-id is sometimes "email:role" (set at login when a company role is
+    picked - see web-app/src/App.jsx), so only the part before the first ":" is
+    ever a real email.
+    """
+    email = learner_identifier.split(":", 1)[0]
+    with _conn() as c:
+        cur = c.cursor()
+        cur.execute("SELECT id, name, email FROM Employees WHERE email = ?", email)
+        row = cur.fetchone()
+    if row:
+        return {"id": row[0], "name": row[1], "email": row[2]}
+    return {"id": None, "name": learner_identifier, "email": learner_identifier}
+
+
+def _generate_certificate(learner, attempt_id, q_score):
+    """Generates a minimal certificate PDF, uploads it to Blob Storage,
+    and records it in Certificates. Returns the new id, or None on
+    failure - a failed certificate must never block the quiz result
+    itself from being returned."""
+    try:
+        import logging
+        import uuid as uuid_module
+        from io import BytesIO
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.pagesizes import letter
+        from azure.storage.blob import BlobServiceClient
+
+        employee = _get_employee_info(learner)
+
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT TOP 1 topic FROM dbo.GeneratedQuizResponses WHERE attempt_id = ?",
+                attempt_id,
+            )
+            row = cur.fetchone()
+        training_title = row[0] if row else "Training Module"
+
+        buffer = BytesIO()
+        pdf = canvas.Canvas(buffer, pagesize=letter)
+        width, height = letter
+        pdf.setFont("Helvetica-Bold", 20)
+        pdf.drawCentredString(width / 2, height - 150, "Certificate of Completion")
+        pdf.setFont("Helvetica", 14)
+        pdf.drawCentredString(width / 2, height - 200, employee["name"])
+        pdf.drawCentredString(width / 2, height - 230, f"has completed: {training_title}")
+        pdf.drawCentredString(width / 2, height - 260, f"Q Score: {q_score}")
+        pdf.drawCentredString(width / 2, height - 290, f"Issued: {_now()[:10]}")
+        pdf.save()
+        buffer.seek(0)
+
+        blob_name = f"{uuid_module.uuid4().hex[:12]}_{employee['id'] or 'demo'}.pdf"
+        blob_service = BlobServiceClient.from_connection_string(os.environ["AZURE_STORAGE_CONNECTION_STRING"])
+        blob_client = blob_service.get_blob_client("certificates", blob_name)
+        blob_client.upload_blob(buffer.read(), overwrite=True)
+        certificate_url = blob_client.url
+
+        issued_at = datetime.now(timezone.utc)
+        expires_at = issued_at.replace(year=issued_at.year + 2)
+
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """INSERT INTO Certificates
+                   (employee_id, attempt_id, training_title, q_score, issued_at, expires_at, certificate_url, status)
+                   OUTPUT INSERTED.id
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'Active')""",
+                employee["id"], attempt_id, training_title, q_score, issued_at, expires_at, certificate_url,
+            )
+            certificate_id = cur.fetchone()[0]
+            c.commit()
+
+        return certificate_id
+    except Exception as exc:  # noqa: BLE001
+        logging.error(f"Certificate generation failed: {type(exc).__name__}: {exc}")
+        return None
+
+
+@app.route(route="certificates", methods=["GET"])
+def get_certificates(req: func.HttpRequest) -> func.HttpResponse:
+    learner = _caller_id(req)
+    try:
+        employee = _get_employee_info(learner)
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """SELECT id, attempt_id, training_title, q_score, issued_at, expires_at,
+                          certificate_url, status
+                   FROM Certificates
+                   WHERE employee_id = ?
+                   ORDER BY issued_at DESC""",
+                employee["id"],
+            )
+            rows = _rows(cur)
+
+        now = datetime.now(timezone.utc)
+        certs = []
+        for r in rows:
+            expires_at = r["expires_at"]
+            expired = bool(expires_at and expires_at.replace(tzinfo=timezone.utc) < now)
+            certs.append({
+                "id": r["id"],
+                "attemptId": r["attempt_id"],
+                "title": r["training_title"] or "Training Module",
+                "score": r["q_score"],
+                "date": r["issued_at"].date().isoformat() if r["issued_at"] else None,
+                "expiresAt": expires_at.date().isoformat() if expires_at else None,
+                "expired": expired,
+                "certificateUrl": r["certificate_url"],
+                "status": r["status"],
+            })
+        return _json({"certificates": certs})
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)

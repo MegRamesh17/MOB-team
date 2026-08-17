@@ -56,3 +56,9 @@ resource "azurerm_key_vault_secret" "sql_password" {
   value        = var.sql_admin_password
   key_vault_id = azurerm_key_vault.mob_kv.id
 }
+
+resource "azurerm_key_vault_secret" "storage_connection_string" {
+  name         = "storage-connection-string"
+  value        = var.storage_connection_string
+  key_vault_id = azurerm_key_vault.mob_kv.id
+}

@@ -38,6 +38,7 @@ resource "azurerm_linux_function_app" "mob_functions" {
     "SQL_USER"                 = var.sql_admin_username
     "SQL_PASSWORD"             = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/sql-password/)"
     "COMMS_CONNECTION_STRING"  = var.comms_connection_string
+    "AZURE_STORAGE_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/storage-connection-string/)"
     "QUIZGEN_PASSING_SCORE"    = "80"
     "QUIZGEN_QUIZ_LENGTH"      = "8"
   }
