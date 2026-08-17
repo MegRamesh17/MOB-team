@@ -1,0 +1,280 @@
+# Azure DevOps pipeline: backend (migrate -> seed -> deploy the Function App).
+#
+# Supersedes .github/workflows/migrate-database.yml, seed-database.yml and
+# deploy-backend.yml, which are now workflow_dispatch-only ("manual emergency use")
+# so the two systems cannot both push to mob-functions-dev at once. GitHub Actions
+# keeps only terraform.yml (infra plan/apply) -- this pipeline assumes the
+# infrastructure it targets (mob-sql-server-02, mob-training-db, mob-functions-dev,
+# mob-kv-dev) already exists, the same way the old migrate/seed/deploy workflows did.
+#
+# ONE-TIME SETUP REQUIRED IN THE DEVOPS PROJECT, before this pipeline can run:
+#   1. Project Settings -> Service connections -> New Azure Resource Manager
+#      connection (workload identity federation, matching how GitHub Actions'
+#      azure/login@v2 authenticates). Name it to match `azureSubscription` below,
+#      or change that value to whatever you name it. It needs the same access the
+#      GitHub Actions pipeline identity has: SQL admin login, Key Vault read on
+#      mob-kv-dev, and Contributor (or Website Contributor) on mob-functions-dev.
+#   2. Pipelines -> Library -> new variable group named `mob-backend-secrets`, linked
+#      to mob-kv-dev so it reads `sql-password` from Key Vault automatically. A
+#      Key-Vault-linked variable keeps the Key Vault secret's own name -- it shows up
+#      in this pipeline as $(sql-password), NOT $(SQL_ADMIN_PASSWORD), and can't be
+#      renamed on the DevOps side. The two Migrate/Seed steps that read it already
+#      account for this; if the Key Vault secret is ever renamed, update those too.
+#
+# Trigger: push to main. Same trigger terraform.yml's apply job uses, but this is
+# an independent DevOps pipeline -- it does NOT wait for a GitHub Actions terraform
+# run to finish. If you push infra changes and app changes in the same commit,
+# trigger this pipeline manually after confirming terraform applied cleanly rather
+# than trusting the two to race safely.
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - db/migrations/*
+      - db/seed/*
+      - api/*
+
+# Azure Pipelines' default, if this is omitted, is to ALSO run on every pull request
+# regardless of what files it touches -- not just pushes to main like the header
+# comment above describes. Without this, opening any PR against this repo silently
+# re-runs Migrate/Seed/DeployBackend against live Azure resources before merge, which
+# is how PR #12 (the very fix for this pipeline) ended up triggering a live run of
+# itself. Explicit opt-out, not an oversight.
+pr: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - group: mob-backend-secrets
+  - name: azureSubscription
+    value: 'mob-azure-connection'   # <- rename to match your service connection
+  - name: sqlServer
+    value: 'mob-sql-server-02.database.windows.net'
+  - name: sqlDatabase
+    value: 'mob-training-db'
+  - name: sqlUser
+    value: 'mobsqladmin'
+  - name: resourceGroup
+    value: 'MOB'
+  - name: functionAppName
+    value: 'mob-functions-dev'
+
+stages:
+  # ---------------------------------------------------------------------------
+  - stage: Migrate
+  # ---------------------------------------------------------------------------
+    jobs:
+      - job: ApplyMigrations
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Install sqlcmd'
+            inputs:
+              azureSubscription: $(azureSubscription)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
+                sudo dpkg -i packages-microsoft-prod.deb
+                sudo apt-get update
+                ACCEPT_EULA=Y sudo apt-get install -y mssql-tools18 unixodbc-dev
+                echo "##vso[task.prependpath]/opt/mssql-tools18/bin"
+
+          - task: AzureCLI@2
+            displayName: 'Open temporary firewall rule for this agent'
+            name: openFirewall
+            inputs:
+              azureSubscription: $(azureSubscription)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                AGENT_IP=$(curl -s https://api.ipify.org)
+                echo "##vso[task.setvariable variable=agentIp;isOutput=true]$AGENT_IP"
+                az sql server firewall-rule create \
+                  --resource-group $(resourceGroup) --server mob-sql-server-02 \
+                  --name devops-migrate-temp \
+                  --start-ip-address "$AGENT_IP" --end-ip-address "$AGENT_IP"
+
+          - bash: |
+              set -euo pipefail
+              sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -b -Q "
+                IF OBJECT_ID('dbo.SchemaMigrations') IS NULL
+                CREATE TABLE dbo.SchemaMigrations (
+                  filename NVARCHAR(255) PRIMARY KEY,
+                  applied_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+                );"
+
+              for file in db/migrations/*.sql; do
+                fname=$(basename "$file")
+                already_applied=$(sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -h -1 \
+                  -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM dbo.SchemaMigrations WHERE filename = '$fname'" | tr -d '[:space:]')
+                if [ "$already_applied" = "0" ]; then
+                  echo "Applying $fname"
+                  # Same fix as GitHub Actions' migrate-database.yml: check the exit code
+                  # before recording the migration as applied, so a partial failure can
+                  # never be marked done.
+                  if ! sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -b -i "$file"; then
+                    echo "##vso[task.logissue type=error]Migration $fname failed -- NOT recording it as applied."
+                    exit 1
+                  fi
+                  sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -b \
+                    -Q "INSERT INTO dbo.SchemaMigrations (filename) VALUES ('$fname')"
+                else
+                  echo "Skipping $fname - already applied"
+                fi
+              done
+            displayName: 'Run only new migrations'
+            # Secret pipeline variables are never substituted into $(...) text inside a
+            # script -- that would write the plaintext password to the generated script
+            # file on disk. They have to be explicitly mapped to a real shell env var
+            # here, then referenced in the script as $SQL_ADMIN_PASSWORD (no parens).
+            # Getting this wrong doesn't fail loudly at the $(...) site: bash instead
+            # tries to run the literal leftover text "$(SQL_ADMIN_PASSWORD)" as a command
+            # substitution, so the error shows up as "SQL_ADMIN_PASSWORD: command not
+            # found" followed by a SQL login failure -- easy to misread as a bad password.
+            #
+            # Sourced from $(sql-password), not $(SQL_ADMIN_PASSWORD): mob-backend-secrets
+            # links this from Key Vault, and a Key-Vault-linked variable keeps the Key
+            # Vault secret's own name (sql-password) -- it can't be renamed on the DevOps
+            # side. Referencing the wrong name here doesn't error either, it just resolves
+            # to empty, so sqlcmd runs with -P "" and fails with a clean "Login failed"
+            # that looks exactly like a wrong password.
+            env:
+              SQL_ADMIN_PASSWORD: $(sql-password)
+
+          - task: AzureCLI@2
+            displayName: 'Close temporary firewall rule'
+            condition: always()
+            inputs:
+              azureSubscription: $(azureSubscription)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az sql server firewall-rule delete \
+                  --resource-group $(resourceGroup) --server mob-sql-server-02 \
+                  --name devops-migrate-temp || true
+
+  # ---------------------------------------------------------------------------
+  - stage: Seed
+  # ---------------------------------------------------------------------------
+    dependsOn: Migrate
+    jobs:
+      - job: ApplySeed
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Install sqlcmd'
+            inputs:
+              azureSubscription: $(azureSubscription)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
+                sudo dpkg -i packages-microsoft-prod.deb
+                sudo apt-get update
+                ACCEPT_EULA=Y sudo apt-get install -y mssql-tools18 unixodbc-dev
+                echo "##vso[task.prependpath]/opt/mssql-tools18/bin"
+
+          - task: AzureCLI@2
+            displayName: 'Open temporary firewall rule for this agent'
+            inputs:
+              azureSubscription: $(azureSubscription)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                AGENT_IP=$(curl -s https://api.ipify.org)
+                az sql server firewall-rule create \
+                  --resource-group $(resourceGroup) --server mob-sql-server-02 \
+                  --name devops-seed-temp \
+                  --start-ip-address "$AGENT_IP" --end-ip-address "$AGENT_IP"
+
+          - bash: |
+              set -euo pipefail
+              for file in db/seed/org_seed.sql db/seed/seed_data.sql; do
+                echo "--- $file"
+                sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -b -i "$file"
+              done
+            displayName: 'Apply seed data (safe to re-run -- guarded by WHERE NOT EXISTS)'
+            # See the same env: note on the Migrate stage's "Run only new migrations" step
+            # -- secret variables need this explicit mapping, $(...) alone won't work, and
+            # it has to source from $(sql-password) (the Key Vault secret's own name), not
+            # $(SQL_ADMIN_PASSWORD).
+            env:
+              SQL_ADMIN_PASSWORD: $(sql-password)
+
+          - task: AzureCLI@2
+            displayName: 'Close temporary firewall rule'
+            condition: always()
+            inputs:
+              azureSubscription: $(azureSubscription)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az sql server firewall-rule delete \
+                  --resource-group $(resourceGroup) --server mob-sql-server-02 \
+                  --name devops-seed-temp || true
+
+  # ---------------------------------------------------------------------------
+  - stage: DeployBackend
+  # ---------------------------------------------------------------------------
+    dependsOn: Seed
+    jobs:
+      - job: DeployFunctionApp
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.11'
+
+          - bash: |
+              pip install -r api/requirements.txt
+              python -m compileall -q api && echo "All modules compile."
+            displayName: 'Check the package imports before shipping it'
+
+          - task: ArchiveFiles@2
+            displayName: 'Zip the api/ package'
+            inputs:
+              rootFolderOrFile: 'api'
+              includeRootFolder: false
+              archiveType: 'zip'
+              archiveFile: '$(Build.ArtifactStagingDirectory)/api.zip'
+
+          # Published BEFORE the deploy step, deliberately: if the deploy or health
+          # check fails, the exact package that was about to ship (or just did) is
+          # still downloadable from this run for inspection -- e.g. to check whether
+          # a dependency actually built, without needing Azure Portal/CLI access.
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish api.zip as a pipeline artifact'
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/api.zip'
+              artifact: 'api-package-$(Build.BuildId)'
+
+          - task: AzureFunctionApp@2
+            displayName: 'Deploy to the Function App'
+            inputs:
+              azureSubscription: $(azureSubscription)
+              appType: 'functionAppLinux'
+              appName: $(functionAppName)
+              package: '$(Build.ArtifactStagingDirectory)/api.zip'
+
+          - bash: sleep 45
+            displayName: 'Wait for the app to come back up'
+
+          - bash: |
+              URL="https://$(functionAppName).azurewebsites.net/api/health"
+              echo "GET $URL"
+              for attempt in 1 2 3 4 5; do
+                CODE=$(curl -s -o /tmp/health.json -w "%{http_code}" --max-time 30 "$URL" || echo "000")
+                if [ "$CODE" = "200" ]; then
+                  echo "Healthy."
+                  cat /tmp/health.json
+                  exit 0
+                fi
+                echo "Attempt $attempt: HTTP $CODE — retrying in 15s"
+                sleep 15
+              done
+              echo "##vso[task.logissue type=error]Health check failed after 5 attempts (last HTTP $CODE)."
+              cat /tmp/health.json 2>/dev/null || true
+              exit 1
+            displayName: 'Health check'

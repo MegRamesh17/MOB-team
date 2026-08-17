@@ -96,3 +96,22 @@ module "appservice" {
   key_vault_uri             = module.keyvault.key_vault_uri
   app_integration_subnet_id = module.network.app_integration_subnet_id
 }
+
+module "staticwebapp" {
+  source               = "./modules/staticwebapp"
+  environment          = var.environment
+  resource_group_name  = data.azurerm_resource_group.mob_rg.name
+  # No /api suffix: web-app/src/api.js does BASE + "/api/login" etc., so BASE
+  # itself is just the host -- an /api suffix here would double up to .../api/api/....
+  api_base_url         = "https://${module.functions.function_app_name}.azurewebsites.net"
+}
+
+# Read by the Azure DevOps frontend pipeline to authenticate its deploy
+# (`az staticwebapp` / the SWA deploy task takes this as a bearer token). Not
+# wired into Key Vault: unlike the app secrets above, nothing at runtime reads
+# this -- only a human copying it into a DevOps pipeline variable once needs it,
+# via `terraform output -raw swa_deploy_token`.
+output "swa_deploy_token" {
+  value     = module.staticwebapp.api_key
+  sensitive = true
+}

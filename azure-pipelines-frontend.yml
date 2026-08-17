@@ -1,0 +1,80 @@
+# Azure DevOps pipeline: build and deploy web-app/ to Azure Static Web Apps.
+#
+# Nothing deployed this before -- there was no frontend hosting infra and no deploy
+# path in either GitHub Actions or here. infra/modules/staticwebapp provisions the
+# Static Web App (mob-frontend-<env>) via terraform.yml in GitHub Actions, same as
+# every other resource; this pipeline only ships built static files to it.
+#
+# ONE-TIME SETUP REQUIRED IN THE DEVOPS PROJECT:
+#   1. After `terraform apply` has created mob-frontend-dev, get its deploy token:
+#        terraform output -raw swa_deploy_token
+#      Pipelines -> Library -> new secret variable group `mob-frontend-secrets`
+#      with a variable named SWA_DEPLOY_TOKEN set to that value. The token is
+#      static-web-app-specific and does not rotate on its own; regenerate it in the
+#      Azure Portal (Static Web App -> Overview -> Manage deployment token) if it
+#      ever leaks, and update the DevOps variable to match.
+#   2. Nothing to configure for VITE_API_BASE -- web-app/src/api.js reads it via
+#      import.meta.env.VITE_API_BASE, which Vite only ever bakes in at BUILD time
+#      (it is not readable at runtime, so it cannot live as an Azure resource app
+#      setting -- see infra/modules/staticwebapp/main.tf). This pipeline sets it as
+#      a build-step environment variable below, from the same functionAppName this
+#      pipeline's backend counterpart deploys to.
+#
+# Trigger: push to main, paths under web-app/. Independent of the backend pipeline
+# and of GitHub Actions' terraform apply -- if mob-frontend-dev does not exist yet,
+# this pipeline's deploy step fails with a clear "app not found" error rather than
+# creating it; run terraform apply first.
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - web-app/*
+
+# Same reasoning as azure-pipelines-backend.yml's pr: none -- without this, opening
+# any PR against this repo would also deploy the frontend before merge.
+pr: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - group: mob-frontend-secrets
+  - name: functionAppName
+    value: 'mob-functions-dev'
+
+stages:
+  - stage: BuildAndDeploy
+    jobs:
+      - job: DeployStaticWebApp
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '20.x'
+
+          - bash: |
+              npm ci
+              npm run build
+            workingDirectory: web-app
+            displayName: 'npm ci && npm run build'
+            env:
+              VITE_API_BASE: 'https://$(functionAppName).azurewebsites.net'
+
+          # Same reasoning as the backend pipeline's api.zip publish: this captures
+          # exactly what npm run build produced, downloadable from the run, whether
+          # or not the deploy step after it succeeds.
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish dist/ as a pipeline artifact'
+            inputs:
+              targetPath: 'web-app/dist'
+              artifact: 'frontend-dist-$(Build.BuildId)'
+
+          - task: AzureStaticWebApp@0
+            displayName: 'Deploy to Azure Static Web Apps'
+            inputs:
+              app_location: 'web-app'
+              output_location: 'dist'
+              skip_app_build: true
+              azure_static_web_apps_api_token: $(SWA_DEPLOY_TOKEN)
