@@ -36,6 +36,14 @@ trigger:
       - db/seed/*
       - api/*
 
+# Azure Pipelines' default, if this is omitted, is to ALSO run on every pull request
+# regardless of what files it touches -- not just pushes to main like the header
+# comment above describes. Without this, opening any PR against this repo silently
+# re-runs Migrate/Seed/DeployBackend against live Azure resources before merge, which
+# is how PR #12 (the very fix for this pipeline) ended up triggering a live run of
+# itself. Explicit opt-out, not an oversight.
+pr: none
+
 pool:
   vmImage: 'ubuntu-latest'
 
