@@ -58,6 +58,15 @@ stages:
             env:
               VITE_API_BASE: 'https://$(functionAppName).azurewebsites.net'
 
+          # Same reasoning as the backend pipeline's api.zip publish: this captures
+          # exactly what npm run build produced, downloadable from the run, whether
+          # or not the deploy step after it succeeds.
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish dist/ as a pipeline artifact'
+            inputs:
+              targetPath: 'web-app/dist'
+              artifact: 'frontend-dist-$(Build.BuildId)'
+
           - task: AzureStaticWebApp@0
             displayName: 'Deploy to Azure Static Web Apps'
             inputs:

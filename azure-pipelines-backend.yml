@@ -208,6 +208,16 @@ stages:
               archiveType: 'zip'
               archiveFile: '$(Build.ArtifactStagingDirectory)/api.zip'
 
+          # Published BEFORE the deploy step, deliberately: if the deploy or health
+          # check fails, the exact package that was about to ship (or just did) is
+          # still downloadable from this run for inspection -- e.g. to check whether
+          # a dependency actually built, without needing Azure Portal/CLI access.
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish api.zip as a pipeline artifact'
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/api.zip'
+              artifact: 'api-package-$(Build.BuildId)'
+
           - task: AzureFunctionApp@2
             displayName: 'Deploy to the Function App'
             inputs:
