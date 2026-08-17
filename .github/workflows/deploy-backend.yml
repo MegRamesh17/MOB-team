@@ -1,5 +1,10 @@
 name: deploy-backend
 
+# SUPERSEDED by azure-pipelines-backend.yml's DeployBackend stage in Azure DevOps.
+# Already workflow_dispatch-only (see below), so no trigger change was needed here to
+# stop it racing the DevOps pipeline -- kept for manual emergency use only, same as
+# migrate-database.yml and seed-database.yml.
+#
 # Deploys api/ to the Function App. Until this existed, api/function_app.py and
 # api/auth/login.py were in git and not in Azure — terraform.yml provisions the Function
 # App but never puts code in it.
