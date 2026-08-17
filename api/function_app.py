@@ -14,12 +14,13 @@ Two rules this file exists to enforce:
      arithmetic here in code. No model call decides a score, because a disputed result
      has to be reproducible and explainable.
 
-Auth is a stub for the demo — see `_caller_id`. Replace with Entra before real use.
+Auth is real: every endpoint resolves the caller from a signed bearer token via
+shared.auth.get_current_employee, and refuses the request when there isn't one.
+review/decide additionally requires manager tier or above.
 """
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import uuid
@@ -31,6 +32,8 @@ import azure.functions as func
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
 from auth.login import bp as auth_bp
+from shared.auth import get_current_employee, require_manager
+
 app.register_functions(auth_bp)
 
 PASSING_SCORE = float(os.getenv("QUIZGEN_PASSING_SCORE", "80"))
@@ -118,23 +121,21 @@ def _error(status: int, title: str, detail: str = "") -> func.HttpResponse:
     return _json({"title": title, "detail": detail, "status": status}, status)
 
 
-def _caller_id(req: func.HttpRequest) -> str:
+def _learner_key(identity) -> str:
     """
-    Who is calling.
+    The string that identifies this learner in the quizgen tables.
 
-    DEMO STUB. Real deployments read the platform-injected x-ms-client-principal header
-    (App Service / Static Web Apps set it after validating the token) and match the
-    object id to an employee record. Until Entra is wired up this trusts a header, which
-    is fine behind a demo and unacceptable in production.
+    Email, because it is stable, unique (Employees.email is NOT NULL UNIQUE from 001)
+    and legible when reading GeneratedQuizAttempts by hand. It comes from a signed
+    token, so unlike the header it replaced it cannot be chosen by the caller.
     """
-    principal = req.headers.get("x-ms-client-principal")
-    if principal:
-        try:
-            claims = json.loads(base64.b64decode(principal).decode("utf-8"))
-            return claims.get("userId") or claims.get("userDetails") or "unknown"
-        except Exception:  # noqa: BLE001
-            pass
-    return req.headers.get("x-learner-id", "demo-learner")
+    return identity.email
+
+
+def _unauthorized() -> func.HttpResponse:
+    return _error(401, "Unauthorized",
+                  "Sign in at POST /api/login and send the token as "
+                  "'Authorization: Bearer <token>'.")
 
 
 def _now() -> str:
@@ -179,7 +180,10 @@ def health(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="me", methods=["GET"])
 def get_me(req: func.HttpRequest) -> func.HttpResponse:
-    learner = _caller_id(req)
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    learner = _learner_key(identity)
     try:
         with _conn() as c:
             cur = c.cursor()
@@ -221,6 +225,10 @@ def get_me(req: func.HttpRequest) -> func.HttpResponse:
 @app.route(route="topics", methods=["GET"])
 def list_topics(req: func.HttpRequest) -> func.HttpResponse:
     """Approved question counts per topic and role — what a catalogue screen needs."""
+    # No answer keys here, but it does enumerate every role and topic the company
+    # trains on, which is not something to hand out unauthenticated.
+    if get_current_employee(req) is None:
+        return _unauthorized()
     try:
         with _conn() as c:
             cur = c.cursor()
@@ -265,7 +273,10 @@ def start_quiz(req: func.HttpRequest) -> func.HttpResponse:
     No model call happens here — selection is a database query and arithmetic, which is
     why it is fast, free and reproducible.
     """
-    learner = _caller_id(req)
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    learner = _learner_key(identity)
     try:
         body = req.get_json()
     except ValueError:
@@ -373,7 +384,10 @@ def submit_quiz(req: func.HttpRequest) -> func.HttpResponse:
     MultiSelect is all-or-nothing: partial credit on a compliance question lets someone
     pass while still believing something false.
     """
-    learner = _caller_id(req)
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    learner = _learner_key(identity)
     try:
         body = req.get_json()
     except ValueError:
@@ -520,6 +534,14 @@ def submit_quiz(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="review/pending", methods=["GET"])
 def review_pending(req: func.HttpRequest) -> func.HttpResponse:
+    # This endpoint returns GeneratedOptions.is_correct. Unauthenticated, that published
+    # the answer key for the whole bank to anyone who could reach the host -- no sign-in,
+    # no role, no rate limit. Reviewing is a manager action in any case, so it takes the
+    # same gate as review/decide.
+    forbidden = require_manager(get_current_employee(req))
+    if forbidden:
+        return forbidden
+
     """Unreviewed questions, WITH answers — this endpoint is for reviewers, not learners."""
     limit = int(req.params.get("limit", "20"))
     try:
@@ -549,6 +571,10 @@ def review_pending(req: func.HttpRequest) -> func.HttpResponse:
 @app.route(route="review/decide", methods=["POST"])
 def review_decide(req: func.HttpRequest) -> func.HttpResponse:
     """Approve or reject. This is the gate before anything reaches a learner."""
+    identity = get_current_employee(req)
+    forbidden = require_manager(identity)
+    if forbidden:
+        return forbidden
     try:
         body = req.get_json()
     except ValueError:
@@ -556,7 +582,7 @@ def review_decide(req: func.HttpRequest) -> func.HttpResponse:
 
     ids = body.get("questionIds") or []
     decision = body.get("decision")
-    reviewer = _caller_id(req)
+    reviewer = _learner_key(identity)
 
     if decision not in ("Approved", "Rejected"):
         return _error(400, "Bad request", "decision must be 'Approved' or 'Rejected'")

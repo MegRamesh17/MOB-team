@@ -21,7 +21,7 @@ import os
 import azure.functions as func
 import bcrypt
 
-from shared.auth import create_token
+from shared.auth import create_token, get_current_employee
 
 bp = func.Blueprint()
 
@@ -151,3 +151,31 @@ def login(req: func.HttpRequest) -> func.HttpResponse:
 #
 #     from auth.login import bp as auth_bp
 #     app.register_functions(auth_bp)
+
+
+@bp.route(route="auth/me", methods=["GET"])
+def auth_me(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Who the bearer token says you are.
+
+    Exists so a browser holding a token can restore a session on refresh without either
+    decoding the JWT client-side or inferring identity from a data call. Reads the token
+    only -- no database round trip -- so it stays cheap enough to call on every page load.
+
+    A 401 here is the client's signal to drop its token and show sign-in, rather than
+    letting an expired token fail every subsequent request one at a time.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _error(401, "Unauthorized", "No valid bearer token.")
+
+    return _json({
+        "principal": {
+            "employee_id": identity.employee_id,
+            "email": identity.email,
+            "company_id": identity.company_id,
+            "access_role": identity.access_role,
+            "role_code": identity.role_code,
+            "manager_id": identity.manager_id,
+        }
+    })
