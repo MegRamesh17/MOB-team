@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import azure.functions as func
+from shared.auth import get_current_employee
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 

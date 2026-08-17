@@ -92,7 +92,11 @@ def create_token(
 
 def decode_token(token: str) -> Optional[Identity]:
     try:
-        payload = jwt.decode(token, _secret(), algorithms=[_ALGO])
+        secret = _secret()
+    except RuntimeError:
+        return None
+    try:
+        payload = jwt.decode(token, secret, algorithms=[_ALGO])
     except jwt.PyJWTError:
         return None
     try:
