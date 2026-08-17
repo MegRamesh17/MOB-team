@@ -2,3 +2,5 @@ azure-functions
 pyodbc
 reportlab
 azure-storage-blob
+PyJWT
+bcrypt

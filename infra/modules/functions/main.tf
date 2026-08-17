@@ -33,9 +33,14 @@ resource "azurerm_linux_function_app" "mob_functions" {
   app_settings = {
     "FUNCTIONS_WORKER_RUNTIME" = "python"
     "ENVIRONMENT"              = var.environment
-    "SQL_CONNECTION_STRING"    = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/sql-connection-string/)"
+    "SQL_SERVER"               = var.sql_server_fqdn
+    "SQL_DATABASE"             = var.sql_database_name
+    "SQL_USER"                 = var.sql_admin_username
+    "SQL_PASSWORD"             = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/sql-password/)"
     "COMMS_CONNECTION_STRING"  = var.comms_connection_string
     "AZURE_STORAGE_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/storage-connection-string/)"
+    "QUIZGEN_PASSING_SCORE"    = "80"
+    "QUIZGEN_QUIZ_LENGTH"      = "8"
   }
 
   identity {

@@ -35,7 +35,7 @@ resource "azurerm_key_vault_access_policy" "local_dev" {
   tenant_id    = data.azurerm_client_config.current.tenant_id
   object_id    = each.value
 
-  secret_permissions = ["Get", "List", "Delete"]
+  secret_permissions = ["Get", "List", "Set", "Delete"]
 }
 
 resource "azurerm_key_vault_secret" "sql_connection_string" {
@@ -48,6 +48,12 @@ resource "azurerm_key_vault_secret" "openai_api_key" {
   count        = var.openai_api_key != "" ? 1 : 0
   name         = "openai-api-key"
   value        = var.openai_api_key
+  key_vault_id = azurerm_key_vault.mob_kv.id
+}
+
+resource "azurerm_key_vault_secret" "sql_password" {
+  name         = "sql-password"
+  value        = var.sql_admin_password
   key_vault_id = azurerm_key_vault.mob_kv.id
 }
 

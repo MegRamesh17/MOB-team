@@ -43,6 +43,7 @@ module "keyvault" {
   pipeline_identity_object_id  = var.pipeline_identity_object_id
   sql_connection_string        = module.sql.connection_string
   storage_connection_string    = module.storage.primary_connection_string
+  sql_admin_password             = var.sql_admin_password
   openai_api_key                = var.openai_api_key
   function_app_principal_id    = module.functions.function_app_identity_principal_id
   local_dev_object_ids         = var.local_dev_object_ids
@@ -65,6 +66,8 @@ module "functions" {
   key_vault_uri               = module.keyvault.key_vault_uri
   comms_connection_string    = "placeholder-until-comms-unblocked"
   app_integration_subnet_id  = module.network.app_integration_subnet_id
+  sql_server_fqdn              = module.sql.server_fqdn
+  sql_database_name            = module.sql.database_name
 }
 module "appservice" {
   source                     = "./modules/appservice"
