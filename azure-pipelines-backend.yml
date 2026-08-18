@@ -70,6 +70,12 @@ stages:
   # ---------------------------------------------------------------------------
     jobs:
       - job: ApplyMigrations
+        # Default is 60 minutes. A hung ApplySeed run once burned the full hour with zero
+        # diagnostic output before this was added -- see the -t flags below, which are
+        # the same fix at the query level. This is the backstop for anything a query
+        # timeout wouldn't catch (the firewall-rule / apt-get steps have no timeout of
+        # their own either).
+        timeoutInMinutes: 15
         steps:
           - task: AzureCLI@2
             displayName: 'Install sqlcmd'
@@ -101,7 +107,7 @@ stages:
 
           - bash: |
               set -euo pipefail
-              sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -b -Q "
+              sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -b -t 120 -Q "
                 IF OBJECT_ID('dbo.SchemaMigrations') IS NULL
                 CREATE TABLE dbo.SchemaMigrations (
                   filename NVARCHAR(255) PRIMARY KEY,
@@ -110,24 +116,30 @@ stages:
 
               for file in db/migrations/*.sql; do
                 fname=$(basename "$file")
-                already_applied=$(sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -h -1 \
+                already_applied=$(sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -h -1 -t 120 \
                   -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM dbo.SchemaMigrations WHERE filename = '$fname'" | tr -d '[:space:]')
                 if [ "$already_applied" = "0" ]; then
                   echo "Applying $fname"
                   # Same fix as GitHub Actions' migrate-database.yml: check the exit code
                   # before recording the migration as applied, so a partial failure can
                   # never be marked done.
-                  if ! sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -b -i "$file"; then
+                  if ! sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -b -t 120 -i "$file"; then
                     echo "##vso[task.logissue type=error]Migration $fname failed -- NOT recording it as applied."
                     exit 1
                   fi
-                  sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -b \
+                  sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -b -t 120 \
                     -Q "INSERT INTO dbo.SchemaMigrations (filename) VALUES ('$fname')"
                 else
                   echo "Skipping $fname - already applied"
                 fi
               done
             displayName: 'Run only new migrations'
+            # -t 120: sqlcmd has no query timeout by default, so a blocked/hung statement
+            # waits forever -- ApplySeed once burned the full 60-minute job timeout this
+            # way with zero indication of what it was stuck on. 120s is generous for
+            # anything this pipeline actually does (small DDL/DML against a Basic-tier
+            # database); a real hang now fails fast with a specific SQL error instead.
+            #
             # Secret pipeline variables are never substituted into $(...) text inside a
             # script -- that would write the plaintext password to the generated script
             # file on disk. They have to be explicitly mapped to a real shell env var
@@ -164,6 +176,9 @@ stages:
     dependsOn: Migrate
     jobs:
       - job: ApplySeed
+        # Default is 60 minutes -- see the identical note on ApplyMigrations above. This
+        # is the job that actually hit the full 60-minute timeout in practice.
+        timeoutInMinutes: 15
         steps:
           - task: AzureCLI@2
             displayName: 'Install sqlcmd'
@@ -195,9 +210,14 @@ stages:
               set -euo pipefail
               for file in db/seed/org_seed.sql db/seed/seed_data.sql; do
                 echo "--- $file"
-                sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -b -i "$file"
+                sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -b -t 120 -i "$file"
               done
             displayName: 'Apply seed data (safe to re-run -- guarded by WHERE NOT EXISTS)'
+            # -t 120: see the identical note on the Migrate stage's "Run only new
+            # migrations" step -- this is the step that actually hung for the full 60
+            # minutes in practice, with sqlcmd waiting indefinitely and no indication of
+            # which statement it was stuck on.
+            #
             # See the same env: note on the Migrate stage's "Run only new migrations" step
             # -- secret variables need this explicit mapping, $(...) alone won't work, and
             # it has to source from $(sql-password) (the Key Vault secret's own name), not
