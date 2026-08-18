@@ -73,12 +73,16 @@ variable "azure_openai_endpoint" {
 
 variable "quizgen_provider" {
   description = <<-EOT
-    'mock' (default, free, deterministic, no credentials needed) or 'azure' (real gpt-5,
-    roughly a cent per question -- see requirements.txt's note on cost). Matches
-    src/quizgen/config.py's QUIZGEN_PROVIDER, which already defaults to 'mock' if this is
-    never set -- stated explicitly here so switching to the real model is one variable,
-    not a portal setting nobody remembers exists.
+    'mock' (free, deterministic, no credentials needed) or 'azure' (real gpt-5, roughly a
+    cent per question -- see requirements.txt's note on cost). Matches
+    src/quizgen/config.py's QUIZGEN_PROVIDER.
+
+    Defaults to 'azure' now that OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT are set as
+    GitHub secrets and wired through terraform.yml -- CONFIG.require_azure() fails the
+    generation request loudly (503, "Role mapping needs the real model") rather than
+    silently falling back to mock if either secret is ever unset, so this is safe to
+    default on rather than something that quietly degrades.
   EOT
   type        = string
-  default     = "mock"
+  default     = "azure"
 }
