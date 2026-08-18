@@ -52,3 +52,9 @@ variable "doc_intelligence_endpoint" {
   type        = string
   default     = ""
 }
+
+variable "additional_frontend_origins" {
+  description = "Additional exact frontend origins, such as a future custom domain"
+  type        = list(string)
+  default     = []
+}

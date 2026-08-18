@@ -42,3 +42,8 @@ pyflakes==3.2.0
 # pypdf when DOCUMENT_INTELLIGENCE_ENDPOINT is unset, so this is not required offline.
 azure-ai-documentintelligence==1.0.2
 reportlab
+
+# Parses every .sql file as T-SQL. Catches typos and malformed statements only — it is
+# a parser, not SQL Server, and would not have caught the bugs that reached Azure.
+# See tests/test_sql_parses.py.
+sqlfluff==4.3.0

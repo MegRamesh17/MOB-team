@@ -51,22 +51,22 @@ module "network" {
   resource_group_name = var.resource_group_name
   location            = var.location
 }
-  
+
 module "keyvault" {
-  source                       = "./modules/keyvault"
-  environment                  = var.environment
-  resource_group_name          = var.resource_group_name
-  location                     = var.location
-  pipeline_identity_object_id  = var.pipeline_identity_object_id
-  sql_connection_string        = module.sql.connection_string
-  storage_connection_string    = module.storage.primary_connection_string
-  sql_admin_password            = var.sql_admin_password
-  openai_api_key                = var.openai_api_key
-  function_app_principal_id    = module.functions.function_app_identity_principal_id
-  local_dev_object_ids         = var.local_dev_object_ids
-  jwt_signing_secret           = random_password.jwt_signing_secret.result
+  source                      = "./modules/keyvault"
+  environment                 = var.environment
+  resource_group_name         = var.resource_group_name
+  location                    = var.location
+  pipeline_identity_object_id = var.pipeline_identity_object_id
+  sql_connection_string       = module.sql.connection_string
+  storage_connection_string   = module.storage.primary_connection_string
+  sql_admin_password          = var.sql_admin_password
+  openai_api_key              = var.openai_api_key
+  function_app_principal_id   = module.functions.function_app_identity_principal_id
+  local_dev_object_ids        = var.local_dev_object_ids
+  jwt_signing_secret          = random_password.jwt_signing_secret.result
 }
-    
+
 # TEMPORARILY DISABLED: blocked on Microsoft.Communication provider
 # registration - subscription lacks permission, admin request pending.
 # Re-enable once registered; also switch functions' comms_connection_string
@@ -87,6 +87,10 @@ module "functions" {
   app_integration_subnet_id = module.network.app_integration_subnet_id
   sql_server_fqdn           = module.sql.server_fqdn
   sql_database_name         = module.sql.database_name
+  allowed_origins = concat(
+    ["https://${module.staticwebapp.default_host_name}"],
+    var.additional_frontend_origins,
+  )
 }
 module "appservice" {
   source                    = "./modules/appservice"
@@ -98,12 +102,9 @@ module "appservice" {
 }
 
 module "staticwebapp" {
-  source               = "./modules/staticwebapp"
-  environment          = var.environment
-  resource_group_name  = data.azurerm_resource_group.mob_rg.name
-  # No /api suffix: web-app/src/api.js does BASE + "/api/login" etc., so BASE
-  # itself is just the host -- an /api suffix here would double up to .../api/api/....
-  api_base_url         = "https://${module.functions.function_app_name}.azurewebsites.net"
+  source              = "./modules/staticwebapp"
+  environment         = var.environment
+  resource_group_name = data.azurerm_resource_group.mob_rg.name
 }
 
 # Read by the Azure DevOps frontend pipeline to authenticate its deploy

@@ -9,6 +9,14 @@ permissions:
   id-token: write
   contents: read
 
+# plan (every PR) and deploy (every push to main) both touch the same Terraform
+# state with nothing serializing them -- overlapping runs race for the state lock.
+# Queuing them here, rather than just widening -lock-timeout below, is what
+# actually stops the race instead of just waiting longer for it to resolve.
+concurrency:
+  group: terraform-azure-state
+  cancel-in-progress: false
+
 jobs:
   plan:
     if: github.event_name == 'pull_request'
@@ -23,7 +31,7 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
       - run: terraform init
         working-directory: infra
-      - run: terraform plan -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}" -var="pipeline_identity_object_id=${{ secrets.PIPELINE_IDENTITY_OBJECT_ID }}"
+      - run: terraform plan -lock-timeout=5m -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}" -var="pipeline_identity_object_id=${{ secrets.PIPELINE_IDENTITY_OBJECT_ID }}"
         working-directory: infra
         env:
           TF_VAR_local_dev_object_ids: ${{ secrets.LOCAL_DEV_OBJECT_IDS }}
@@ -41,7 +49,7 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
       - run: terraform init
         working-directory: infra
-      - run: terraform apply -auto-approve -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}" -var="pipeline_identity_object_id=${{ secrets.PIPELINE_IDENTITY_OBJECT_ID }}"
+      - run: terraform apply -auto-approve -lock-timeout=5m -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}" -var="pipeline_identity_object_id=${{ secrets.PIPELINE_IDENTITY_OBJECT_ID }}"
         working-directory: infra
         env:
           TF_VAR_local_dev_object_ids: ${{ secrets.LOCAL_DEV_OBJECT_IDS }}

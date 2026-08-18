@@ -29,3 +29,7 @@ web-app/dist/
 # Local credential store and session signing key — never commit these.
 # (Re-added: a revert removed this line, and .auth/ was swept in by `git add -A`.)
 .auth/
+
+# Local dev server output and the local SQLite bank — swept in by `git add -A` once already.
+demo-data/*.log
+demo-data/*.db
