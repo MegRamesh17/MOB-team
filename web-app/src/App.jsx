@@ -381,7 +381,7 @@ function Login({ onLogin }) {
 }
 
 // ---------- Shell ----------
-function Shell({ name, roleCode, manages, active, setActive, onLogout, children }) {
+function Shell({ name, department, manages, active, setActive, onLogout, children }) {
   // One nav for everyone. Managing people ADDS a tab; it does not replace the rest.
   //
   // This used to be two lists, with managerNav substituted for employeeNav — so a
@@ -425,7 +425,7 @@ function Shell({ name, roleCode, manages, active, setActive, onLogout, children 
             </div>
             <div>
               <div style={{ color: C.ink }} className="text-sm font-semibold leading-tight">{name}</div>
-              <div style={{ color: C.sub }} className="text-xs">{roleCode}</div>
+              <div style={{ color: C.sub }} className="text-xs">{department || "—"}</div>
             </div>
           </div>
           <button onClick={onLogout} style={{ color: C.sub }} className="flex items-center gap-2 text-xs font-semibold hover:opacity-80">
@@ -2221,7 +2221,7 @@ export default function App() {
   return (
     <Shell
       name={auth.name || auth.email}
-      roleCode={auth.role_code}
+      department={auth.department}
       manages={manages}
       active={quizViews.includes(view) ? "dashboard" : view}
       setActive={goto}
