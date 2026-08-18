@@ -403,8 +403,13 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
   ];
 
   return (
-    <div style={{ ...font, background: C.paper, minHeight: "100vh" }} className="flex">
-      <aside style={{ borderColor: C.line }} className="w-60 border-r flex flex-col shrink-0">
+    <div style={{ ...font, background: C.paper, height: "100vh" }} className="flex overflow-hidden">
+      {/* Locked to the viewport height (not min-height) with overflow-hidden, so this
+          row never grows past 100vh: the sidebar -- profile chip and sign-out included
+          -- stays put while a long page like Profile scrolls inside <main> only.
+          min-height let the whole row grow with the page's content instead, which
+          dragged the sidebar along with it and buried sign-out below the fold. */}
+      <aside style={{ borderColor: C.line }} className="w-60 border-r flex flex-col shrink-0 h-full overflow-y-auto">
         <div className="px-5 py-5 flex items-center"><Logo size={26} /></div>
         <nav className="flex-1 px-3 py-4 space-y-1">
           {nav.map((n) => {
