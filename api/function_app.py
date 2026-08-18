@@ -1451,7 +1451,7 @@ def list_documents(req: func.HttpRequest) -> func.HttpResponse:
         return _json({"documents": docs, "files": [], "generator": generator_name(),
                       "uploadDir": ""})
     except Exception as exc:  # noqa: BLE001
-        return _error(500, "Internal error", type(exc).__name__)
+        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
 
 
 @app.route(route="documents", methods=["POST"])
@@ -1559,7 +1559,7 @@ def upload_document(req: func.HttpRequest) -> func.HttpResponse:
             "needsConfirmation": True,
         }, 201)
     except Exception as exc:  # noqa: BLE001
-        return _error(500, "Internal error", type(exc).__name__)
+        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
 
 
 @app.route(route="documents/confirm", methods=["POST"])
@@ -1645,7 +1645,7 @@ def confirm_document(req: func.HttpRequest) -> func.HttpResponse:
             "jobId": job_id,
         }, 201)
     except Exception as exc:  # noqa: BLE001
-        return _error(500, "Internal error", type(exc).__name__)
+        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
 
 
 @app.route(route="jobs/{jobId}", methods=["GET"])
@@ -1691,7 +1691,7 @@ def list_roles(req: func.HttpRequest) -> func.HttpResponse:
             ],
         })
     except Exception as exc:  # noqa: BLE001
-        return _error(500, "Internal error", type(exc).__name__)
+        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
 
 
 @app.route(route="roles", methods=["POST"])
