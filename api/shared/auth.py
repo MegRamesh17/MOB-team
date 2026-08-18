@@ -66,6 +66,11 @@ class Identity:
     # so /auth/me can hand it back from the token alone, same reason name is.
     department: str = ""
 
+    # Org-chart job title (e.g. "Director of DevOps"), for display only, same reason as
+    # department above -- distinct from role_code, which is the training track, not the
+    # person's actual title.
+    title: str = ""
+
 
 def create_token(
     employee_id: int,
@@ -80,6 +85,7 @@ def create_token(
     # not a missing-argument error at the call site.
     name: str = "",
     department: str = "",
+    title: str = "",
 ) -> str:
     now = datetime.now(timezone.utc)
     payload = {
@@ -91,6 +97,7 @@ def create_token(
         "role_code": (role_code or "ALL").upper(),
         "manager_id": manager_id,
         "department": department or "",
+        "title": title or "",
         "iat": now,
         "exp": now + timedelta(hours=TOKEN_TTL_HOURS),
     }
@@ -121,6 +128,7 @@ def decode_token(token: str) -> Optional[Identity]:
             # .get with a default, same reason as role_code above: a token minted
             # before this claim existed should still decode.
             department=payload.get("department") or "",
+            title=payload.get("title") or "",
         )
     except (KeyError, ValueError, TypeError):
         return None

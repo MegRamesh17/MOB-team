@@ -381,7 +381,7 @@ function Login({ onLogin }) {
 }
 
 // ---------- Shell ----------
-function Shell({ name, department, manages, active, setActive, onLogout, children }) {
+function Shell({ name, department, title, manages, active, setActive, onLogout, children }) {
   // One nav for everyone. Managing people ADDS a tab; it does not replace the rest.
   //
   // This used to be two lists, with managerNav substituted for employeeNav — so a
@@ -426,6 +426,7 @@ function Shell({ name, department, manages, active, setActive, onLogout, childre
             <div>
               <div style={{ color: C.ink }} className="text-sm font-semibold leading-tight">{name}</div>
               <div style={{ color: C.sub }} className="text-xs">{department || "—"}</div>
+              {title && <div style={{ color: C.sub }} className="text-[11px] opacity-80">{title}</div>}
             </div>
           </div>
           <button onClick={onLogout} style={{ color: C.sub }} className="flex items-center gap-2 text-xs font-semibold hover:opacity-80">
@@ -616,7 +617,7 @@ function Dashboard({ name, onOpenPath, onOpenTraining }) {
         <div style={{ borderColor: C.line }} className="border rounded-xl p-6 bg-white text-center">
           <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">No trainings yet</p>
           <p style={{ color: C.sub }} className="text-xs">
-            The question bank is empty. Run <code>quizgen ingest</code> then <code>quizgen generate</code>.
+            Nothing has been assigned to your role yet. Check back soon, or ask your manager if you think this is unexpected.
           </p>
         </div>
       )}
@@ -1943,6 +1944,7 @@ function Profile({ principal }) {
     name: principal?.name || principal?.email || persona.name,
     email: principal?.email || persona.email,
     role: principal?.department || persona.role,
+    title: principal?.title || "",
   };
   const { data: meData, loading, error, reload } = useAsync(() => api.me(), []);
   const { data: certData } = useAsync(() => api.certificates().catch(() => ({ certificates: [] })), []);
@@ -1981,6 +1983,7 @@ function Profile({ principal }) {
           <div>
             <h2 style={display} className="text-xl font-bold mb-1">{p.name}</h2>
             <p className="text-sm opacity-90 flex items-center gap-1.5 mb-0.5"><Briefcase size={13} /> {p.role}</p>
+            {p.title && <p className="text-sm opacity-90 mb-0.5 pl-[19px]">{p.title}</p>}
             <p className="text-sm opacity-90 flex items-center gap-1.5"><Mail size={13} /> {p.email}</p>
           </div>
         </div>
@@ -2222,6 +2225,7 @@ export default function App() {
     <Shell
       name={auth.name || auth.email}
       department={auth.department}
+      title={auth.title}
       manages={manages}
       active={quizViews.includes(view) ? "dashboard" : view}
       setActive={goto}

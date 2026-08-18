@@ -78,6 +78,7 @@ PERSON = dict(
     role_code="SWE_MANAGER",
     manager_id=None,
     department="Software Development",
+    title="Software Engineering Manager",
 )
 
 
@@ -91,14 +92,15 @@ def _local_token():
         employee_id=PERSON["employee_id"], email=PERSON["email"],
         company_id=PERSON["company_id"], access_role=PERSON["access_role"],
         name=PERSON["name"], role_code=PERSON["role_code"],
-        manager_id=PERSON["manager_id"], department=PERSON["department"]))
+        manager_id=PERSON["manager_id"], department=PERSON["department"],
+        title=PERSON["title"]))
 
 
 def _deployed_token():
     return deployed.create_token(
         PERSON["employee_id"], PERSON["email"], PERSON["company_id"],
         PERSON["access_role"], PERSON["role_code"], PERSON["manager_id"],
-        PERSON["name"], PERSON["department"])
+        PERSON["name"], PERSON["department"], PERSON["title"])
 
 
 class TestTokenParity(unittest.TestCase):
@@ -134,6 +136,7 @@ class TestTokenParity(unittest.TestCase):
             self.assertEqual(identity.role_code, PERSON["role_code"])
             self.assertEqual(identity.access_role, PERSON["access_role"])
             self.assertEqual(identity.department, PERSON["department"])
+            self.assertEqual(identity.title, PERSON["title"])
 
 
 class TestPrincipalParity(unittest.TestCase):
@@ -151,6 +154,7 @@ class TestPrincipalParity(unittest.TestCase):
             "role_code": dep.role_code,
             "manager_id": dep.manager_id,
             "department": dep.department,
+            "title": dep.title,
         }
         self.assertEqual(sorted(local), sorted(deployed_shape))
         self.assertEqual(local, deployed_shape)
