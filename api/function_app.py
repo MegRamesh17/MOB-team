@@ -260,16 +260,44 @@ def get_me(req: func.HttpRequest) -> func.HttpResponse:
             )
             stats = _rows(cur)[0]
 
+            # For the streak and the two one-time badges, which need each attempt's
+            # own date and score rather than just the totals above.
+            cur.execute(
+                """SELECT submitted_at, score_percent
+                   FROM dbo.GeneratedQuizAttempts
+                   WHERE learner_id = ? AND submitted_at IS NOT NULL""",
+                learner,
+            )
+            # str()'d here, same as _certificates_for's issued_at/expires_at: pyodbc
+            # returns a datetime, and qscore.py's _parse expects an ISO string like
+            # every other caller gives it.
+            submitted_attempts = [
+                {"submitted_at": str(r["submitted_at"]), "score_percent": r["score_percent"]}
+                for r in _rows(cur)
+            ]
+
+            requirements = _role_requirements(cur, identity.role_code, identity.company_id)
+            held = _certificates_for(cur, identity.employee_id, identity.company_id)
+
         weak = [
             m for m in mastery
             if m["answered"] >= MIN_ANSWERS
             and float(m["accuracy_percent"]) < WEAK_THRESHOLD * 100
         ]
+
+        streak = qscore.training_streak(
+            [a["submitted_at"] for a in submitted_attempts])
+        overall_q_score = qscore.standing(requirements, held)["overall"].q_score
+        badges = qscore.earned_badges(
+            attempts=submitted_attempts, streak=streak, q_score=overall_q_score)
+
         return _json(
             {
                 "learnerId": learner,
                 "attempts": stats.get("attempts") or 0,
                 "passed": stats.get("passed") or 0,
+                "streak": streak,
+                "badges": badges,
                 "masteryByTopic": mastery,
                 "weakTopics": [m["topic"] for m in weak],
             }

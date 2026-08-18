@@ -565,10 +565,20 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _me(self):
+        from quizgen import qscore
+
+        identity = self._require()
+        if identity is None:
+            return None
+
         learner = self._learner()
         with Bank(DB, self._company()) as bank:
             mastery = bank.mastery(learner)
             attempts = bank.attempt_count(learner)
+            submitted = bank.submitted_attempts(learner)
+            self._seed_requirements_if_empty(bank)
+            requirements = bank.role_requirements(identity.role_code)
+            held = bank.certificates(identity.email)
 
         topics = [
             {
@@ -585,9 +595,15 @@ class Handler(BaseHTTPRequestHandler):
         weak = [t for t in topics
                 if t["answered"] >= MIN_ANSWERS and t["accuracyPercent"] < WEAK_THRESHOLD * 100]
 
+        streak = qscore.training_streak([a["submitted_at"] for a in submitted])
+        overall_q_score = qscore.standing(requirements, held)["overall"].q_score
+        badges = qscore.earned_badges(attempts=submitted, streak=streak, q_score=overall_q_score)
+
         self._send({
             "learnerId": learner,
             "attempts": attempts,
+            "streak": streak,
+            "badges": badges,
             "topics": topics,
             "weakTopics": [t["topic"] for t in weak],
             "passingScore": PASSING_SCORE,

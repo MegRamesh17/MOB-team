@@ -648,6 +648,21 @@ class Bank:
         ).fetchone()
         return row["n"] if row else 0
 
+    def submitted_attempts(self, learner_id: str) -> List[Dict]:
+        """
+        Every submitted attempt's date and score, for qscore.training_streak and
+        qscore.earned_badges -- attempt_count above only has the total, not each
+        attempt's own submitted_at/score_percent.
+        """
+        return [
+            {"submitted_at": r["submitted_at"], "score_percent": r["score_percent"]}
+            for r in self.conn.execute(
+                "SELECT submitted_at, score_percent FROM attempts "
+                "WHERE learner_id = :learner AND submitted_at IS NOT NULL" + self._where(),
+                self._params(learner=learner_id),
+            )
+        ]
+
     def stats(self) -> Dict[str, int]:
         # Counts are tenant-scoped like everything else. An unscoped total would report
         # another company's volume on this company's dashboard — less severe than leaking
