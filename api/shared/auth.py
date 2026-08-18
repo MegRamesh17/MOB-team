@@ -61,6 +61,11 @@ class Identity:
     # carrying it here saves a query on every request that needs the reporting line.
     manager_id: Optional[int] = None
 
+    # Org-chart department name (e.g. "Software Development"), for display only -- never
+    # used for authorization, that's what access_role and role_code are for. Carried here
+    # so /auth/me can hand it back from the token alone, same reason name is.
+    department: str = ""
+
 
 def create_token(
     employee_id: int,
@@ -74,6 +79,7 @@ def create_token(
     # shifts every argument after it -- the failure is a type error somewhere unrelated,
     # not a missing-argument error at the call site.
     name: str = "",
+    department: str = "",
 ) -> str:
     now = datetime.now(timezone.utc)
     payload = {
@@ -84,6 +90,7 @@ def create_token(
         "name": name or "",
         "role_code": (role_code or "ALL").upper(),
         "manager_id": manager_id,
+        "department": department or "",
         "iat": now,
         "exp": now + timedelta(hours=TOKEN_TTL_HOURS),
     }
@@ -111,6 +118,9 @@ def decode_token(token: str) -> Optional[Identity]:
             # existed still decodes instead of logging everyone out on deploy.
             role_code=(payload.get("role_code") or "ALL").upper(),
             manager_id=int(manager_id) if manager_id is not None else None,
+            # .get with a default, same reason as role_code above: a token minted
+            # before this claim existed should still decode.
+            department=payload.get("department") or "",
         )
     except (KeyError, ValueError, TypeError):
         return None
