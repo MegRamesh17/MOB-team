@@ -60,22 +60,29 @@ class SqlBank:
             # MERGE rather than a blind INSERT: re-uploading the same document (a
             # manager fixing a typo and re-saving) must update the chunk in place, not
             # duplicate it or fail on the primary key.
+            # company_id is NOT NULL on this table (020_add_company_to_quizgen.sql) --
+            # both branches below must set it, or SQL Server rejects the write. It was
+            # missing here originally on the wrong assumption (stated in the old
+            # comment on all_chunks below, now corrected) that this column did not
+            # exist -- the first real upload hit that immediately with a 500.
             cur.execute(
                 """MERGE dbo.SourceChunks AS target
                    USING (SELECT ? AS chunk_id) AS src ON target.chunk_id = src.chunk_id
                    WHEN MATCHED THEN UPDATE SET
                        doc_id = ?, doc_title = ?, section = ?, topic = ?,
                        page_start = ?, page_end = ?, chunk_text = ?, container = ?,
-                       role_scope = ?
+                       role_scope = ?, company_id = ?
                    WHEN NOT MATCHED THEN INSERT
                        (chunk_id, doc_id, doc_title, section, topic, page_start,
-                        page_end, chunk_text, container, role_scope, source_type)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'document');""",
+                        page_end, chunk_text, container, role_scope, source_type,
+                        company_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'document', ?);""",
                 c.chunk_id,
                 c.doc_id, c.doc_title, c.section, c.topic, c.page_start, c.page_end,
-                c.text, c.container, c.role_scope,
+                c.text, c.container, c.role_scope, self.company_id,
                 c.chunk_id, c.doc_id, c.doc_title, c.section, c.topic,
                 c.page_start, c.page_end, c.text, c.container, c.role_scope,
+                self.company_id,
             )
             n += 1
         self.conn.commit()
@@ -83,18 +90,18 @@ class SqlBank:
 
     def all_chunks(self) -> List[Chunk]:
         cur = self.conn.cursor()
+        # 020_add_company_to_quizgen.sql DOES add company_id to SourceChunks (an
+        # earlier comment here claimed otherwise and was wrong -- see save_chunks'
+        # MERGE, which hit that column's NOT NULL constraint on the first real
+        # upload). Scoped here the same way every other tenant-scoped table in this
+        # file is scoped, so one company never reads another's uploaded chunks.
         cur.execute(
             """SELECT chunk_id, doc_id, doc_title, topic, section, page_start,
                       page_end, chunk_text, container, role_scope
                  FROM dbo.SourceChunks
-                -- company_id lives on GeneratedQuestions/GenerationJobs, not on
-                -- SourceChunks directly (020 added it to the tables that needed
-                -- tenant-scoped serving; a chunk is scoped by which container/role it
-                -- was filed under, not a separate column). All chunks currently belong
-                -- to one company in practice; if a second tenant starts uploading,
-                -- SourceChunks needs its own company_id column the same way the other
-                -- 020 tables got one -- filed as a known gap, not silently assumed safe.
-                ORDER BY doc_title, page_start"""
+                WHERE company_id = ?
+                ORDER BY doc_title, page_start""",
+            self.company_id,
         )
         return [
             Chunk(
@@ -112,8 +119,8 @@ class SqlBank:
         for topic, role in mapping.items():
             cur.execute(
                 "UPDATE dbo.SourceChunks SET role_scope = ? "
-                "WHERE doc_title = ? AND topic = ?",
-                (role or "ALL").upper(), doc_title, topic,
+                "WHERE doc_title = ? AND topic = ? AND company_id = ?",
+                (role or "ALL").upper(), doc_title, topic, self.company_id,
             )
             n += cur.rowcount
         self.conn.commit()
