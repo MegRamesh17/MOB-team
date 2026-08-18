@@ -12,13 +12,15 @@ name: seed-database
 # Safe to re-run. Every insert in db/seed/ is guarded by WHERE NOT EXISTS and resolves its
 # foreign keys by natural key, so a second run inserts nothing and changes nothing.
 #
-# SUPERSEDED by azure-pipelines-backend.yml's Seed stage in Azure DevOps. The
-# automatic workflow_run trigger off migrate-database is removed for the same reason
-# migrate-database.yml's is: two systems able to write to the same database
-# independently is the risk, not the convenience of two triggers. Kept
-# workflow_dispatch-only for manual emergency use.
+# Runs automatically after migrate-database completes successfully, same as before
+# azure-pipelines-backend.yml existed. Restored alongside migrate-database.yml's
+# workflow_run trigger -- see the comment at the top of that file.
 
 on:
+  workflow_run:
+    workflows: ["migrate-database"]
+    types: [completed]
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
