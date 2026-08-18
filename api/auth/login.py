@@ -97,7 +97,8 @@ def login(req: func.HttpRequest) -> func.HttpResponse:
             cur = c.cursor()
             cur.execute(
                 """SELECT e.id, e.email, e.name, e.company_id, e.password_hash, e.manager_id,
-                          r.access_role, r.role_code, d.name AS department
+                          r.access_role, r.role_code, r.title AS role_title,
+                          d.name AS department
                        FROM dbo.Employees e
                        LEFT JOIN dbo.Roles r ON r.id = e.role_id
                        LEFT JOIN dbo.Teams t ON t.id = r.team_id
@@ -132,6 +133,7 @@ def login(req: func.HttpRequest) -> func.HttpResponse:
         manager_id=row.manager_id,
         name=row.name,
         department=row.department,
+        title=row.role_title,
     )
 
     # The principal goes back with the token so the client does not have to decode a JWT
@@ -148,6 +150,7 @@ def login(req: func.HttpRequest) -> func.HttpResponse:
             "role_code": (row.role_code or "ALL").upper(),
             "manager_id": row.manager_id,
             "department": row.department or "",
+            "title": row.role_title or "",
         },
     })
 
@@ -185,5 +188,6 @@ def auth_me(req: func.HttpRequest) -> func.HttpResponse:
             "role_code": identity.role_code,
             "manager_id": identity.manager_id,
             "department": identity.department,
+            "title": identity.title,
         }
     })

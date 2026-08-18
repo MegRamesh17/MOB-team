@@ -11,7 +11,7 @@ WHAT MUST STAY IN STEP WITH api/shared/auth.py
     algorithm       HS256
     TTL             12 hours
     claims          sub (employee_id as a string), email, name, company_id,
-                    access_role, role_code, manager_id, department, iat, exp
+                    access_role, role_code, manager_id, department, title, iat, exp
     login route     POST /api/login   {email, password}
     login response  {token, expiresInHours, principal{...}}
     me route        GET  /api/auth/me {principal{...}}
@@ -103,6 +103,7 @@ class Identity:
     role_code: str = "ALL"
     manager_id: Optional[int] = None
     department: str = ""
+    title: str = ""
 
     def at_least(self, tier: str) -> bool:
         try:
@@ -120,6 +121,7 @@ class Identity:
             "role_code": self.role_code,
             "manager_id": self.manager_id,
             "department": self.department,
+            "title": self.title,
         }
 
 
@@ -201,6 +203,7 @@ def authenticate(email: str, password: str) -> Optional[Identity]:
             role_code=(user.get("role_code") or "ALL").upper(),
             manager_id=user.get("manager_id"),
             department=user.get("department", ""),
+            title=user.get("title", ""),
         )
     return None
 
@@ -275,6 +278,7 @@ def create_token(identity: Identity) -> str:
             "role_code": identity.role_code,
             "manager_id": identity.manager_id,
             "department": identity.department,
+            "title": identity.title,
             "iat": now,
             "exp": now + timedelta(hours=TOKEN_TTL_HOURS),
         },
@@ -305,6 +309,7 @@ def decode_token(token: str) -> Optional[Identity]:
             role_code=(claims.get("role_code") or "ALL").upper(),
             manager_id=int(manager_id) if manager_id is not None else None,
             department=claims.get("department") or "",
+            title=claims.get("title") or "",
         )
     except (KeyError, ValueError, TypeError):
         return None

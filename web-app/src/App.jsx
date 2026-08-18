@@ -81,8 +81,8 @@ const ROSTER = [
 ];
 
 const PROFILES = {
-  employee: { name: "Daniel Cho", role: "Software Engineer I", email: "d.cho@quadranttechnologies.com", joined: "Feb 2025", streak: 6 },
-  manager: { name: "Priya Nair", role: "Engineering Manager", email: "p.nair@quadranttechnologies.com", joined: "Nov 2022", streak: 14 },
+  employee: { name: "Daniel Cho", role: "Software Engineer I", email: "d.cho@quadranttechnologies.com", joined: "Feb 2025" },
+  manager: { name: "Priya Nair", role: "Engineering Manager", email: "p.nair@quadranttechnologies.com", joined: "Nov 2022" },
 };
 
 const PET_STAGES = [
@@ -94,13 +94,17 @@ const PET_STAGES = [
   { level: 6, name: "Qrown", min: 12, size: 146 },
 ];
 
+// The catalog only -- title/description/icon. Whether each one is actually earned
+// comes from GET /api/me's badges field (see Profile below); ids 2 and 6 have no
+// server-side criterion yet (no "privacy" question category, no assignment due-date
+// concept) and so are always locked rather than showing a made-up earned date.
 const BADGES = [
-  { id: 1, title: "First Steps", desc: "Completed your first training", icon: Star, earned: true, date: "Feb 2025" },
-  { id: 2, title: "Privacy Pro", desc: "Scored 90%+ on a privacy quiz", icon: Award, earned: true, date: "Jul 2026" },
-  { id: 3, title: "On a Roll", desc: "6-training completion streak", icon: Flame, earned: true, date: "Aug 2026" },
-  { id: 4, title: "Sharpshooter", desc: "Passed a quiz with a perfect score", icon: Target, earned: false },
-  { id: 5, title: "Top of the Class", desc: "Reached a 90+ Q score", icon: Trophy, earned: false },
-  { id: 6, title: "Early Bird", desc: "Finished a training before its due date", icon: CheckCircle2, earned: true, date: "May 2026" },
+  { id: 1, title: "First Steps", desc: "Completed your first training", icon: Star },
+  { id: 2, title: "Privacy Pro", desc: "Scored 90%+ on a privacy quiz", icon: Award },
+  { id: 3, title: "On a Roll", desc: "6-training completion streak", icon: Flame },
+  { id: 4, title: "Sharpshooter", desc: "Passed a quiz with a perfect score", icon: Target },
+  { id: 5, title: "Top of the Class", desc: "Reached a 90+ Q score", icon: Trophy },
+  { id: 6, title: "Early Bird", desc: "Finished a training before its due date", icon: CheckCircle2 },
 ];
 
 // ---------- data loading ----------
@@ -381,7 +385,7 @@ function Login({ onLogin }) {
 }
 
 // ---------- Shell ----------
-function Shell({ name, department, manages, active, setActive, onLogout, children }) {
+function Shell({ name, department, title, manages, active, setActive, onLogout, children }) {
   // One nav for everyone. Managing people ADDS a tab; it does not replace the rest.
   //
   // This used to be two lists, with managerNav substituted for employeeNav — so a
@@ -426,6 +430,7 @@ function Shell({ name, department, manages, active, setActive, onLogout, childre
             <div>
               <div style={{ color: C.ink }} className="text-sm font-semibold leading-tight">{name}</div>
               <div style={{ color: C.sub }} className="text-xs">{department || "—"}</div>
+              {title && <div style={{ color: C.sub }} className="text-[11px] opacity-80">{title}</div>}
             </div>
           </div>
           <button onClick={onLogout} style={{ color: C.sub }} className="flex items-center gap-2 text-xs font-semibold hover:opacity-80">
@@ -616,7 +621,7 @@ function Dashboard({ name, onOpenPath, onOpenTraining }) {
         <div style={{ borderColor: C.line }} className="border rounded-xl p-6 bg-white text-center">
           <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">No trainings yet</p>
           <p style={{ color: C.sub }} className="text-xs">
-            The question bank is empty. Run <code>quizgen ingest</code> then <code>quizgen generate</code>.
+            Nothing has been assigned to your role yet. Check back soon, or ask your manager if you think this is unexpected.
           </p>
         </div>
       )}
@@ -1935,14 +1940,15 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
 // ---------- Profile ----------
 function Profile({ principal }) {
   // Identity from the signed-in principal. PROFILES is a fallback ONLY for the fields
-  // that still have no backend (joined date, streak) — using it for name or email would
-  // show one hardcoded persona to whoever actually signed in.
+  // that still have no backend (joined date) — using it for name or email would show
+  // one hardcoded persona to whoever actually signed in.
   const persona = PROFILES.employee;
   const p = {
     ...persona,
     name: principal?.name || principal?.email || persona.name,
     email: principal?.email || persona.email,
     role: principal?.department || persona.role,
+    title: principal?.title || "",
   };
   const { data: meData, loading, error, reload } = useAsync(() => api.me(), []);
   const { data: certData } = useAsync(() => api.certificates().catch(() => ({ certificates: [] })), []);
@@ -1962,7 +1968,22 @@ function Profile({ principal }) {
   const { data: qData } = useAsync(() => api.qscore().catch(() => null), []);
   const standing = qData?.overall;
   const qScore = standing ? Math.round(standing.qScore) : 0;
-  const earnedCount = BADGES.filter((b) => b.earned).length;
+
+  const streak = meData?.streak ?? 0;
+
+  // meData.badges is {badgeId: earnedAtIsoOrNull}, keyed by string over JSON. A badge
+  // id present has been earned (the value is the date for one-time badges, null for
+  // the two "live" ones that track current state); an id absent -- Privacy Pro and
+  // Early Bird, see quizgen.qscore.earned_badges -- has no real criterion behind it
+  // yet and stays permanently locked rather than showing a fake earned date.
+  const badgeStatus = meData?.badges || {};
+  const badges = BADGES.map((b) => {
+    const key = String(b.id);
+    const earned = Object.prototype.hasOwnProperty.call(badgeStatus, key);
+    const earnedAt = badgeStatus[key];
+    return { ...b, earned, date: earnedAt ? String(earnedAt).slice(0, 10) : null };
+  });
+  const earnedCount = badges.filter((b) => b.earned).length;
 
   return (
     <div className="p-8 max-w-4xl">
@@ -1981,6 +2002,7 @@ function Profile({ principal }) {
           <div>
             <h2 style={display} className="text-xl font-bold mb-1">{p.name}</h2>
             <p className="text-sm opacity-90 flex items-center gap-1.5 mb-0.5"><Briefcase size={13} /> {p.role}</p>
+            {p.title && <p className="text-sm opacity-90 mb-0.5 pl-[19px]">{p.title}</p>}
             <p className="text-sm opacity-90 flex items-center gap-1.5"><Mail size={13} /> {p.email}</p>
           </div>
         </div>
@@ -2032,10 +2054,7 @@ function Profile({ principal }) {
             <Flame size={16} color={C.violet700} />
           </div>
           <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <p style={{ ...display, color: C.ink }} className="text-lg font-bold leading-tight">{p.streak}</p>
-              <MockNote>mock</MockNote>
-            </div>
+            <p style={{ ...display, color: C.ink }} className="text-lg font-bold leading-tight">{streak}</p>
             <p style={{ color: C.sub }} className="text-xs">Training streak</p>
           </div>
         </div>
@@ -2053,10 +2072,7 @@ function Profile({ principal }) {
             <Star size={16} color={C.success} />
           </div>
           <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <p style={{ ...display, color: C.ink }} className="text-lg font-bold leading-tight">{earnedCount}/{BADGES.length}</p>
-              <MockNote>mock</MockNote>
-            </div>
+            <p style={{ ...display, color: C.ink }} className="text-lg font-bold leading-tight">{earnedCount}/{BADGES.length}</p>
             <p style={{ color: C.sub }} className="text-xs">Badges earned</p>
           </div>
         </div>
@@ -2083,14 +2099,11 @@ function Profile({ principal }) {
       </div>
 
       <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <h3 style={{ ...display, color: C.ink }} className="font-bold">Badges</h3>
-          <MockNote>sample data</MockNote>
-        </div>
+        <h3 style={{ ...display, color: C.ink }} className="font-bold">Badges</h3>
         <span style={{ color: C.sub }} className="text-xs">{earnedCount} of {BADGES.length} earned</span>
       </div>
       <div className="grid grid-cols-3 gap-4">
-        {BADGES.map((b) => {
+        {badges.map((b) => {
           const Icon = b.icon;
           return (
             <div key={b.id} style={{ borderColor: C.line, opacity: b.earned ? 1 : 0.55 }} className="border rounded-xl p-4 bg-white relative">
@@ -2105,7 +2118,9 @@ function Profile({ principal }) {
               <p style={{ color: C.ink }} className="text-sm font-semibold mb-0.5">{b.title}</p>
               <p style={{ color: C.sub }} className="text-xs mb-2">{b.desc}</p>
               {b.earned
-                ? <span style={{ color: C.success }} className="text-[11px] font-semibold">Earned {b.date}</span>
+                ? <span style={{ color: C.success }} className="text-[11px] font-semibold">
+                    {b.date ? `Earned ${b.date}` : "Currently active"}
+                  </span>
                 : <span style={{ color: C.sub }} className="text-[11px] font-semibold">Locked</span>}
             </div>
           );
@@ -2222,6 +2237,7 @@ export default function App() {
     <Shell
       name={auth.name || auth.email}
       department={auth.department}
+      title={auth.title}
       manages={manages}
       active={quizViews.includes(view) ? "dashboard" : view}
       setActive={goto}
