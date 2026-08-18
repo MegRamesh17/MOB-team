@@ -1,13 +1,23 @@
 -- seed_data.sql
--- Demo employees, courses, and history for Quadrant Technologies.
--- Run after org_seed.sql, which creates the Roles this references.
+-- Courses and quiz questions for Quadrant Technologies.
+-- Run after org_seed.sql, which creates the Roles these reference.
+--
+-- NO LONGER SEEDS PEOPLE. This used to invent eight @demo.com employees, their reporting
+-- lines, their completion history and their quiz attempts, so there was something to look
+-- at before real data existed. Real employees are loaded now, and the two sets shared the
+-- same tables — so headcounts, Q Score rollups and org chart walks all mixed invented
+-- people in with real ones, which is worse than no demo data because the numbers look
+-- plausible. 024_remove_demo_employees.sql deletes the rows already in the database;
+-- removing them here is what stops re-seeding putting them back.
+--
+-- Courses and questions stay. They are placeholder content rather than demo people, they
+-- carry no @demo.com key, and dropping them would take real completion history with them.
 --
 -- SAFE TO RE-RUN. Every insert is guarded and every foreign key is resolved by a natural
--- key — employees by email, roles by title, courses by title, questions by their text.
--- The previous version hardcoded surrogate ids (`employee_id 3`, `course_id 5`,
--- `question_id 7`), which held only on a database where these inserts had happened
--- exactly once, in exactly this order. That is not a property the seed can rely on now
--- that it runs from CI.
+-- key — roles by title, courses by title, questions by their text. The previous version
+-- hardcoded surrogate ids (`course_id 5`, `question_id 7`), which held only on a database
+-- where these inserts had happened exactly once, in exactly this order. That is not a
+-- property the seed can rely on now that it runs from CI.
 --
 -- Placeholder content. Replace once there is real course material.
 
@@ -21,76 +31,6 @@ BEGIN
     RAISERROR('Companies is empty — run org_seed.sql before seed_data.sql.', 16, 1);
     RETURN;
 END
-
--- =========================================================
--- 1. EMPLOYEES
--- =========================================================
--- Inserted without manager_id, then linked in a second pass. Doing it in one pass would
--- reintroduce an ordering dependency — a manager has to exist before anyone points at
--- them — which is exactly what this rewrite removes.
-INSERT INTO Employees (name, email, role_id, mastery_level, mastery_override, goal, company_id)
-SELECT v.name, v.email, r.id, v.mastery_level, v.mastery_override, NULLIF(v.goal, ''), @company_id
-FROM (VALUES
-    ('Dana Whitfield',   'dana.whitfield@demo.com',  'Software Engineering Manager', 'Expert',   0, 'Grow team compliance rate to 100%'),
-    ('Priya Nandakumar', 'priya.n@demo.com',         'VP of Sales',                  'Expert',   0, 'Improve team data handling compliance'),
-    ('Ethan Brooks',     'ethan.brooks@demo.com',    'SDE 2',                        'Mediocre', 0, 'Become eligible for senior review'),
-    ('Maya Osei',        'maya.osei@demo.com',       'SDE 1',                        'Beginner', 0, 'Finish onboarding requirements'),
-    ('Liam Chen',        'liam.chen@demo.com',       'Security Analyst',             'Beginner', 0, ''),
-    ('Sofia Delgado',    'sofia.delgado@demo.com',   'Account Executive',            'Mediocre', 0, 'Get certified on Customer Data Handling'),
-    -- mastery_override = 1: set by a manager rather than earned
-    ('Noah Whitaker',    'noah.whitaker@demo.com',   'Senior Account Executive',     'Expert',   1, ''),
-    ('Ava Thompson',     'ava.thompson@demo.com',    'Account Executive',            'Beginner', 0, '')
-) AS v(name, email, role_title, mastery_level, mastery_override, goal)
-JOIN Roles r ON r.title = v.role_title
-WHERE NOT EXISTS (SELECT 1 FROM Employees e WHERE e.email = v.email);
-
--- Reporting lines, by email on both sides.
-UPDATE e
-SET manager_id = m.id
-FROM Employees e
-JOIN (VALUES
-    ('ethan.brooks@demo.com',   'dana.whitfield@demo.com'),
-    ('maya.osei@demo.com',      'dana.whitfield@demo.com'),
-    ('liam.chen@demo.com',      'dana.whitfield@demo.com'),
-    ('sofia.delgado@demo.com',  'priya.n@demo.com'),
-    ('noah.whitaker@demo.com',  'priya.n@demo.com'),
-    ('ava.thompson@demo.com',   'priya.n@demo.com')
-) AS v(email, manager_email) ON v.email = e.email
-JOIN Employees m ON m.email = v.manager_email
-WHERE e.manager_id IS NULL OR e.manager_id <> m.id;
-
--- Demo passwords, so these accounts can actually sign in.
---
--- 012_add_auth.sql adds password_hash as nullable and nothing else writes one, so
--- login.py returns 401 for every row until something does. scripts/set_passwords.py is
--- that something for real use, but it needs SQL admin credentials and a firewall rule
--- from wherever it is run. These are DEMO accounts on @demo.com addresses, so the seed
--- that already invents the people can invent their passwords too, and the demo works
--- straight off the pipeline with no manual step.
---
--- These are bcrypt hashes, which is what login.py verifies with bcrypt.checkpw. A hash
--- is safe in a public repository — that is the point of hashing — and no plaintext
--- appears here, which is what AUTH-02 requires. The plaintext is shared out of band.
--- All eight share one password deliberately: switching identity is how role scoping
--- gets demonstrated, and eight passwords to juggle makes that worse, not safer.
---
--- Only fills NULLs, so re-running never clobbers a password set deliberately by
--- set_passwords.py. To rotate these, generate new hashes with bcrypt.hashpw and replace
--- the values below — do not paste a plaintext password into this file.
-UPDATE e
-SET password_hash = v.password_hash
-FROM Employees e
-JOIN (VALUES
-    ('dana.whitfield@demo.com', '$2b$12$X48UUbvFFvXj2EzhqljYK.PtFJco7mRhCDYjfNrIO2875jDNa5Use'),
-    ('priya.n@demo.com',        '$2b$12$LSaWejnok0slyISnKcbXHe0jEkTD6qNR/DeJQ0CB.n4aikqS40i7m'),
-    ('ethan.brooks@demo.com',   '$2b$12$jxg/87maiaBaE8NJjITCG.tTH6GT75MFLxLDL3XcAT93sghcwHUwa'),
-    ('maya.osei@demo.com',      '$2b$12$q8Ve/9K7JrvkU0Nixt9K8.DupJGKKax290cbpcHCWHFeSEKKZ8ay6'),
-    ('liam.chen@demo.com',      '$2b$12$pDjTJx7g7yGvoiIX9MNqBeGzKsmUVqGND/ymdmnFJJVNDmTMphbva'),
-    ('sofia.delgado@demo.com',  '$2b$12$eTw2dZ3.jiQphxeKJMnqNuPnFqH2ve91DvoRUqgO9N6J33CuwhnMC'),
-    ('noah.whitaker@demo.com',  '$2b$12$H0TS/rJ0Ewst5MQhCzXEkeIedfz2b9IfiKHgseU2UKC0eeDYaR3hi'),
-    ('ava.thompson@demo.com',   '$2b$12$hK.jpvZ7wpuNDuFfwkP5yOu29x2AZH3jbFK07UlAA/dRewFdnQjl6')
-) AS v(email, password_hash) ON v.email = e.email
-WHERE e.password_hash IS NULL;
 
 -- =========================================================
 -- 2. COURSES
@@ -181,63 +121,6 @@ FROM (VALUES
 JOIN Courses c ON c.title = v.course_title AND c.company_id = @company_id
 WHERE NOT EXISTS (
     SELECT 1 FROM QuizQuestions q WHERE q.course_id = c.id AND q.question_text = v.question_text
-);
-
--- =========================================================
--- 4. COMPLETIONS
--- =========================================================
--- Deliberately uneven, so the states the UI has to handle all exist in the data:
--- expired, expiring soon, failed-and-needs-retake, in progress, and untouched.
-INSERT INTO Completions (employee_id, course_id, status, score_percent, completion_date,
-                         expiry_date, certificate_url, reminder_sent_at)
-SELECT e.id, c.id, v.status, v.score_percent,
-       NULLIF(v.completion_date, ''), NULLIF(v.expiry_date, ''),
-       NULLIF(v.certificate_url, ''), NULL
-FROM (VALUES
-    ('ethan.brooks@demo.com',   'Workplace Safety',           'completed',   100, '2025-08-10', '2026-08-10', 'https://example.com/certs/ethan-safety.pdf'),
-    ('ethan.brooks@demo.com',   'Data Privacy Basics',        'completed',    90, '2025-08-12', '2026-08-12', 'https://example.com/certs/ethan-privacy.pdf'),
-    ('ethan.brooks@demo.com',   'Cybersecurity Fundamentals', 'completed',    85, '2025-08-15', '2026-08-15', 'https://example.com/certs/ethan-cyber.pdf'),
-    ('ethan.brooks@demo.com',   'Advanced Secure Coding',     'not_started', NULL, '',           '',           ''),
-    ('maya.osei@demo.com',      'Workplace Safety',           'completed',    80, '2026-07-01', '2027-07-01', 'https://example.com/certs/maya-safety.pdf'),
-    ('maya.osei@demo.com',      'Data Privacy Basics',        'in_progress', NULL, '',           '',           ''),
-    ('maya.osei@demo.com',      'Anti-Harassment Training',   'not_started', NULL, '',           '',           ''),
-    ('liam.chen@demo.com',      'Workplace Safety',           'failed',       60, '',           '',           ''),
-    ('liam.chen@demo.com',      'Data Privacy Basics',        'not_started', NULL, '',           '',           ''),
-    ('sofia.delgado@demo.com',  'Workplace Safety',           'completed',    95, '2025-08-20', '2026-08-20', 'https://example.com/certs/sofia-safety.pdf'),
-    ('sofia.delgado@demo.com',  'Customer Data Handling',     'completed',    88, '2025-08-25', '2026-02-25', 'https://example.com/certs/sofia-data.pdf'),
-    ('sofia.delgado@demo.com',  'Data Privacy Basics',        'in_progress', NULL, '',           '',           ''),
-    ('noah.whitaker@demo.com',  'Workplace Safety',           'completed',   100, '2026-01-05', '2027-01-05', 'https://example.com/certs/noah-safety.pdf'),
-    ('noah.whitaker@demo.com',  'Data Privacy Basics',        'completed',   100, '2026-01-06', '2027-01-06', 'https://example.com/certs/noah-privacy.pdf'),
-    ('noah.whitaker@demo.com',  'Customer Data Handling',     'completed',    92, '2026-01-10', '2026-07-10', 'https://example.com/certs/noah-data.pdf'),
-    ('ava.thompson@demo.com',   'Workplace Safety',           'not_started', NULL, '',           '',           ''),
-    ('ava.thompson@demo.com',   'Customer Data Handling',     'not_started', NULL, '',           '',           '')
-) AS v(email, course_title, status, score_percent, completion_date, expiry_date, certificate_url)
-JOIN Employees e ON e.email = v.email
-JOIN Courses   c ON c.title = v.course_title AND c.company_id = @company_id
-WHERE NOT EXISTS (
-    SELECT 1 FROM Completions x WHERE x.employee_id = e.id AND x.course_id = c.id
-);
-
--- =========================================================
--- 5. QUIZ ATTEMPTS
--- =========================================================
-INSERT INTO QuizAttempts (employee_id, question_id, attempt_number, submitted_answer, is_correct)
-SELECT e.id, q.id, 1, v.submitted_answer, v.is_correct
-FROM (VALUES
-    ('ethan.brooks@demo.com', 'Who should you notify first if you discover a workplace hazard?', 'Your direct supervisor', 1),
-    ('ethan.brooks@demo.com', 'What is the emergency assembly point used for?', 'Headcount after an evacuation', 1),
-    ('ethan.brooks@demo.com', 'Fill in the blank: In case of fire, always use the stairs, never the ____.', 'elevator', 1),
-    ('liam.chen@demo.com',    'Who should you notify first if you discover a workplace hazard?', 'A coworker in another department', 0),
-    ('liam.chen@demo.com',    'What is the emergency assembly point used for?', 'Team meetings', 0),
-    ('liam.chen@demo.com',    'Fill in the blank: In case of fire, always use the stairs, never the ____.', 'stairs', 0),
-    ('sofia.delgado@demo.com', 'Customer payment data should be stored:', 'In an approved encrypted system only', 1),
-    ('sofia.delgado@demo.com', 'Fill in the blank: Access to customer records should be logged for ____ purposes.', 'audit', 1)
-) AS v(email, question_text, submitted_answer, is_correct)
-JOIN Employees e ON e.email = v.email
-JOIN QuizQuestions q ON q.question_text = v.question_text
-WHERE NOT EXISTS (
-    SELECT 1 FROM QuizAttempts a
-    WHERE a.employee_id = e.id AND a.question_id = q.id AND a.attempt_number = 1
 );
 
 DECLARE @employee_count INT, @course_count INT, @can_sign_in INT;

@@ -1710,22 +1710,63 @@ function TeamHabitat({ members, highlightName }) {
   );
 }
 
-function TeammatesGallery({ name }) {
-  const me = ROSTER.find((r) => r.name === name);
-  const department = me ? me.department : null;
-  const teammates = ROSTER.filter((r) => r.department === department);
-  const sorted = [...teammates].sort((a, b) => b.trainingsCompleted - a.trainingsCompleted);
+// Your reporting subtree, from GET /team — everyone below you in the Employees.manager_id
+// chain, however deep, so a director sees their managers' reports too. The server decides
+// who is in here; this only draws what it returns.
+//
+// It used to filter a hardcoded ROSTER by department and say "the backend has no org chart
+// yet". That was true when it was written and is not any more, which made it worse than a
+// blank screen: it showed invented colleagues to someone who reads them as real.
+function TeammatesGallery({ team, name }) {
+  // team is null while the fetch is in flight, and also if it failed — signIn() catches
+  // to null. Distinguishing the two would need a third state; "not loaded" covers both
+  // honestly and neither is worth a different screen.
+  if (!team) {
+    return (
+      <div className="p-8 max-w-4xl">
+        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Teammates</h1>
+        <p style={{ color: C.sub }} className="text-sm">Loading your team…</p>
+      </div>
+    );
+  }
+
+  const people = team.people || [];
+
+  // Nobody below you is a fact about the org chart, not an error — the endpoint returns
+  // 200 with empty lists rather than 403. TeamHabitat divides by members.length to place
+  // nodes on a circle, so it must not be handed an empty list either way.
+  if (people.length === 0) {
+    return (
+      <div className="p-8 max-w-4xl">
+        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Teammates</h1>
+        <p style={{ color: C.sub }} className="text-sm">
+          Nobody reports to you, so there is no team to show. If that looks wrong, it means
+          reporting lines have not been set for your organisation yet.
+        </p>
+      </div>
+    );
+  }
+
+  const directs = people.filter((p) => p.direct).length;
+  // trainingsCompleted drives the character stage. GET /team does not return it — it
+  // answers who reports to you, not how far along each of them is — so it is passed as 0
+  // rather than invented. Everyone renders at the first stage until there is a real
+  // per-person figure to use; a plausible-looking fake number is the one thing this
+  // screen must not go back to.
+  const members = people.map((p) => ({
+    name: p.name,
+    role: p.title || p.roleCode,
+    trainingsCompleted: 0,
+  }));
 
   return (
     <div className="p-8 max-w-4xl">
-      <div className="flex items-center gap-3 mb-1">
-        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold">Teammates</h1>
-        <MockNote>sample data</MockNote>
-      </div>
+      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Teammates</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">
-        Everyone in {department || "your department"} — {teammates.length} people share your role. The backend has no org chart yet.
+        Everyone who reports to you — {people.length} {people.length === 1 ? "person" : "people"}
+        {directs > 0 && `, ${directs} directly`}.
       </p>
-      <TeamHabitat members={sorted} highlightName={name} />
+      <TeamHabitat members={members} highlightName={name} />
     </div>
   );
 }
@@ -2172,7 +2213,7 @@ export default function App() {
   } else if (view === "certificates") {
     content = <Certificates />;
   } else if (view === "teammates") {
-    content = <TeammatesGallery name={auth.name || auth.email} />;
+    content = <TeammatesGallery team={team} name={auth.name || auth.email} />;
   }
 
   const quizViews = ["trainingDetail", "lesson", "quizPre", "quizRunner", "quizResults"];
