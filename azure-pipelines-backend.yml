@@ -79,6 +79,14 @@ stages:
         steps:
           - task: AzureCLI@2
             displayName: 'Install sqlcmd'
+            # A plain `apt-get update` refreshes every enabled repo, including Ubuntu's
+            # own noble/noble-updates/noble-backports/noble-security mirrors -- all of
+            # which this step never needs anything from. Azure's regional mirror proxy
+            # for those (azure.archive.ubuntu.com) is occasionally slow/unreachable,
+            # which alone can add several minutes of retries before apt falls back. The
+            # -o flags below restrict the update to just the Microsoft repo that
+            # packages-microsoft-prod.deb adds -- the only one this step actually
+            # installs anything from.
             inputs:
               azureSubscription: $(azureSubscription)
               scriptType: bash
@@ -86,7 +94,10 @@ stages:
               inlineScript: |
                 curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
                 sudo dpkg -i packages-microsoft-prod.deb
-                sudo apt-get update
+                sudo apt-get update \
+                  -o Dir::Etc::sourcelist="sources.list.d/mssql-release.list" \
+                  -o Dir::Etc::sourceparts="-" \
+                  -o APT::Get::List-Cleanup="0"
                 ACCEPT_EULA=Y sudo apt-get install -y mssql-tools18 unixodbc-dev
                 echo "##vso[task.prependpath]/opt/mssql-tools18/bin"
 
@@ -182,6 +193,14 @@ stages:
         steps:
           - task: AzureCLI@2
             displayName: 'Install sqlcmd'
+            # A plain `apt-get update` refreshes every enabled repo, including Ubuntu's
+            # own noble/noble-updates/noble-backports/noble-security mirrors -- all of
+            # which this step never needs anything from. Azure's regional mirror proxy
+            # for those (azure.archive.ubuntu.com) is occasionally slow/unreachable,
+            # which alone can add several minutes of retries before apt falls back. The
+            # -o flags below restrict the update to just the Microsoft repo that
+            # packages-microsoft-prod.deb adds -- the only one this step actually
+            # installs anything from.
             inputs:
               azureSubscription: $(azureSubscription)
               scriptType: bash
@@ -189,7 +208,10 @@ stages:
               inlineScript: |
                 curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
                 sudo dpkg -i packages-microsoft-prod.deb
-                sudo apt-get update
+                sudo apt-get update \
+                  -o Dir::Etc::sourcelist="sources.list.d/mssql-release.list" \
+                  -o Dir::Etc::sourceparts="-" \
+                  -o APT::Get::List-Cleanup="0"
                 ACCEPT_EULA=Y sudo apt-get install -y mssql-tools18 unixodbc-dev
                 echo "##vso[task.prependpath]/opt/mssql-tools18/bin"
 
