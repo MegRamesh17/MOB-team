@@ -58,3 +58,27 @@ variable "additional_frontend_origins" {
   type        = list(string)
   default     = []
 }
+
+variable "azure_openai_endpoint" {
+  description = <<-EOT
+    Azure OpenAI endpoint for the shared Foundry resource, e.g.
+    https://sharedfoundry.services.ai.azure.com. The key itself is openai_api_key above,
+    already stored in Key Vault as openai-api-key -- this was never surfaced as a Function
+    App setting until now, so /documents/confirm's generation step had a key in Key Vault
+    it could not actually reach.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "quizgen_provider" {
+  description = <<-EOT
+    'mock' (default, free, deterministic, no credentials needed) or 'azure' (real gpt-5,
+    roughly a cent per question -- see requirements.txt's note on cost). Matches
+    src/quizgen/config.py's QUIZGEN_PROVIDER, which already defaults to 'mock' if this is
+    never set -- stated explicitly here so switching to the real model is one variable,
+    not a portal setting nobody remembers exists.
+  EOT
+  type        = string
+  default     = "mock"
+}

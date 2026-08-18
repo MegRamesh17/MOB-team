@@ -1,8 +1,15 @@
 """
 HTTP API — Azure Functions (Python v2 programming model).
 
-Serves the endpoints in docs/frontend-spec.md. Reads Azure SQL directly; the quizgen
-package remains the authoring side (documents -> questions) and is not imported here.
+Serves the endpoints in docs/frontend-spec.md. Reads Azure SQL directly.
+
+/documents, /documents/confirm, /roles and /jobs/{id} import quizgen (vendored into this
+package at deploy time by azure-pipelines-backend.yml, from src/quizgen -- see that
+file's build step for why a copy rather than a shared install). They do NOT use quizgen's
+own Bank, which is sqlite3 end to end; shared.sqlbank.SqlBank implements the same handful
+of methods pipeline.py and rolemap.py actually call, against dbo.SourceChunks /
+dbo.GeneratedQuestions / dbo.QuizgenRoles directly. No SQLite file exists anywhere in this
+request path -- Azure SQL is the only store, matching every other endpoint in this file.
 
 Two rules this file exists to enforce:
 
@@ -1352,4 +1359,374 @@ def set_requirements(req: func.HttpRequest) -> func.HttpResponse:
         return _json({"roleCode": role, "count": len(rows)})
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
+
+
+# --------------------------------------------------------------------------
+# documents / roles / generation
+# --------------------------------------------------------------------------
+#
+# Uploading material and editing the role catalog change what an entire role is taught
+# and certified against, so every route below requires manager tier or above, same as
+# scripts/devserver.py's local equivalents -- the UI hides these controls too, but a
+# hidden button is not a permission check.
+#
+# Generation runs INLINE, in the same request that confirms the upload, rather than on
+# a background thread the way the local dev server does it. A thread survives for the
+# life of one Python process; an Azure Functions instance can recycle or scale to a
+# second one between the request that starts generation and the next /jobs/{id} poll,
+# and an in-memory job record on the first instance is invisible to the second. Running
+# a few dozen chunks against gpt-5 inline is a matter of minutes, and mob-functions-dev
+# is provisioned on a Basic (B1) Dedicated plan (infra/modules/functions/main.tf), which
+# has no Consumption-plan-style 5/10 minute HTTP timeout -- see host.json's
+# functionTimeout for the explicit ceiling this relies on. The job row this writes to
+# dbo.GenerationJobs is what actually makes /jobs/{id} correct across instances; running
+# inline just means it is written as "done" already by the time confirm() returns,
+# rather than updated incrementally by a worker only that request's instance can see.
+
+
+def _permitted_upload_roles(cur, identity) -> set:
+    """
+    Role codes this manager may publish to: everyone in their reporting subtree, plus
+    ALL if and only if they are admin or executive.
+
+    Same rule as GET /team's uploadTargets, computed separately rather than shared with
+    it -- get_team's query already ships and is tested; changing it to serve two callers
+    risks the working one for the sake of not repeating four lines. Matches
+    scripts/devauth.py's permitted_upload_roles(), which every local endpoint enforces
+    the same way.
+    """
+    cur.execute(
+        """WITH subtree AS (
+               SELECT e.id, e.role_id FROM dbo.Employees e WHERE e.manager_id = ?
+               UNION ALL
+               SELECT e.id, e.role_id FROM dbo.Employees e
+               JOIN subtree s ON e.manager_id = s.id
+           )
+           SELECT r.role_code FROM subtree s
+           LEFT JOIN dbo.Roles r ON r.id = s.role_id
+          OPTION (MAXRECURSION 32)""",
+        identity.employee_id,
+    )
+    allowed = {(r[0] or "ALL").upper() for r in cur.fetchall()}
+    allowed.discard("ALL")
+    if (identity.access_role or "") in ("admin", "executive"):
+        allowed.add("ALL")
+    return allowed
+
+
+@app.route(route="documents", methods=["GET"])
+def list_documents(req: func.HttpRequest) -> func.HttpResponse:
+    """What has been uploaded, and how far each one got."""
+    identity = get_current_employee(req)
+    forbidden = require_manager(identity)
+    if forbidden:
+        return forbidden
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT doc_title, COUNT(*) AS chunks FROM dbo.SourceChunks "
+                "GROUP BY doc_title"
+            )
+            chunk_counts = {r.doc_title: r.chunks for r in cur.fetchall()}
+            cur.execute(
+                "SELECT source_doc_title, COUNT(*) AS n FROM dbo.GeneratedQuestions "
+                "WHERE company_id = ? AND review_status = 'Approved' "
+                "GROUP BY source_doc_title",
+                identity.company_id,
+            )
+            q_counts = {(r.source_doc_title or ""): r.n for r in cur.fetchall()}
+
+        docs = [
+            {
+                "title": title,
+                "chunks": count,
+                "questions": q_counts.get(title, 0),
+                # Read but not yet generated from -- the UI offers to generate for these.
+                "ready": q_counts.get(title, 0) > 0,
+            }
+            for title, count in sorted(chunk_counts.items())
+        ]
+        from quizgen.pipeline import generator_name
+        return _json({"documents": docs, "files": [], "generator": generator_name(),
+                      "uploadDir": ""})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="documents", methods=["POST"])
+def upload_document(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Accept an uploaded document and extract it. Generation is a separate call
+    (/documents/confirm), after the manager confirms the AI's proposed section->role
+    mapping -- the AI proposes, the manager decides, same as the local dev server.
+    """
+    identity = get_current_employee(req)
+    forbidden = require_manager(identity)
+    if forbidden:
+        return forbidden
+
+    upload = req.files.get("file") if req.files else None
+    if upload is None or not upload.filename:
+        return _error(400, "No file received", "Send multipart/form-data with a 'file' part.")
+
+    from pathlib import Path
+    safe = Path(upload.filename).name  # basename only -- no path traversal via filename
+    suffix = Path(safe).suffix.lower()
+    if suffix not in (".pdf", ".txt", ".md"):
+        return _error(415, "Unsupported file type",
+                      "Only .pdf, .txt and .md can be read. Got {!r}.".format(suffix or "none"))
+
+    content = upload.stream.read()
+    if not content:
+        return _error(400, "Empty upload", "No content was sent.")
+
+    # /tmp is writable on Azure Functions Linux and is per-invocation scratch space for
+    # the extraction library, which needs a real file path (pypdf and Document
+    # Intelligence both read from disk) -- not a database. Nothing here is data of
+    # record; the extracted chunks are what get written to Azure SQL below, and this
+    # file is gone the moment the request ends.
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / safe
+        target.write_bytes(content)
+
+        from quizgen.ingest import ingest_document
+        try:
+            chunks = ingest_document(target)
+        except Exception as exc:  # noqa: BLE001
+            return _error(422, "Could not read this document",
+                          "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+
+    if not chunks:
+        return _error(422, "No teachable content found",
+                      "Text was extracted but nothing usable was found in it.")
+
+    doc_title = chunks[0].doc_title
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            # Two different documents must never share a title -- they would merge
+            # into one training, mixing roles and letting set_chunk_roles tag the
+            # wrong sections.
+            cur.execute(
+                "SELECT DISTINCT doc_id FROM dbo.SourceChunks WHERE doc_title = ?",
+                doc_title,
+            )
+            existing_ids = {r.doc_id for r in cur.fetchall()}
+            if existing_ids and chunks[0].doc_id not in existing_ids:
+                doc_title = "{} ({})".format(doc_title, Path(safe).stem.replace("_", " "))
+                for ch in chunks:
+                    ch.doc_title = doc_title
+
+            from shared.sqlbank import SqlBank
+            bank = SqlBank(c, identity.company_id)
+            bank.save_chunks(chunks)
+
+            from quizgen.rolemap import seed_roles
+            seed_roles(bank)
+            known_roles = bank.roles()
+
+            permitted = _permitted_upload_roles(cur, identity)
+
+            topics = sorted({ch.topic for ch in chunks})
+            sections = {}
+            for ch in chunks:
+                sections.setdefault(ch.topic, ch.text)
+
+            from quizgen.rolemap import analyze_document
+            try:
+                mapping = analyze_document(doc_title, sections, known_roles)
+            except RuntimeError as exc:
+                # No model credentials. The chunks are already saved (committed by
+                # save_chunks/seed_roles above), so nothing is lost -- confirm can
+                # still be called once credentials exist.
+                return _error(503, "Role mapping needs the real model", str(exc)[:300])
+            except Exception as exc:  # noqa: BLE001
+                return _error(502, "Role analysis failed",
+                              "{}: {}".format(type(exc).__name__, str(exc)[:250]))
+
+        from quizgen.pipeline import generator_name
+        return _json({
+            "file": safe, "title": doc_title, "chunks": len(chunks), "topics": topics,
+            "summary": mapping.summary,
+            "proposedRoles": mapping.assignments,
+            "permittedRoles": sorted(permitted),
+            "unknownRoles": mapping.unknown_roles,
+            "thinTopics": mapping.thin_topics,
+            "knownRoles": known_roles,
+            "generator": generator_name(),
+            "needsConfirmation": True,
+        }, 201)
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="documents/confirm", methods=["POST"])
+def confirm_document(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    The manager's confirmed section->role mapping. Tags chunks, creates any new roles
+    they chose to add, retires a superseded document if named, then generates.
+    """
+    identity = get_current_employee(req)
+    forbidden = require_manager(identity)
+    if forbidden:
+        return forbidden
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+
+    doc_title = str(body.get("title", "")).strip()
+    assignments = body.get("assignments") or {}
+    new_roles = body.get("newRoles") or []
+    supersede = str(body.get("supersede", "")).strip()
+    if not doc_title or not isinstance(assignments, dict):
+        return _error(400, "Bad request", "title and assignments are required")
+
+    from shared.sqlbank import SqlBank, create_job, new_job_id, update_job
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            bank = SqlBank(c, identity.company_id)
+
+            permitted = _permitted_upload_roles(cur, identity)
+            for code in set(assignments.values()):
+                up = (code or "ALL").upper()
+                if up != "ALL" and up not in permitted:
+                    return _error(
+                        403, "Not your role to publish to",
+                        "{} is outside your reporting chain.".format(up))
+
+            for role in new_roles:
+                code = str(role.get("roleCode", "")).strip().upper().replace(" ", "_")
+                title = str(role.get("title", "")).strip()
+                if code and title:
+                    bank.add_role(code, title, str(role.get("description", "")))
+
+            tagged = bank.set_chunk_roles(doc_title, {
+                topic: str(code) for topic, code in assignments.items()
+            })
+
+            retired = 0
+            if supersede and supersede != doc_title:
+                retired = bank.retire_document_questions(supersede)
+
+            job_id = new_job_id()
+            create_job(c, job_id, identity.company_id, doc_title)
+
+        from quizgen.pipeline import select_chunks, generate_questions
+        with _conn() as c2:
+            bank2 = SqlBank(c2, identity.company_id)
+            to_generate, skipped = select_chunks(bank2, doc_title=doc_title)
+            update_job(c2, job_id, identity.company_id, total=len(to_generate),
+                       message="Reading {} section(s)…".format(len(to_generate))
+                       if to_generate else "Already generated for this document.")
+
+            if not to_generate:
+                update_job(c2, job_id, identity.company_id, state="done",
+                           message="Already generated.")
+            else:
+                try:
+                    result = generate_questions(bank2, to_generate)
+                    update_job(
+                        c2, job_id, identity.company_id, state="done",
+                        done_count=len(to_generate), kept=len(result.kept),
+                        written=result.written, rejected=len(result.rejected),
+                        message="Generated {} question(s).".format(result.written),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    update_job(c2, job_id, identity.company_id, state="error",
+                               message="{}: {}".format(type(exc).__name__, str(exc)[:200]))
+
+        return _json({
+            "title": doc_title, "taggedChunks": tagged, "retired": retired,
+            "jobId": job_id,
+        }, 201)
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="jobs/{jobId}", methods=["GET"])
+def job_status(req: func.HttpRequest) -> func.HttpResponse:
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    from shared.sqlbank import get_job
+    job_id = req.route_params.get("jobId", "")
+    with _conn() as c:
+        job = get_job(c, job_id, identity.company_id)
+    if job is None:
+        return _error(404, "Unknown job", job_id)
+    return _json(job)
+
+
+@app.route(route="roles", methods=["GET"])
+def list_roles(req: func.HttpRequest) -> func.HttpResponse:
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            from shared.sqlbank import SqlBank
+            bank = SqlBank(c, identity.company_id)
+            roles = bank.roles()
+
+            cur.execute(
+                "SELECT role_code, COUNT(*) AS n FROM dbo.GeneratedQuestions "
+                "WHERE company_id = ? AND review_status = 'Approved' "
+                "GROUP BY role_code",
+                identity.company_id,
+            )
+            counts: Dict[str, int] = {}
+            for r in cur.fetchall():
+                counts[(r.role_code or "ALL").upper()] = r.n
+
+        return _json({
+            "roles": [
+                {**r, "questionCount": counts.get(r["role_code"], 0) + counts.get("ALL", 0)}
+                for r in roles
+            ],
+        })
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="roles", methods=["POST"])
+def add_role(req: func.HttpRequest) -> func.HttpResponse:
+    identity = get_current_employee(req)
+    forbidden = require_manager(identity)
+    if forbidden:
+        return forbidden
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+
+    code = str(body.get("roleCode", "")).strip().upper().replace(" ", "_")
+    title = str(body.get("title", "")).strip()
+    if not code or not title:
+        return _error(400, "Bad request", "roleCode and title are required")
+
+    from shared.sqlbank import SqlBank
+    with _conn() as c:
+        SqlBank(c, identity.company_id).add_role(code, title, str(body.get("description", "")))
+    return _json({"roleCode": code, "title": title}, 201)
+
+
+@app.route(route="roles/{roleCode}/delete", methods=["POST"])
+def remove_role(req: func.HttpRequest) -> func.HttpResponse:
+    identity = get_current_employee(req)
+    forbidden = require_manager(identity)
+    if forbidden:
+        return forbidden
+    code = req.route_params.get("roleCode", "")
+    from shared.sqlbank import SqlBank
+    with _conn() as c:
+        removed = SqlBank(c, identity.company_id).remove_role(code)
+    if not removed:
+        return _error(404, "No such role", code)
+    return _json({"removed": code})
 

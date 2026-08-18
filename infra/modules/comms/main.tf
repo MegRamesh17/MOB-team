@@ -1,7 +1,7 @@
 resource "azurerm_communication_service" "mob_comms" {
   name                = "mob-comms-${var.environment}"
   resource_group_name = var.resource_group_name
-  data_location        = "United States"
+  data_location       = "United States"
 }
 
 # Managed email domain (Azure-provided, no custom DNS setup needed to start)

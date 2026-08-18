@@ -35,6 +35,15 @@ jobs:
         working-directory: infra
         env:
           TF_VAR_local_dev_object_ids: ${{ secrets.LOCAL_DEV_OBJECT_IDS }}
+          # These four were declared with empty-string defaults and never passed here,
+          # so every apply silently provisioned Document Intelligence and Azure OpenAI
+          # as unconfigured regardless of what anyone set elsewhere. Safe either way if
+          # the underlying secrets do not exist yet -- GitHub resolves an unset secret to
+          # an empty string, matching each variable's own default, not a failure.
+          TF_VAR_doc_intelligence_endpoint: ${{ secrets.DOC_INTELLIGENCE_ENDPOINT }}
+          TF_VAR_doc_intelligence_key: ${{ secrets.DOC_INTELLIGENCE_KEY }}
+          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_azure_openai_endpoint: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
 
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -53,3 +62,7 @@ jobs:
         working-directory: infra
         env:
           TF_VAR_local_dev_object_ids: ${{ secrets.LOCAL_DEV_OBJECT_IDS }}
+          TF_VAR_doc_intelligence_endpoint: ${{ secrets.DOC_INTELLIGENCE_ENDPOINT }}
+          TF_VAR_doc_intelligence_key: ${{ secrets.DOC_INTELLIGENCE_KEY }}
+          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_azure_openai_endpoint: ${{ secrets.AZURE_OPENAI_ENDPOINT }}

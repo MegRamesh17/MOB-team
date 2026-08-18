@@ -33,3 +33,8 @@ web-app/dist/
 # Local dev server output and the local SQLite bank — swept in by `git add -A` once already.
 demo-data/*.log
 demo-data/*.db
+
+# Vendored into the deploy package by azure-pipelines-backend.yml's build step, fresh
+# from src/quizgen on every run. Never meant to be committed — that would be exactly the
+# copy-that-can-drift problem api/shared/qscore.py's header warns about.
+api/quizgen/
