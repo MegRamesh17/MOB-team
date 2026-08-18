@@ -31,30 +31,30 @@ END
 INSERT INTO Employees (name, email, role_id, mastery_level, mastery_override, goal, company_id)
 SELECT v.name, v.email, r.id, v.mastery_level, v.mastery_override, NULLIF(v.goal, ''), @company_id
 FROM (VALUES
-    ('Dana Whitfield',   'dana.whitfield@demo.com',  'Software Engineering Manager', 'Expert',   0, 'Grow team compliance rate to 100%'),
-    ('Priya Nandakumar', 'priya.n@demo.com',         'VP of Sales',                  'Expert',   0, 'Improve team data handling compliance'),
-    ('Ethan Brooks',     'ethan.brooks@demo.com',    'SDE 2',                        'Mediocre', 0, 'Become eligible for senior review'),
-    ('Maya Osei',        'maya.osei@demo.com',       'SDE 1',                        'Beginner', 0, 'Finish onboarding requirements'),
-    ('Liam Chen',        'liam.chen@demo.com',       'Security Analyst',             'Beginner', 0, ''),
-    ('Sofia Delgado',    'sofia.delgado@demo.com',   'Account Executive',            'Mediocre', 0, 'Get certified on Customer Data Handling'),
+    ('Dana Whitfield',   'dana.whitfield@quizrant.com',  'Software Engineering Manager', 'Expert',   0, 'Grow team compliance rate to 100%'),
+    ('Priya Nandakumar', 'priya.n@quizrant.com',         'VP of Sales',                  'Expert',   0, 'Improve team data handling compliance'),
+    ('Ethan Brooks',     'ethan.brooks@quizrant.com',    'SDE 2',                        'Mediocre', 0, 'Become eligible for senior review'),
+    ('Maya Osei',        'maya.osei@quizrant.com',       'SDE 1',                        'Beginner', 0, 'Finish onboarding requirements'),
+    ('Liam Chen',        'liam.chen@quizrant.com',       'Security Analyst',             'Beginner', 0, ''),
+    ('Sofia Delgado',    'sofia.delgado@quizrant.com',   'Account Executive',            'Mediocre', 0, 'Get certified on Customer Data Handling'),
     -- mastery_override = 1: set by a manager rather than earned
-    ('Noah Whitaker',    'noah.whitaker@demo.com',   'Senior Account Executive',     'Expert',   1, ''),
-    ('Ava Thompson',     'ava.thompson@demo.com',    'Account Executive',            'Beginner', 0, ''),
+    ('Noah Whitaker',    'noah.whitaker@quizrant.com',   'Senior Account Executive',     'Expert',   1, ''),
+    ('Ava Thompson',     'ava.thompson@quizrant.com',    'Account Executive',            'Beginner', 0, ''),
 
     -- Fills out the rest of the Software Development department (Cybersecurity,
     -- Software Engineering, DevOps) so every role in the org chart has a real person
     -- in it, not just the four that happened to be here already. Reporting lines are
     -- set below, in the manager pass.
-    ('Marcus Chen',      'marcus.chen@demo.com',     'Chief Technology Officer',        'Expert',   0, ''),
-    ('Renu Kapoor',      'renu.kapoor@demo.com',     'Director of Cybersecurity',       'Expert',   0, 'Close the SOC 2 gap analysis by Q3'),
-    ('Owen Bennett',     'owen.bennett@demo.com',    'Senior Security Architect',       'Expert',   0, ''),
-    ('Farah Haddad',     'farah.haddad@demo.com',    'Information Security Engineer',   'Mediocre', 0, 'Get certified on Incident Response'),
-    ('Wei Zhang',        'wei.zhang@demo.com',       'Director of Software Engineering','Expert',   0, ''),
-    ('Jordan Ellis',     'jordan.ellis@demo.com',    'SDE 3',                           'Expert',   0, 'Mentor two SDE 1s this quarter'),
-    ('Aisha Bello',      'aisha.bello@demo.com',     'Director of DevOps',              'Expert',   0, ''),
-    ('Ben Novak',        'ben.novak@demo.com',       'Senior DevOps',                   'Expert',   0, ''),
-    ('Grace Kim',        'grace.kim@demo.com',       'DevOps Engineer',                 'Mediocre', 0, 'Finish on-call onboarding'),
-    ('Diego Martins',    'diego.martins@demo.com',   'Junior DevOps',                   'Beginner', 0, 'Finish onboarding requirements')
+    ('Marcus Chen',      'marcus.chen@quizrant.com',     'Chief Technology Officer',        'Expert',   0, ''),
+    ('Renu Kapoor',      'renu.kapoor@quizrant.com',     'Director of Cybersecurity',       'Expert',   0, 'Close the SOC 2 gap analysis by Q3'),
+    ('Owen Bennett',     'owen.bennett@quizrant.com',    'Senior Security Architect',       'Expert',   0, ''),
+    ('Farah Haddad',     'farah.haddad@quizrant.com',    'Information Security Engineer',   'Mediocre', 0, 'Get certified on Incident Response'),
+    ('Wei Zhang',        'wei.zhang@quizrant.com',       'Director of Software Engineering','Expert',   0, ''),
+    ('Jordan Ellis',     'jordan.ellis@quizrant.com',    'SDE 3',                           'Expert',   0, 'Mentor two SDE 1s this quarter'),
+    ('Naomi Reyes',      'naomi.reyes@quizrant.com',     'Director of DevOps',              'Expert',   0, ''),
+    ('Ben Novak',        'ben.novak@quizrant.com',       'Senior DevOps',                   'Expert',   0, ''),
+    ('Grace Kim',        'grace.kim@quizrant.com',       'DevOps Engineer',                 'Mediocre', 0, 'Finish on-call onboarding'),
+    ('Diego Martins',    'diego.martins@quizrant.com',   'Junior DevOps',                   'Beginner', 0, 'Finish onboarding requirements')
 ) AS v(name, email, role_title, mastery_level, mastery_override, goal)
 JOIN Roles r ON r.title = v.role_title
 WHERE NOT EXISTS (SELECT 1 FROM Employees e WHERE e.email = v.email);
@@ -65,11 +65,11 @@ SET manager_id = m.id
 FROM Employees e
 JOIN (VALUES
     -- Software Engineering: SDE 1/2/3 -> Dana (SWE Manager) -> Wei (Director) -> Marcus (CTO)
-    ('ethan.brooks@demo.com',   'dana.whitfield@demo.com'),
-    ('maya.osei@demo.com',      'dana.whitfield@demo.com'),
-    ('jordan.ellis@demo.com',   'dana.whitfield@demo.com'),
-    ('dana.whitfield@demo.com', 'wei.zhang@demo.com'),
-    ('wei.zhang@demo.com',      'marcus.chen@demo.com'),
+    ('ethan.brooks@quizrant.com',   'dana.whitfield@quizrant.com'),
+    ('maya.osei@quizrant.com',      'dana.whitfield@quizrant.com'),
+    ('jordan.ellis@quizrant.com',   'dana.whitfield@quizrant.com'),
+    ('dana.whitfield@quizrant.com', 'wei.zhang@quizrant.com'),
+    ('wei.zhang@quizrant.com',      'marcus.chen@quizrant.com'),
 
     -- Cybersecurity: Security Analyst / Senior Security Architect / Information
     -- Security Engineer all report directly to the Director (no manager layer in
@@ -77,21 +77,21 @@ JOIN (VALUES
     -- liam.chen previously reported to dana.whitfield (Software Engineering's
     -- manager), which was never actually correct for a Security Analyst -- this
     -- corrects it to the real Cybersecurity chain.
-    ('liam.chen@demo.com',      'renu.kapoor@demo.com'),
-    ('owen.bennett@demo.com',   'renu.kapoor@demo.com'),
-    ('farah.haddad@demo.com',   'renu.kapoor@demo.com'),
-    ('renu.kapoor@demo.com',    'marcus.chen@demo.com'),
+    ('liam.chen@quizrant.com',      'renu.kapoor@quizrant.com'),
+    ('owen.bennett@quizrant.com',   'renu.kapoor@quizrant.com'),
+    ('farah.haddad@quizrant.com',   'renu.kapoor@quizrant.com'),
+    ('renu.kapoor@quizrant.com',    'marcus.chen@quizrant.com'),
 
     -- DevOps: Senior/regular/Junior DevOps all report directly to the Director -> Marcus (CTO)
-    ('ben.novak@demo.com',      'aisha.bello@demo.com'),
-    ('grace.kim@demo.com',      'aisha.bello@demo.com'),
-    ('diego.martins@demo.com',  'aisha.bello@demo.com'),
-    ('aisha.bello@demo.com',    'marcus.chen@demo.com'),
+    ('ben.novak@quizrant.com',      'naomi.reyes@quizrant.com'),
+    ('grace.kim@quizrant.com',      'naomi.reyes@quizrant.com'),
+    ('diego.martins@quizrant.com',  'naomi.reyes@quizrant.com'),
+    ('naomi.reyes@quizrant.com',    'marcus.chen@quizrant.com'),
 
     -- Sales (unchanged)
-    ('sofia.delgado@demo.com',  'priya.n@demo.com'),
-    ('noah.whitaker@demo.com',  'priya.n@demo.com'),
-    ('ava.thompson@demo.com',   'priya.n@demo.com')
+    ('sofia.delgado@quizrant.com',  'priya.n@quizrant.com'),
+    ('noah.whitaker@quizrant.com',  'priya.n@quizrant.com'),
+    ('ava.thompson@quizrant.com',   'priya.n@quizrant.com')
 ) AS v(email, manager_email) ON v.email = e.email
 JOIN Employees m ON m.email = v.manager_email
 WHERE e.manager_id IS NULL OR e.manager_id <> m.id;
@@ -198,23 +198,23 @@ SELECT e.id, c.id, v.status, v.score_percent,
        NULLIF(v.completion_date, ''), NULLIF(v.expiry_date, ''),
        NULLIF(v.certificate_url, ''), NULL
 FROM (VALUES
-    ('ethan.brooks@demo.com',   'Workplace Safety',           'completed',   100, '2025-08-10', '2026-08-10', 'https://example.com/certs/ethan-safety.pdf'),
-    ('ethan.brooks@demo.com',   'Data Privacy Basics',        'completed',    90, '2025-08-12', '2026-08-12', 'https://example.com/certs/ethan-privacy.pdf'),
-    ('ethan.brooks@demo.com',   'Cybersecurity Fundamentals', 'completed',    85, '2025-08-15', '2026-08-15', 'https://example.com/certs/ethan-cyber.pdf'),
-    ('ethan.brooks@demo.com',   'Advanced Secure Coding',     'not_started', NULL, '',           '',           ''),
-    ('maya.osei@demo.com',      'Workplace Safety',           'completed',    80, '2026-07-01', '2027-07-01', 'https://example.com/certs/maya-safety.pdf'),
-    ('maya.osei@demo.com',      'Data Privacy Basics',        'in_progress', NULL, '',           '',           ''),
-    ('maya.osei@demo.com',      'Anti-Harassment Training',   'not_started', NULL, '',           '',           ''),
-    ('liam.chen@demo.com',      'Workplace Safety',           'failed',       60, '',           '',           ''),
-    ('liam.chen@demo.com',      'Data Privacy Basics',        'not_started', NULL, '',           '',           ''),
-    ('sofia.delgado@demo.com',  'Workplace Safety',           'completed',    95, '2025-08-20', '2026-08-20', 'https://example.com/certs/sofia-safety.pdf'),
-    ('sofia.delgado@demo.com',  'Customer Data Handling',     'completed',    88, '2025-08-25', '2026-02-25', 'https://example.com/certs/sofia-data.pdf'),
-    ('sofia.delgado@demo.com',  'Data Privacy Basics',        'in_progress', NULL, '',           '',           ''),
-    ('noah.whitaker@demo.com',  'Workplace Safety',           'completed',   100, '2026-01-05', '2027-01-05', 'https://example.com/certs/noah-safety.pdf'),
-    ('noah.whitaker@demo.com',  'Data Privacy Basics',        'completed',   100, '2026-01-06', '2027-01-06', 'https://example.com/certs/noah-privacy.pdf'),
-    ('noah.whitaker@demo.com',  'Customer Data Handling',     'completed',    92, '2026-01-10', '2026-07-10', 'https://example.com/certs/noah-data.pdf'),
-    ('ava.thompson@demo.com',   'Workplace Safety',           'not_started', NULL, '',           '',           ''),
-    ('ava.thompson@demo.com',   'Customer Data Handling',     'not_started', NULL, '',           '',           '')
+    ('ethan.brooks@quizrant.com',   'Workplace Safety',           'completed',   100, '2025-08-10', '2026-08-10', 'https://example.com/certs/ethan-safety.pdf'),
+    ('ethan.brooks@quizrant.com',   'Data Privacy Basics',        'completed',    90, '2025-08-12', '2026-08-12', 'https://example.com/certs/ethan-privacy.pdf'),
+    ('ethan.brooks@quizrant.com',   'Cybersecurity Fundamentals', 'completed',    85, '2025-08-15', '2026-08-15', 'https://example.com/certs/ethan-cyber.pdf'),
+    ('ethan.brooks@quizrant.com',   'Advanced Secure Coding',     'not_started', NULL, '',           '',           ''),
+    ('maya.osei@quizrant.com',      'Workplace Safety',           'completed',    80, '2026-07-01', '2027-07-01', 'https://example.com/certs/maya-safety.pdf'),
+    ('maya.osei@quizrant.com',      'Data Privacy Basics',        'in_progress', NULL, '',           '',           ''),
+    ('maya.osei@quizrant.com',      'Anti-Harassment Training',   'not_started', NULL, '',           '',           ''),
+    ('liam.chen@quizrant.com',      'Workplace Safety',           'failed',       60, '',           '',           ''),
+    ('liam.chen@quizrant.com',      'Data Privacy Basics',        'not_started', NULL, '',           '',           ''),
+    ('sofia.delgado@quizrant.com',  'Workplace Safety',           'completed',    95, '2025-08-20', '2026-08-20', 'https://example.com/certs/sofia-safety.pdf'),
+    ('sofia.delgado@quizrant.com',  'Customer Data Handling',     'completed',    88, '2025-08-25', '2026-02-25', 'https://example.com/certs/sofia-data.pdf'),
+    ('sofia.delgado@quizrant.com',  'Data Privacy Basics',        'in_progress', NULL, '',           '',           ''),
+    ('noah.whitaker@quizrant.com',  'Workplace Safety',           'completed',   100, '2026-01-05', '2027-01-05', 'https://example.com/certs/noah-safety.pdf'),
+    ('noah.whitaker@quizrant.com',  'Data Privacy Basics',        'completed',   100, '2026-01-06', '2027-01-06', 'https://example.com/certs/noah-privacy.pdf'),
+    ('noah.whitaker@quizrant.com',  'Customer Data Handling',     'completed',    92, '2026-01-10', '2026-07-10', 'https://example.com/certs/noah-data.pdf'),
+    ('ava.thompson@quizrant.com',   'Workplace Safety',           'not_started', NULL, '',           '',           ''),
+    ('ava.thompson@quizrant.com',   'Customer Data Handling',     'not_started', NULL, '',           '',           '')
 ) AS v(email, course_title, status, score_percent, completion_date, expiry_date, certificate_url)
 JOIN Employees e ON e.email = v.email
 JOIN Courses   c ON c.title = v.course_title AND c.company_id = @company_id
@@ -228,14 +228,14 @@ WHERE NOT EXISTS (
 INSERT INTO QuizAttempts (employee_id, question_id, attempt_number, submitted_answer, is_correct)
 SELECT e.id, q.id, 1, v.submitted_answer, v.is_correct
 FROM (VALUES
-    ('ethan.brooks@demo.com', 'Who should you notify first if you discover a workplace hazard?', 'Your direct supervisor', 1),
-    ('ethan.brooks@demo.com', 'What is the emergency assembly point used for?', 'Headcount after an evacuation', 1),
-    ('ethan.brooks@demo.com', 'Fill in the blank: In case of fire, always use the stairs, never the ____.', 'elevator', 1),
-    ('liam.chen@demo.com',    'Who should you notify first if you discover a workplace hazard?', 'A coworker in another department', 0),
-    ('liam.chen@demo.com',    'What is the emergency assembly point used for?', 'Team meetings', 0),
-    ('liam.chen@demo.com',    'Fill in the blank: In case of fire, always use the stairs, never the ____.', 'stairs', 0),
-    ('sofia.delgado@demo.com', 'Customer payment data should be stored:', 'In an approved encrypted system only', 1),
-    ('sofia.delgado@demo.com', 'Fill in the blank: Access to customer records should be logged for ____ purposes.', 'audit', 1)
+    ('ethan.brooks@quizrant.com', 'Who should you notify first if you discover a workplace hazard?', 'Your direct supervisor', 1),
+    ('ethan.brooks@quizrant.com', 'What is the emergency assembly point used for?', 'Headcount after an evacuation', 1),
+    ('ethan.brooks@quizrant.com', 'Fill in the blank: In case of fire, always use the stairs, never the ____.', 'elevator', 1),
+    ('liam.chen@quizrant.com',    'Who should you notify first if you discover a workplace hazard?', 'A coworker in another department', 0),
+    ('liam.chen@quizrant.com',    'What is the emergency assembly point used for?', 'Team meetings', 0),
+    ('liam.chen@quizrant.com',    'Fill in the blank: In case of fire, always use the stairs, never the ____.', 'stairs', 0),
+    ('sofia.delgado@quizrant.com', 'Customer payment data should be stored:', 'In an approved encrypted system only', 1),
+    ('sofia.delgado@quizrant.com', 'Fill in the blank: Access to customer records should be logged for ____ purposes.', 'audit', 1)
 ) AS v(email, question_text, submitted_answer, is_correct)
 JOIN Employees e ON e.email = v.email
 JOIN QuizQuestions q ON q.question_text = v.question_text
