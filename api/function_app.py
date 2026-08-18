@@ -1013,8 +1013,14 @@ def get_lesson(req: func.HttpRequest) -> func.HttpResponse:
             return _error(404, "No lesson available",
                           "No readable sections for this training.")
 
+        # Frontend reads .body, not .text -- key mismatch, not a naming preference.
+        # Every lesson has been rendering with an empty reading pane since this
+        # endpoint was written, invisible until the first real document actually
+        # reached it end to end.
+        total_words = sum(len((s["chunk_text"] or "").split()) for s in sections)
         return _json({
             "training": training,
+            "readTime": "{} min read".format(max(1, round(total_words / 200))),
             "sections": [
                 {
                     "id": s["chunk_id"],
@@ -1022,7 +1028,7 @@ def get_lesson(req: func.HttpRequest) -> func.HttpResponse:
                     "heading": s["section"],
                     "pageStart": s["page_start"],
                     "pageEnd": s["page_end"],
-                    "text": s["chunk_text"],
+                    "body": s["chunk_text"],
                 }
                 for s in sections
             ],
