@@ -39,7 +39,22 @@ FROM (VALUES
     ('Sofia Delgado',    'sofia.delgado@demo.com',   'Account Executive',            'Mediocre', 0, 'Get certified on Customer Data Handling'),
     -- mastery_override = 1: set by a manager rather than earned
     ('Noah Whitaker',    'noah.whitaker@demo.com',   'Senior Account Executive',     'Expert',   1, ''),
-    ('Ava Thompson',     'ava.thompson@demo.com',    'Account Executive',            'Beginner', 0, '')
+    ('Ava Thompson',     'ava.thompson@demo.com',    'Account Executive',            'Beginner', 0, ''),
+
+    -- Fills out the rest of the Software Development department (Cybersecurity,
+    -- Software Engineering, DevOps) so every role in the org chart has a real person
+    -- in it, not just the four that happened to be here already. Reporting lines are
+    -- set below, in the manager pass.
+    ('Marcus Chen',      'marcus.chen@demo.com',     'Chief Technology Officer',        'Expert',   0, ''),
+    ('Renu Kapoor',      'renu.kapoor@demo.com',     'Director of Cybersecurity',       'Expert',   0, 'Close the SOC 2 gap analysis by Q3'),
+    ('Owen Bennett',     'owen.bennett@demo.com',    'Senior Security Architect',       'Expert',   0, ''),
+    ('Farah Haddad',     'farah.haddad@demo.com',    'Information Security Engineer',   'Mediocre', 0, 'Get certified on Incident Response'),
+    ('Wei Zhang',        'wei.zhang@demo.com',       'Director of Software Engineering','Expert',   0, ''),
+    ('Jordan Ellis',     'jordan.ellis@demo.com',    'SDE 3',                           'Expert',   0, 'Mentor two SDE 1s this quarter'),
+    ('Aisha Bello',      'aisha.bello@demo.com',     'Director of DevOps',              'Expert',   0, ''),
+    ('Ben Novak',        'ben.novak@demo.com',       'Senior DevOps',                   'Expert',   0, ''),
+    ('Grace Kim',        'grace.kim@demo.com',       'DevOps Engineer',                 'Mediocre', 0, 'Finish on-call onboarding'),
+    ('Diego Martins',    'diego.martins@demo.com',   'Junior DevOps',                   'Beginner', 0, 'Finish onboarding requirements')
 ) AS v(name, email, role_title, mastery_level, mastery_override, goal)
 JOIN Roles r ON r.title = v.role_title
 WHERE NOT EXISTS (SELECT 1 FROM Employees e WHERE e.email = v.email);
@@ -49,9 +64,31 @@ UPDATE e
 SET manager_id = m.id
 FROM Employees e
 JOIN (VALUES
+    -- Software Engineering: SDE 1/2/3 -> Dana (SWE Manager) -> Wei (Director) -> Marcus (CTO)
     ('ethan.brooks@demo.com',   'dana.whitfield@demo.com'),
     ('maya.osei@demo.com',      'dana.whitfield@demo.com'),
-    ('liam.chen@demo.com',      'dana.whitfield@demo.com'),
+    ('jordan.ellis@demo.com',   'dana.whitfield@demo.com'),
+    ('dana.whitfield@demo.com', 'wei.zhang@demo.com'),
+    ('wei.zhang@demo.com',      'marcus.chen@demo.com'),
+
+    -- Cybersecurity: Security Analyst / Senior Security Architect / Information
+    -- Security Engineer all report directly to the Director (no manager layer in
+    -- between, unlike Software Engineering) -> Marcus (CTO).
+    -- liam.chen previously reported to dana.whitfield (Software Engineering's
+    -- manager), which was never actually correct for a Security Analyst -- this
+    -- corrects it to the real Cybersecurity chain.
+    ('liam.chen@demo.com',      'renu.kapoor@demo.com'),
+    ('owen.bennett@demo.com',   'renu.kapoor@demo.com'),
+    ('farah.haddad@demo.com',   'renu.kapoor@demo.com'),
+    ('renu.kapoor@demo.com',    'marcus.chen@demo.com'),
+
+    -- DevOps: Senior/regular/Junior DevOps all report directly to the Director -> Marcus (CTO)
+    ('ben.novak@demo.com',      'aisha.bello@demo.com'),
+    ('grace.kim@demo.com',      'aisha.bello@demo.com'),
+    ('diego.martins@demo.com',  'aisha.bello@demo.com'),
+    ('aisha.bello@demo.com',    'marcus.chen@demo.com'),
+
+    -- Sales (unchanged)
     ('sofia.delgado@demo.com',  'priya.n@demo.com'),
     ('noah.whitaker@demo.com',  'priya.n@demo.com'),
     ('ava.thompson@demo.com',   'priya.n@demo.com')
