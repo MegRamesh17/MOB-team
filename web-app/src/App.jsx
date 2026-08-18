@@ -632,37 +632,128 @@ function Dashboard({ name, onOpenPath, onOpenTraining }) {
 }
 
 // ---------- Learning path ----------
-function LearningPath({ onBack, onOpenTraining }) {
-  const { data, loading, error, reload } = useAsync(() => api.trainings(), []);
-  const trainings = data?.trainings || [];
+// Real course titles from db/seed/seed_data.sql, not invented ones -- shown only when
+// a role's real path is still empty (the question bank hasn't been generated for it
+// yet), so the roadmap has something to preview without pretending to be someone's
+// actual progress.
+const EXAMPLE_TRAININGS = [
+  { id: "ex-1", title: "Workplace Safety", modules: ["Emergency procedures", "Hazard reporting"], questionCount: 6, status: "completed" },
+  { id: "ex-2", title: "Data Privacy Basics", modules: ["PII handling", "Reporting a breach"], questionCount: 8, status: "in-progress" },
+  { id: "ex-3", title: "Cybersecurity Fundamentals", modules: ["Threat basics", "Safe practices"], questionCount: 10, status: "not-started" },
+  { id: "ex-4", title: "Advanced Secure Coding", modules: ["Prerequisite: Cybersecurity Fundamentals"], questionCount: 12, status: "locked" },
+];
+
+const ROADMAP_STATUS_STYLE = {
+  completed: { fg: C.success, bg: C.successBg, ring: C.success, Icon: CheckCircle2 },
+  "in-progress": { fg: C.amber, bg: C.amberBg, ring: C.amber, Icon: BookOpen },
+  "not-started": { fg: C.violet700, bg: C.lavender, ring: C.violet500, Icon: Circle },
+  locked: { fg: "#9A93A8", bg: "#F1F0F3", ring: "#C7C2D6", Icon: Lock },
+};
+
+// A smooth S-curve through each waypoint, control points offset only in x (so the
+// tangent is flat exactly at every point) -- that is what lets a pin's stem meet the
+// road straight-on instead of at an angle.
+function roadPathD(points) {
+  if (points.length < 2) return "";
+  let d = `M ${points[0][0]} ${points[0][1]}`;
+  for (let i = 1; i < points.length; i++) {
+    const [x0, y0] = points[i - 1];
+    const [x1, y1] = points[i];
+    const midX = (x0 + x1) / 2;
+    d += ` C ${midX} ${y0}, ${midX} ${y1}, ${x1} ${y1}`;
+  }
+  return d;
+}
+
+function TrainingRoadmap({ trainings, onOpenTraining }) {
+  const stepX = 190, ampY = 60, stemLen = 36, cardW = 172, cardH = 126;
+  const midY = ampY + stemLen + cardH;
+  const padX = cardW / 2 + 20;
+
+  const points = trainings.map((_, i) => [
+    padX + i * stepX,
+    midY + (i % 2 === 0 ? -ampY : ampY),
+  ]);
+  const width = padX * 2 + Math.max(0, trainings.length - 1) * stepX;
+  const height = midY + ampY + stemLen + cardH + 20;
+  const d = roadPathD(points);
 
   return (
-    <div className="p-8 max-w-3xl">
+    <div className="overflow-x-auto pb-2">
+      <svg width={width} height={height} style={{ minWidth: "100%", display: "block" }}>
+        <path d={d} fill="none" stroke={C.line} strokeWidth={10} strokeLinecap="round" />
+        <path d={d} fill="none" stroke="#fff" strokeWidth={2} strokeDasharray="9 9" strokeLinecap="round" />
+        {points.map(([x, y], i) => {
+          const t = trainings[i];
+          const style = ROADMAP_STATUS_STYLE[t.status] || ROADMAP_STATUS_STYLE["not-started"];
+          const above = i % 2 === 0;
+          const Icon = style.Icon;
+          const cardY = above ? y - stemLen - cardH : y + stemLen;
+          const clickable = t.status !== "locked" && onOpenTraining;
+          return (
+            <g key={t.id}>
+              <line x1={x} y1={y} x2={x} y2={above ? y - stemLen : y + stemLen}
+                stroke={style.ring} strokeWidth={3} />
+              <circle cx={x} cy={y} r={9} fill={style.ring} stroke="#fff" strokeWidth={3} />
+              <foreignObject x={x - cardW / 2} y={cardY} width={cardW} height={cardH}>
+                <button
+                  onClick={clickable ? () => onOpenTraining(t) : undefined}
+                  disabled={!clickable}
+                  style={{ borderColor: C.line, cursor: clickable ? "pointer" : "default" }}
+                  className="w-full h-full border rounded-xl bg-white p-3 text-left flex flex-col gap-1 shadow-sm hover:shadow-md transition-shadow disabled:hover:shadow-sm"
+                >
+                  <div style={{ background: style.bg }} className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0">
+                    <Icon size={14} color={style.fg} />
+                  </div>
+                  <p style={{
+                    color: C.ink,
+                    display: "-webkit-box",
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: "vertical",
+                    overflow: "hidden",
+                  }} className="text-xs font-semibold leading-tight">{t.title}</p>
+                  <StatusPill status={t.status} />
+                </button>
+              </foreignObject>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function LearningPath({ onBack, onOpenTraining }) {
+  const { data, loading, error, reload } = useAsync(() => api.trainings(), []);
+  const real = data?.trainings || [];
+  const showExample = !loading && !error && real.length === 0;
+
+  return (
+    <div className="p-8 max-w-4xl">
       <button onClick={onBack} style={{ color: C.sub }} className="flex items-center gap-1 text-sm font-semibold mb-4">
         <ArrowLeft size={14} /> Back to dashboard
       </button>
-      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-6">My training path</h1>
+      <div className="flex items-center gap-2 mb-6">
+        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold">My training path</h1>
+        {showExample && <MockNote>example path</MockNote>}
+      </div>
 
       {loading && <Loading />}
       {error && <ErrorBox error={error} onRetry={reload} />}
 
-      <div className="relative pl-8">
-        {trainings.length > 0 && <div style={{ background: C.line }} className="absolute left-[15px] top-2 bottom-2 w-0.5" />}
-        {trainings.map((t) => (
-          <div key={t.id} className="relative mb-6 last:mb-0">
-            <div style={{ background: t.status === "completed" ? C.success : C.violet700 }}
-              className="absolute -left-8 top-1 w-4 h-4 rounded-full border-2 border-white ring-2" />
-            <button onClick={() => onOpenTraining(t)} style={{ borderColor: C.line }}
-              className="w-full text-left border rounded-xl p-4 bg-white flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p style={{ color: C.ink }} className="text-sm font-semibold truncate">{t.title}</p>
-                <p style={{ color: C.sub }} className="text-xs mt-0.5">{t.modules.length} modules · {t.questionCount} questions</p>
-              </div>
-              <StatusPill status={t.status} />
-            </button>
-          </div>
-        ))}
-      </div>
+      {!loading && !error && real.length > 0 && (
+        <TrainingRoadmap trainings={real} onOpenTraining={onOpenTraining} />
+      )}
+
+      {showExample && (
+        <>
+          <p style={{ color: C.sub }} className="text-sm mb-4">
+            Nothing has been assigned to your role yet, so here's what your path will look
+            like once it has — these four are not your real trainings.
+          </p>
+          <TrainingRoadmap trainings={EXAMPLE_TRAININGS} />
+        </>
+      )}
     </div>
   );
 }
