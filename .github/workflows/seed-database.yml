@@ -80,7 +80,10 @@ jobs:
         # message and the step still reports success, which is how a half-seeded database
         # gets mistaken for a working one.
         run: |
-          for file in db/seed/org_seed.sql db/seed/seed_data.sql; do
+          # role_codes.sql runs after org_seed.sql on purpose: it maps the roles that file
+          # creates, and 016_add_role_code.sql cannot do it because migrations run before
+          # seeds and it hit an empty Roles table.
+          for file in db/seed/org_seed.sql db/seed/role_codes.sql db/seed/seed_data.sql; do
             echo "--- $file"
             sqlcmd -S "$SQL_SERVER" -d "$SQL_DATABASE" \
               -U "$SQL_USER" -P "${{ secrets.SQL_ADMIN_PASSWORD }}" \
