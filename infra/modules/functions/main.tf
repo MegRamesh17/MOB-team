@@ -38,6 +38,14 @@ resource "azurerm_linux_function_app" "mob_functions" {
   app_settings = {
     "FUNCTIONS_WORKER_RUNTIME" = "python"
     "ENVIRONMENT"              = var.environment
+    # With a requirements.txt present, Azure's zip-deploy default can attempt its own
+    # remote build (Oryx) on top of the package azure-pipelines-backend.yml already
+    # built and vendored -- ambiguous at best, and a silently-failed remote build (e.g.
+    # missing ODBC dev headers for pyodbc) produces exactly "host up, zero routes
+    # registered" with no clear error. Pinning both settings makes Azure run only from
+    # the exact zip the pipeline shipped, with no remote build in the picture at all.
+    "WEBSITE_RUN_FROM_PACKAGE"       = "1"
+    "SCM_DO_BUILD_DURING_DEPLOYMENT" = "false"
     "SQL_SERVER"               = var.sql_server_fqdn
     "SQL_DATABASE"             = var.sql_database_name
     "SQL_USER"                 = var.sql_admin_username
