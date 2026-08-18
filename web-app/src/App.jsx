@@ -1942,7 +1942,7 @@ function Profile({ principal }) {
     ...persona,
     name: principal?.name || principal?.email || persona.name,
     email: principal?.email || persona.email,
-    role: principal?.role_code || persona.role,
+    role: principal?.department || persona.role,
   };
   const { data: meData, loading, error, reload } = useAsync(() => api.me(), []);
   const { data: certData } = useAsync(() => api.certificates().catch(() => ({ certificates: [] })), []);
