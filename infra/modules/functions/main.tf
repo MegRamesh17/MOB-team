@@ -2,7 +2,7 @@
 # separate from your training-docs storage account
 resource "azurerm_storage_account" "func_storage" {
   name                     = "mobfuncstor${var.environment}"
-  resource_group_name     = var.resource_group_name
+  resource_group_name      = var.resource_group_name
   location                 = var.location
   account_tier             = "Standard"
   account_replication_type = "LRS"
@@ -18,7 +18,7 @@ resource "azurerm_service_plan" "func_plan" {
 
 resource "azurerm_linux_function_app" "mob_functions" {
   name                       = "mob-functions-${var.environment}"
-  resource_group_name       = var.resource_group_name
+  resource_group_name        = var.resource_group_name
   location                   = var.location
   service_plan_id            = azurerm_service_plan.func_plan.id
   storage_account_name       = azurerm_storage_account.func_storage.name
@@ -27,6 +27,11 @@ resource "azurerm_linux_function_app" "mob_functions" {
   site_config {
     application_stack {
       python_version = "3.11"
+    }
+
+    cors {
+      allowed_origins     = var.allowed_origins
+      support_credentials = false
     }
   }
 
@@ -40,12 +45,12 @@ resource "azurerm_linux_function_app" "mob_functions" {
     "JWT_SIGNING_SECRET"       = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/jwt-signing-secret/)"
     # Both empty until the endpoint variable is set. Extraction falls back to
     # pypdf when they are, so the app runs either way.
-    "DOCUMENT_INTELLIGENCE_ENDPOINT" = var.doc_intelligence_endpoint
-    "DOCUMENT_INTELLIGENCE_KEY"      = var.doc_intelligence_endpoint == "" ? "" : "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/doc-intelligence-key/)"
-    "COMMS_CONNECTION_STRING"  = var.comms_connection_string
+    "DOCUMENT_INTELLIGENCE_ENDPOINT"  = var.doc_intelligence_endpoint
+    "DOCUMENT_INTELLIGENCE_KEY"       = var.doc_intelligence_endpoint == "" ? "" : "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/doc-intelligence-key/)"
+    "COMMS_CONNECTION_STRING"         = var.comms_connection_string
     "AZURE_STORAGE_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/storage-connection-string/)"
-    "QUIZGEN_PASSING_SCORE"    = "80"
-    "QUIZGEN_QUIZ_LENGTH"      = "8"
+    "QUIZGEN_PASSING_SCORE"           = "80"
+    "QUIZGEN_QUIZ_LENGTH"             = "8"
   }
 
   identity {

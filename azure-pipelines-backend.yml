@@ -36,6 +36,7 @@ trigger:
       - db/migrations/*
       - db/seed/*
       - api/*
+      - azure-pipelines-backend.yml
 
 # Azure Pipelines' default, if this is omitted, is to ALSO run on every pull request
 # regardless of what files it touches -- not just pushes to main like the header
@@ -228,9 +229,14 @@ stages:
               versionSpec: '3.11'
 
           - bash: |
-              pip install -r api/requirements.txt
-              python -m compileall -q api && echo "All modules compile."
-            displayName: 'Check the package imports before shipping it'
+              python -m pip install --upgrade pip
+              python -m pip install \
+                --target api/.python_packages/lib/site-packages \
+                -r api/requirements.txt
+              python -m compileall -q api
+              PYTHONPATH="api:api/.python_packages/lib/site-packages" \
+                python -c "import function_app; print('Registered routes:', len(function_app.app.get_functions()))"
+            displayName: 'Build a self-contained Function package and register routes'
 
           - task: ArchiveFiles@2
             displayName: 'Zip the api/ package'
@@ -257,6 +263,8 @@ stages:
               appType: 'functionAppLinux'
               appName: $(functionAppName)
               package: '$(Build.ArtifactStagingDirectory)/api.zip'
+              runtimeStack: 'PYTHON|3.11'
+              deploymentMethod: 'zipDeploy'
 
           - bash: sleep 45
             displayName: 'Wait for the app to come back up'
@@ -270,6 +278,9 @@ stages:
                   echo "Healthy."
                   cat /tmp/health.json
                   exit 0
+                fi
+                if [ "$CODE" = "404" ]; then
+                  echo "##vso[task.logissue type=error]The Function host is reachable but no /api/health route is registered. Check the deployed zip and Python worker import logs."
                 fi
                 echo "Attempt $attempt: HTTP $CODE — retrying in 15s"
                 sleep 15

@@ -11,11 +11,6 @@ resource "azurerm_static_web_app" "frontend" {
   sku_size = var.sku_tier
 
   # Deliberately no app_settings here. SWA app settings are only visible to a
-  # *managed Functions API* attached to the SWA resource -- this site has no
-  # linked backend (it calls mob-functions-<env> directly as an external API), so
-  # nothing would ever read them. web-app/src/api.js reads VITE_API_BASE, which
-  # Vite bakes into the static bundle at BUILD time; that has to be set as a build
-  # step environment variable in the DevOps frontend pipeline, not as a resource
-  # setting here. api_base_url is kept below only as an output for the pipeline to
-  # consume, so the URL is defined once instead of duplicated.
+  # managed Functions API attached to this resource. VITE_API_BASE is instead
+  # baked into the static bundle by azure-pipelines-frontend.yml.
 }

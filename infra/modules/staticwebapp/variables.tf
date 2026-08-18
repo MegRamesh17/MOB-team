@@ -17,8 +17,3 @@ variable "sku_tier" {
   type        = string
   default     = "Free"
 }
-
-variable "api_base_url" {
-  description = "Base URL of the deployed Function App the frontend calls, e.g. https://mob-functions-dev.azurewebsites.net/api"
-  type        = string
-}

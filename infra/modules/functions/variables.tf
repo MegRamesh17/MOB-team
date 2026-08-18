@@ -36,3 +36,9 @@ variable "doc_intelligence_endpoint" {
   type    = string
   default = ""
 }
+
+variable "allowed_origins" {
+  description = "Exact browser origins allowed to call the Function App"
+  type        = list(string)
+  default     = []
+}
