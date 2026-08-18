@@ -59,6 +59,39 @@ JOIN (VALUES
 JOIN Employees m ON m.email = v.manager_email
 WHERE e.manager_id IS NULL OR e.manager_id <> m.id;
 
+-- Demo passwords, so these accounts can actually sign in.
+--
+-- 012_add_auth.sql adds password_hash as nullable and nothing else writes one, so
+-- login.py returns 401 for every row until something does. scripts/set_passwords.py is
+-- that something for real use, but it needs SQL admin credentials and a firewall rule
+-- from wherever it is run. These are DEMO accounts on @demo.com addresses, so the seed
+-- that already invents the people can invent their passwords too, and the demo works
+-- straight off the pipeline with no manual step.
+--
+-- These are bcrypt hashes, which is what login.py verifies with bcrypt.checkpw. A hash
+-- is safe in a public repository — that is the point of hashing — and no plaintext
+-- appears here, which is what AUTH-02 requires. The plaintext is shared out of band.
+-- All eight share one password deliberately: switching identity is how role scoping
+-- gets demonstrated, and eight passwords to juggle makes that worse, not safer.
+--
+-- Only fills NULLs, so re-running never clobbers a password set deliberately by
+-- set_passwords.py. To rotate these, generate new hashes with bcrypt.hashpw and replace
+-- the values below — do not paste a plaintext password into this file.
+UPDATE e
+SET password_hash = v.password_hash
+FROM Employees e
+JOIN (VALUES
+    ('dana.whitfield@demo.com', '$2b$12$X48UUbvFFvXj2EzhqljYK.PtFJco7mRhCDYjfNrIO2875jDNa5Use'),
+    ('priya.n@demo.com',        '$2b$12$LSaWejnok0slyISnKcbXHe0jEkTD6qNR/DeJQ0CB.n4aikqS40i7m'),
+    ('ethan.brooks@demo.com',   '$2b$12$jxg/87maiaBaE8NJjITCG.tTH6GT75MFLxLDL3XcAT93sghcwHUwa'),
+    ('maya.osei@demo.com',      '$2b$12$q8Ve/9K7JrvkU0Nixt9K8.DupJGKKax290cbpcHCWHFeSEKKZ8ay6'),
+    ('liam.chen@demo.com',      '$2b$12$pDjTJx7g7yGvoiIX9MNqBeGzKsmUVqGND/ymdmnFJJVNDmTMphbva'),
+    ('sofia.delgado@demo.com',  '$2b$12$eTw2dZ3.jiQphxeKJMnqNuPnFqH2ve91DvoRUqgO9N6J33CuwhnMC'),
+    ('noah.whitaker@demo.com',  '$2b$12$H0TS/rJ0Ewst5MQhCzXEkeIedfz2b9IfiKHgseU2UKC0eeDYaR3hi'),
+    ('ava.thompson@demo.com',   '$2b$12$hK.jpvZ7wpuNDuFfwkP5yOu29x2AZH3jbFK07UlAA/dRewFdnQjl6')
+) AS v(email, password_hash) ON v.email = e.email
+WHERE e.password_hash IS NULL;
+
 -- =========================================================
 -- 2. COURSES
 -- =========================================================
@@ -207,11 +240,16 @@ WHERE NOT EXISTS (
     WHERE a.employee_id = e.id AND a.question_id = q.id AND a.attempt_number = 1
 );
 
-DECLARE @employee_count INT, @course_count INT;
+DECLARE @employee_count INT, @course_count INT, @can_sign_in INT;
 
 SELECT @employee_count = COUNT(*) FROM Employees WHERE company_id = @company_id;
 SELECT @course_count = COUNT(*) FROM Courses WHERE company_id = @company_id;
+-- Reported because a seed that loads people who cannot sign in looks identical to a
+-- working one until someone tries the login screen.
+SELECT @can_sign_in = COUNT(*) FROM Employees
+ WHERE company_id = @company_id AND password_hash IS NOT NULL;
 
 PRINT 'seed_data: '
-    + CAST(@employee_count AS VARCHAR) + ' employees, '
+    + CAST(@employee_count AS VARCHAR) + ' employees ('
+    + CAST(@can_sign_in AS VARCHAR) + ' can sign in), '
     + CAST(@course_count AS VARCHAR) + ' courses.';
