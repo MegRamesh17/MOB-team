@@ -80,38 +80,50 @@ class FakeCursor:
         t = self.tables
 
         if "MERGE dbo.SourceChunks" in s:
+            # company_id is NOT NULL on the real table (020_add_company_to_quizgen.sql)
+            # -- enforced here too, since the original version of this fake didn't
+            # model that constraint at all and let a real bug (company_id missing
+            # from this exact MERGE) pass every test before it hit production.
             chunk_id = p[0]
             existing = next((r for r in t["SourceChunks"] if r["chunk_id"] == chunk_id), None)
             (doc_id, doc_title, section, topic, page_start, page_end,
-             chunk_text, container, role_scope) = p[1:10]
+             chunk_text, container, role_scope, company_id) = p[1:11]
+            if company_id is None:
+                raise AssertionError(
+                    "IntegrityError: NULL company_id on SourceChunks -- MERGE must "
+                    "set it in both the UPDATE SET and INSERT VALUES branches")
             if existing:
                 existing.update(doc_id=doc_id, doc_title=doc_title, section=section,
                                  topic=topic, page_start=page_start, page_end=page_end,
                                  chunk_text=chunk_text, container=container,
-                                 role_scope=role_scope)
+                                 role_scope=role_scope, company_id=company_id)
             else:
                 t["SourceChunks"].append(dict(
                     chunk_id=chunk_id, doc_id=doc_id, doc_title=doc_title, section=section,
                     topic=topic, page_start=page_start, page_end=page_end,
-                    chunk_text=chunk_text, container=container, role_scope=role_scope))
+                    chunk_text=chunk_text, container=container, role_scope=role_scope,
+                    company_id=company_id))
             self.rowcount = 1
 
         elif "SELECT chunk_id, doc_id, doc_title, topic, section, page_start" in s:
-            self._result = sorted(t["SourceChunks"], key=lambda r: (r["doc_title"], r["page_start"]))
+            (company_id,) = p
+            self._result = sorted(
+                (r for r in t["SourceChunks"] if r["company_id"] == company_id),
+                key=lambda r: (r["doc_title"], r["page_start"]))
 
         elif "UPDATE dbo.SourceChunks SET role_scope" in s:
-            role, doc_title, topic = p
+            role, doc_title, topic, company_id = p
             n = 0
             for r in t["SourceChunks"]:
-                if r["doc_title"] == doc_title and r["topic"] == topic:
+                if r["doc_title"] == doc_title and r["topic"] == topic and r["company_id"] == company_id:
                     r["role_scope"] = role
                     n += 1
             self.rowcount = n
 
         elif "SELECT DISTINCT doc_id FROM dbo.SourceChunks" in s:
-            (doc_title,) = p
+            doc_title, company_id = p
             self._result = [{"doc_id": r["doc_id"]} for r in t["SourceChunks"]
-                             if r["doc_title"] == doc_title]
+                             if r["doc_title"] == doc_title and r["company_id"] == company_id]
 
         elif "SELECT DISTINCT source_chunk_id FROM dbo.GeneratedQuestions" in s:
             (company_id,) = p
@@ -280,6 +292,16 @@ class TestChunks(unittest.TestCase):
         self.assertEqual(got.text, "the actual passage")
         self.assertEqual(got.container, "company-docs")
         self.assertEqual(got.role_scope, "ALL")
+
+    def test_save_chunks_actually_writes_company_id(self):
+        # The real bug: SourceChunks.company_id is NOT NULL, the MERGE didn't set it,
+        # and the first real upload hit a live IntegrityError. all_chunks() always
+        # fills company_id=str(self.company_id) on the Chunk it returns regardless of
+        # what got written -- so a round-trip through bank.all_chunks() cannot catch
+        # this class of bug. Only checking the stored row directly can.
+        conn = FakeConn()
+        SqlBank(conn, company_id=7).save_chunks([make_chunk()])
+        self.assertEqual(conn.tables["SourceChunks"][0]["company_id"], 7)
 
     def test_save_chunks_upserts_not_duplicates(self):
         conn = FakeConn()

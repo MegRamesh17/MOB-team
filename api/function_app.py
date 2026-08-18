@@ -1426,7 +1426,8 @@ def list_documents(req: func.HttpRequest) -> func.HttpResponse:
             cur = c.cursor()
             cur.execute(
                 "SELECT doc_title, COUNT(*) AS chunks FROM dbo.SourceChunks "
-                "GROUP BY doc_title"
+                "WHERE company_id = ? GROUP BY doc_title",
+                identity.company_id,
             )
             chunk_counts = {r.doc_title: r.chunks for r in cur.fetchall()}
             cur.execute(
@@ -1510,8 +1511,8 @@ def upload_document(req: func.HttpRequest) -> func.HttpResponse:
             # into one training, mixing roles and letting set_chunk_roles tag the
             # wrong sections.
             cur.execute(
-                "SELECT DISTINCT doc_id FROM dbo.SourceChunks WHERE doc_title = ?",
-                doc_title,
+                "SELECT DISTINCT doc_id FROM dbo.SourceChunks WHERE doc_title = ? AND company_id = ?",
+                doc_title, identity.company_id,
             )
             existing_ids = {r.doc_id for r in cur.fetchall()}
             if existing_ids and chunks[0].doc_id not in existing_ids:
