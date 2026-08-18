@@ -208,7 +208,10 @@ stages:
 
           - bash: |
               set -euo pipefail
-              for file in db/seed/org_seed.sql db/seed/seed_data.sql; do
+              # role_codes.sql runs after org_seed.sql on purpose: it maps the roles that
+              # file creates, and 016_add_role_code.sql cannot do it because migrations
+              # run before seeds and it hit an empty Roles table.
+              for file in db/seed/org_seed.sql db/seed/role_codes.sql db/seed/seed_data.sql; do
                 echo "--- $file"
                 sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -b -t 120 -i "$file"
               done
