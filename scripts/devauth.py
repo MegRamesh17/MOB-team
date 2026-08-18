@@ -11,7 +11,7 @@ WHAT MUST STAY IN STEP WITH api/shared/auth.py
     algorithm       HS256
     TTL             12 hours
     claims          sub (employee_id as a string), email, name, company_id,
-                    access_role, role_code, manager_id, iat, exp
+                    access_role, role_code, manager_id, department, iat, exp
     login route     POST /api/login   {email, password}
     login response  {token, expiresInHours, principal{...}}
     me route        GET  /api/auth/me {principal{...}}
@@ -64,28 +64,28 @@ _ALGO = "HS256"               # matches api/shared/auth.py
 DIRECTORY: List[Dict] = [
     dict(employee_id=1, name="Dana Whitfield", email="dana.whitfield@demo.com",
          title="Software Engineering Manager", role_code="SWE_MANAGER",
-         access_role="manager", manager_id=None),
+         department="Software Development", access_role="manager", manager_id=None),
     dict(employee_id=2, name="Priya Nandakumar", email="priya.n@demo.com",
          title="VP of Sales", role_code="ALL",
-         access_role="director", manager_id=None),
+         department="Sales", access_role="director", manager_id=None),
     dict(employee_id=3, name="Ethan Brooks", email="ethan.brooks@demo.com",
          title="SDE 2", role_code="SDE2",
-         access_role="employee", manager_id=1),
+         department="Software Development", access_role="employee", manager_id=1),
     dict(employee_id=4, name="Maya Osei", email="maya.osei@demo.com",
          title="SDE 1", role_code="SDE1",
-         access_role="employee", manager_id=1),
+         department="Software Development", access_role="employee", manager_id=1),
     dict(employee_id=5, name="Liam Chen", email="liam.chen@demo.com",
          title="Security Analyst", role_code="ALL",
-         access_role="employee", manager_id=1),
+         department="Software Development", access_role="employee", manager_id=1),
     dict(employee_id=6, name="Sofia Delgado", email="sofia.delgado@demo.com",
          title="Account Executive", role_code="ACCOUNT_TEAM",
-         access_role="employee", manager_id=2),
+         department="Sales", access_role="employee", manager_id=2),
     dict(employee_id=7, name="Noah Whitaker", email="noah.whitaker@demo.com",
          title="Senior Account Executive", role_code="ACCOUNT_TEAM",
-         access_role="employee", manager_id=2),
+         department="Sales", access_role="employee", manager_id=2),
     dict(employee_id=8, name="Ava Thompson", email="ava.thompson@demo.com",
          title="Account Executive", role_code="ACCOUNT_TEAM",
-         access_role="employee", manager_id=2),
+         department="Sales", access_role="employee", manager_id=2),
 ]
 
 _TIERS = ("employee", "manager", "director", "admin", "executive")
@@ -102,6 +102,7 @@ class Identity:
     name: str = ""
     role_code: str = "ALL"
     manager_id: Optional[int] = None
+    department: str = ""
 
     def at_least(self, tier: str) -> bool:
         try:
@@ -118,6 +119,7 @@ class Identity:
             "name": self.name,
             "role_code": self.role_code,
             "manager_id": self.manager_id,
+            "department": self.department,
         }
 
 
@@ -198,6 +200,7 @@ def authenticate(email: str, password: str) -> Optional[Identity]:
             name=user.get("name", ""),
             role_code=(user.get("role_code") or "ALL").upper(),
             manager_id=user.get("manager_id"),
+            department=user.get("department", ""),
         )
     return None
 
@@ -271,6 +274,7 @@ def create_token(identity: Identity) -> str:
             "name": identity.name,
             "role_code": identity.role_code,
             "manager_id": identity.manager_id,
+            "department": identity.department,
             "iat": now,
             "exp": now + timedelta(hours=TOKEN_TTL_HOURS),
         },
@@ -300,6 +304,7 @@ def decode_token(token: str) -> Optional[Identity]:
             name=claims.get("name") or "",
             role_code=(claims.get("role_code") or "ALL").upper(),
             manager_id=int(manager_id) if manager_id is not None else None,
+            department=claims.get("department") or "",
         )
     except (KeyError, ValueError, TypeError):
         return None
