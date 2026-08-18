@@ -225,6 +225,14 @@ SEED_ROLES: List[Dict[str, str]] = [
      "description": "Cloud infrastructure and DevOps practice."},
     {"role_code": "AI_ML", "title": "AI / ML Engineer",
      "description": "Agentic AI, machine learning engineering, Foundry."},
+    # One code for the whole security practice, following CLOUD_DEVOPS: the Director,
+    # the Architect, the Engineer and the Analyst read the same standards and respond to
+    # the same incidents, so splitting by seniority would divide one body of material
+    # rather than serve four. Added because the org chart has four people in these roles
+    # and nothing to map them to -- they were falling back to company-wide training in a
+    # product whose subject is compliance.
+    {"role_code": "SECURITY", "title": "Information Security",
+     "description": "Security operations, incident response, threat and risk analysis."},
 ]
 
 

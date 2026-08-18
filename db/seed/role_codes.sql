@@ -51,17 +51,33 @@ JOIN (VALUES
     ('Customer Success Manager',           'CSM'),
     ('Director of Client and Revenue Ops', 'CSM_DIRECTOR'),
     ('Customer Success Associate',         'CUSTOMER_SERVICE'),
-    ('Sales Specialist',                   'SALES_OPS')
+    ('Sales Specialist',                   'SALES_OPS'),
+    -- Security: one practice, one body of material, same reasoning as DevOps above. This
+    -- code is new (added to SEED_ROLES in src/quizgen/rolemap.py) rather than borrowed
+    -- from engineering -- a Security Analyst pointed at SDE2 would be served software
+    -- engineering material, which is the failure 016 warned about.
+    ('Director of Cybersecurity',          'SECURITY'),
+    ('Senior Security Architect',          'SECURITY'),
+    ('Information Security Engineer',      'SECURITY'),
+    ('Security Analyst',                   'SECURITY'),
+    -- Leadership, mapped onto existing codes rather than new ones. Both are judgment
+    -- calls and both are safe to change: role_scope is matched as IN ('ALL', <code>), so
+    -- a code with nothing scoped to it yet simply serves company-wide training, exactly
+    -- as an unmapped role does today. Nothing is lost by being wrong here, which is why
+    -- these are filled in rather than left for a meeting.
+    --   CTO sits above Software Development, so it takes the same organisational
+    --   strategy and enterprise risk material as the engineering director.
+    ('Chief Technology Officer',           'SWE_DIRECTOR'),
+    --   VP of Sales is revenue leadership; VP_REVENUE_OPS already existed and was unused.
+    ('VP of Sales',                        'VP_REVENUE_OPS')
 ) AS v(title, role_code) ON v.title = r.title
 WHERE r.role_code IS NULL;
 
 DECLARE @mapped INT = @@ROWCOUNT;
 
--- Deliberately NOT mapped, and this is not an oversight:
+-- Still NOT mapped, and this is not an oversight:
 --
---   Cybersecurity   Director of Cybersecurity, Senior Security Architect,
---                   Information Security Engineer, Security Analyst
---   Leadership      Chief Technology Officer, Sales Lead, VP of Sales
+--   Leadership      Sales Lead
 --   HR / Finance    HR Lead, Talent Acquisition Manager, Senior Recruiter, Recruiter,
 --                   People Operations Coordinator, Senior Accountant, Accountant,
 --                   Accounting Coordinator, Senior Financial Analyst, Financial Analyst
@@ -69,12 +85,17 @@ DECLARE @mapped INT = @@ROWCOUNT;
 --                   IT Support Specialist, Helpdesk Technician, End User Support,
 --                   Senior IT Engineer, Senior Systems Administrator, System Administrator
 --
--- quizgen's SEED_ROLES has no code for any of these, so there is nothing to map them to.
--- Guessing from the title would be worse than leaving them: an unmapped role falls back
--- to company-wide training, which UNDER-serves visibly, while a wrong guess confidently
--- serves one role's material to another. Closing this means adding codes to SEED_ROLES in
--- src/quizgen/rolemap.py and a line above -- a decision about what a job should be taught,
--- which is not a decision this file should make on its own.
+-- quizgen's SEED_ROLES has no code for any of these. Unlike the security roles above,
+-- NOBODY CURRENTLY HOLDS THEM -- every one of the 18 real employees is in engineering,
+-- DevOps, security, sales or leadership -- so mapping them would be inventing training
+-- paths for jobs the company has not filled. They cost nothing while empty and serve
+-- company-wide training the moment someone is hired into one.
+--
+-- Closing this later means adding codes to SEED_ROLES in src/quizgen/rolemap.py and a
+-- line above. Safe to do at any time: role_scope is matched as IN ('ALL', <code>), so a
+-- new code never removes company-wide material, it only makes role-specific material
+-- targetable. The thing to avoid is pointing one of these at an existing unrelated code
+-- -- that serves one role's material to another, which is the failure 016 warned about.
 
 DECLARE @unmapped INT =
     (SELECT COUNT(*) FROM Roles WHERE role_code IS NULL);
