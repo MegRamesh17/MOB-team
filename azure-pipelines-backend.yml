@@ -102,7 +102,7 @@ stages:
                 echo "##vso[task.prependpath]/opt/mssql-tools18/bin"
 
           - task: AzureCLI@2
-            displayName: 'Open temporary firewall rule for this agent'
+            displayName: 'Open SQL firewall'
             name: openFirewall
             inputs:
               azureSubscription: $(azureSubscription)
@@ -144,7 +144,7 @@ stages:
                   echo "Skipping $fname - already applied"
                 fi
               done
-            displayName: 'Run only new migrations'
+            displayName: 'Run migrations'
             # -t 120: sqlcmd has no query timeout by default, so a blocked/hung statement
             # waits forever -- ApplySeed once burned the full 60-minute job timeout this
             # way with zero indication of what it was stuck on. 120s is generous for
@@ -170,7 +170,7 @@ stages:
               SQL_ADMIN_PASSWORD: $(sql-password)
 
           - task: AzureCLI@2
-            displayName: 'Close temporary firewall rule'
+            displayName: 'Close SQL firewall'
             condition: always()
             inputs:
               azureSubscription: $(azureSubscription)
@@ -216,7 +216,7 @@ stages:
                 echo "##vso[task.prependpath]/opt/mssql-tools18/bin"
 
           - task: AzureCLI@2
-            displayName: 'Open temporary firewall rule for this agent'
+            displayName: 'Open SQL firewall'
             inputs:
               azureSubscription: $(azureSubscription)
               scriptType: bash
@@ -234,7 +234,7 @@ stages:
                 echo "--- $file"
                 sqlcmd -S $(sqlServer) -d $(sqlDatabase) -U $(sqlUser) -P "$SQL_ADMIN_PASSWORD" -C -b -t 120 -i "$file"
               done
-            displayName: 'Apply seed data (safe to re-run -- guarded by WHERE NOT EXISTS)'
+            displayName: 'Apply seed data'
             # -t 120: see the identical note on the Migrate stage's "Run only new
             # migrations" step -- this is the step that actually hung for the full 60
             # minutes in practice, with sqlcmd waiting indefinitely and no indication of
@@ -248,7 +248,7 @@ stages:
               SQL_ADMIN_PASSWORD: $(sql-password)
 
           - task: AzureCLI@2
-            displayName: 'Close temporary firewall rule'
+            displayName: 'Close SQL firewall'
             condition: always()
             inputs:
               azureSubscription: $(azureSubscription)
@@ -288,10 +288,10 @@ stages:
               python -m compileall -q api
               PYTHONPATH="api:api/.python_packages/lib/site-packages" \
                 python -c "import function_app; print('Registered routes:', len(function_app.app.get_functions()))"
-            displayName: 'Build a self-contained Function package and register routes'
+            displayName: 'Build function package'
 
           - task: ArchiveFiles@2
-            displayName: 'Zip the api/ package'
+            displayName: 'Zip package'
             inputs:
               rootFolderOrFile: 'api'
               includeRootFolder: false
@@ -303,7 +303,7 @@ stages:
           # still downloadable from this run for inspection -- e.g. to check whether
           # a dependency actually built, without needing Azure Portal/CLI access.
           - task: PublishPipelineArtifact@1
-            displayName: 'Publish api.zip as a pipeline artifact'
+            displayName: 'Publish artifact'
             inputs:
               targetPath: '$(Build.ArtifactStagingDirectory)/api.zip'
               artifact: 'api-package-$(Build.BuildId)'
@@ -319,7 +319,7 @@ stages:
               deploymentMethod: 'zipDeploy'
 
           - bash: sleep 45
-            displayName: 'Wait for the app to come back up'
+            displayName: 'Wait for app'
 
           - bash: |
               URL="https://$(functionAppName).azurewebsites.net/api/health"
