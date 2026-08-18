@@ -59,7 +59,7 @@ stages:
               npm ci
               npm run build
             workingDirectory: web-app
-            displayName: 'npm ci && npm run build'
+            displayName: 'Build frontend'
             env:
               VITE_API_BASE: 'https://$(functionAppName).azurewebsites.net'
 
@@ -67,7 +67,7 @@ stages:
           # exactly what npm run build produced, downloadable from the run, whether
           # or not the deploy step after it succeeds.
           - task: PublishPipelineArtifact@1
-            displayName: 'Publish dist/ as a pipeline artifact'
+            displayName: 'Publish artifact'
             inputs:
               targetPath: 'web-app/dist'
               artifact: 'frontend-dist-$(Build.BuildId)'

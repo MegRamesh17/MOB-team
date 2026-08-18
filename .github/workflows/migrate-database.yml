@@ -1,11 +1,18 @@
-# SUPERSEDED by azure-pipelines-backend.yml's Migrate stage in Azure DevOps.
-# workflow_dispatch-only now (the automatic workflow_run trigger off terraform-azure
-# is removed) so this can no longer fire on its own and race the DevOps pipeline for
-# the same database. Kept only for manual emergency use -- e.g. DevOps is down and
-# someone needs to apply a migration by hand.
+# Runs automatically after terraform-azure applies successfully, same as before
+# azure-pipelines-backend.yml existed. Restored so database schema/data lifecycle
+# stays in one system (GitHub Actions): azure-pipelines-backend.yml now only deploys
+# the Function App, and never touches mob-training-db, so there's no longer a risk
+# of the two systems racing to write to it.
+#
+# workflow_dispatch is also kept as a manual escape hatch (e.g. to re-apply after
+# fixing a failed migration without waiting on another terraform apply).
 name: migrate-database
 
 on:
+  workflow_run:
+    workflows: ["terraform-azure"]
+    types: [completed]
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
@@ -14,7 +21,10 @@ permissions:
 
 jobs:
   migrate:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    # Without the workflow_dispatch clause, a manual run would never actually do
+    # anything: github.event.workflow_run is undefined outside a workflow_run
+    # trigger, so the condition evaluated to false and the job silently skipped.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
