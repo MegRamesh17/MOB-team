@@ -447,7 +447,7 @@ def ingest_directory(source_dir: Optional[Path] = None,
     )
     if not files:
         raise FileNotFoundError(
-            "No .pdf/.txt/.md files in {}. Run scripts/make_placeholder_pdfs.py, or "
+            "No .pdf/.txt/.md files in {}. Run scripts/make_sample_pdfs.py, or "
             "drop the converted documents there.".format(directory)
         )
     out: List[Chunk] = []
