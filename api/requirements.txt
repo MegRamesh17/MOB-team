@@ -4,3 +4,11 @@ reportlab
 azure-storage-blob
 PyJWT
 bcrypt
+# For the vendored quizgen package (documents/roles/jobs endpoints) -- see
+# function_app.py's module docstring and azure-pipelines-backend.yml's build step for
+# why it is vendored rather than installed as a shared package. Versions match the
+# root requirements.txt exactly, since it's the same code running in both places.
+openai==2.53.0
+pypdf==6.1.1
+python-dotenv==1.2.2
+azure-ai-documentintelligence==1.0.2

@@ -62,9 +62,13 @@ module "keyvault" {
   storage_connection_string   = module.storage.primary_connection_string
   sql_admin_password          = var.sql_admin_password
   openai_api_key              = var.openai_api_key
-  function_app_principal_id   = module.functions.function_app_identity_principal_id
-  local_dev_object_ids        = var.local_dev_object_ids
-  jwt_signing_secret          = random_password.jwt_signing_secret.result
+  # Same gap as doc_intelligence_endpoint below: declared at root, matched by a
+  # variable on this module, never actually connected -- so the doc-intelligence-key
+  # secret this module can create was never created by an automated apply.
+  doc_intelligence_key      = var.doc_intelligence_key
+  function_app_principal_id = module.functions.function_app_identity_principal_id
+  local_dev_object_ids      = var.local_dev_object_ids
+  jwt_signing_secret        = random_password.jwt_signing_secret.result
 }
 
 # TEMPORARILY DISABLED: blocked on Microsoft.Communication provider
@@ -91,6 +95,17 @@ module "functions" {
     ["https://${module.staticwebapp.default_host_name}"],
     var.additional_frontend_origins,
   )
+  # doc_intelligence_endpoint was defined at root and never actually reached this
+  # module -- the Function App's app_settings read it via var.doc_intelligence_endpoint,
+  # but with nothing passed in here that always resolved to the module's own
+  # empty-string default regardless of what was set at apply time. Document
+  # Intelligence was silently unconfigured on every deploy as a result -- caught while
+  # wiring the OpenAI key through for the first time, not something that changed just
+  # now. There is no doc_intelligence_key variable on this module: the key is derived
+  # entirely from the Key Vault reference below, conditioned on the endpoint being set.
+  doc_intelligence_endpoint = var.doc_intelligence_endpoint
+  azure_openai_endpoint     = var.azure_openai_endpoint
+  quizgen_provider          = var.quizgen_provider
 }
 module "appservice" {
   source                    = "./modules/appservice"

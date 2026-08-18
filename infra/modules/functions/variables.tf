@@ -37,6 +37,16 @@ variable "doc_intelligence_endpoint" {
   default = ""
 }
 
+variable "azure_openai_endpoint" {
+  type    = string
+  default = ""
+}
+
+variable "quizgen_provider" {
+  type    = string
+  default = "mock"
+}
+
 variable "allowed_origins" {
   description = "Exact browser origins allowed to call the Function App"
   type        = list(string)

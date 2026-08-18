@@ -46,11 +46,11 @@ resource "azurerm_linux_function_app" "mob_functions" {
     # the exact zip the pipeline shipped, with no remote build in the picture at all.
     "WEBSITE_RUN_FROM_PACKAGE"       = "1"
     "SCM_DO_BUILD_DURING_DEPLOYMENT" = "false"
-    "SQL_SERVER"               = var.sql_server_fqdn
-    "SQL_DATABASE"             = var.sql_database_name
-    "SQL_USER"                 = var.sql_admin_username
-    "SQL_PASSWORD"             = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/sql-password/)"
-    "JWT_SIGNING_SECRET"       = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/jwt-signing-secret/)"
+    "SQL_SERVER"                     = var.sql_server_fqdn
+    "SQL_DATABASE"                   = var.sql_database_name
+    "SQL_USER"                       = var.sql_admin_username
+    "SQL_PASSWORD"                   = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/sql-password/)"
+    "JWT_SIGNING_SECRET"             = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/jwt-signing-secret/)"
     # Both empty until the endpoint variable is set. Extraction falls back to
     # pypdf when they are, so the app runs either way.
     "DOCUMENT_INTELLIGENCE_ENDPOINT"  = var.doc_intelligence_endpoint
@@ -59,6 +59,15 @@ resource "azurerm_linux_function_app" "mob_functions" {
     "AZURE_STORAGE_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/storage-connection-string/)"
     "QUIZGEN_PASSING_SCORE"           = "80"
     "QUIZGEN_QUIZ_LENGTH"             = "8"
+    # Names quizgen/config.py already reads (_first("...", "AZURE_OPENAI_ENDPOINT") /
+    # _first("...", "AZURE_OPENAI_KEY", ...)) -- nothing to change on the application
+    # side, this was purely a missing app setting. Same conditional pattern as Document
+    # Intelligence above: empty until the endpoint variable is set, so the app runs
+    # either way and /documents/confirm's generation step fails loudly (503, "needs the
+    # real model") rather than silently, same as it already does locally without .env.
+    "AZURE_OPENAI_ENDPOINT" = var.azure_openai_endpoint
+    "AZURE_OPENAI_KEY"      = var.azure_openai_endpoint == "" ? "" : "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/openai-api-key/)"
+    "QUIZGEN_PROVIDER"      = var.quizgen_provider
   }
 
   identity {

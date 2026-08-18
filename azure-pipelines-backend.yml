@@ -61,6 +61,21 @@ stages:
               versionSpec: '3.11'
 
           - bash: |
+              set -euo pipefail
+              # Vendored, not installed as a shared package: /documents, /roles and
+              # /jobs/{id} need pipeline.py, rolemap.py and ingest.py, and api/ cannot
+              # import src/ directly (it is a flat Functions package deployed on its
+              # own -- see function_app.py's module docstring). Copying at build time
+              # from the one source of truth means there is nothing to keep in sync by
+              # hand and nothing committed to drift, unlike api/shared/qscore.py's
+              # defended-copy approach -- this runs fresh every deploy.
+              #
+              # bank.py comes along too and is unused; SqlBank replaces it for this
+              # deploy. Harmless: sqlite3 is stdlib, so importing bank.py costs nothing
+              # even though nothing here calls it.
+              rm -rf api/quizgen
+              cp -r src/quizgen api/quizgen
+
               python -m pip install --upgrade pip
               # --platform/--python-version/--implementation/--only-binary force pip to
               # fetch wheels built for Azure's actual Linux Python 3.11 runtime,
@@ -76,8 +91,17 @@ stages:
                 --python-version 3.11 --implementation cp \
                 -r api/requirements.txt
               python -m compileall -q api
-              PYTHONPATH="api:api/.python_packages/lib/site-packages" \
-                python -c "import function_app; print('Registered routes:', len(function_app.app.get_functions()))"
+              PYTHONPATH="api:api/.python_packages/lib/site-packages" python -c "
+              import function_app
+              print('Registered routes:', len(function_app.app.get_functions()))
+              # Confirms the vendor copy and its dependencies actually import, not just
+              # that function_app.py parses -- every quizgen import in function_app.py
+              # is lazy (inside route handlers), so importing function_app alone would
+              # not have caught a missing or broken vendor copy until the first real
+              # upload hit it in production.
+              import quizgen.pipeline, quizgen.rolemap, quizgen.ingest
+              print('quizgen vendored and importable.')
+              "
             displayName: 'Build function package'
 
           - task: ArchiveFiles@2

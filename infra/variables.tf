@@ -58,3 +58,31 @@ variable "additional_frontend_origins" {
   type        = list(string)
   default     = []
 }
+
+variable "azure_openai_endpoint" {
+  description = <<-EOT
+    Azure OpenAI endpoint for the shared Foundry resource, e.g.
+    https://sharedfoundry.services.ai.azure.com. The key itself is openai_api_key above,
+    already stored in Key Vault as openai-api-key -- this was never surfaced as a Function
+    App setting until now, so /documents/confirm's generation step had a key in Key Vault
+    it could not actually reach.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "quizgen_provider" {
+  description = <<-EOT
+    'mock' (free, deterministic, no credentials needed) or 'azure' (real gpt-5, roughly a
+    cent per question -- see requirements.txt's note on cost). Matches
+    src/quizgen/config.py's QUIZGEN_PROVIDER.
+
+    Defaults to 'azure' now that OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT are set as
+    GitHub secrets and wired through terraform.yml -- CONFIG.require_azure() fails the
+    generation request loudly (503, "Role mapping needs the real model") rather than
+    silently falling back to mock if either secret is ever unset, so this is safe to
+    default on rather than something that quietly degrades.
+  EOT
+  type        = string
+  default     = "azure"
+}
