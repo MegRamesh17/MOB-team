@@ -8,6 +8,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
 
 from shared.pathway import (  # noqa: E402
+    AI_GRADED_TYPES,
+    CHOICE_TYPES,
+    MAX_FINAL_AI_GRADED,
     choose_adaptive_question,
     diagnostic_pathway,
     diagnostic_questions,
@@ -34,6 +37,7 @@ def pool(per_difficulty=12):
                         module["module_id"], difficulty.lower(), index),
                     "topic": module["topic"],
                     "difficulty": difficulty,
+                    "question_type": "MultipleChoice",
                     "times_served": index,
                 })
     return rows
@@ -50,6 +54,17 @@ class TestDiagnostic(unittest.TestCase):
                 if question["module_id"] == module["module_id"]
             }
             self.assertEqual(difficulties, {"Easy", "Medium", "Hard"})
+        self.assertTrue(all(q["question_type"] in CHOICE_TYPES for q in selected))
+
+    def test_long_answers_are_never_selected_for_a_diagnostic(self):
+        mixed = pool()
+        for question in mixed:
+            if question["question_id"].endswith("-0"):
+                question["question_type"] = "ShortAnswer"
+        selected, missing = diagnostic_questions(mixed, modules(), "learner")
+
+        self.assertEqual(missing, [])
+        self.assertTrue(all(q["question_type"] in CHOICE_TYPES for q in selected))
 
     def test_missing_difficulty_is_reported_instead_of_silently_substituted(self):
         thin = [q for q in pool() if not (
@@ -125,6 +140,21 @@ class TestFairFinal(unittest.TestCase):
         selected, blueprint = final_questions(pool(), one_module, "learner-a")
         self.assertEqual(blueprint["total"], 15)
         self.assertEqual(len(selected), 15)
+
+    def test_long_final_answers_are_capped_and_placed_last(self):
+        mixed = pool()
+        for index, question in enumerate(mixed):
+            if index % 2:
+                question["question_type"] = "ShortAnswer"
+        selected, _ = final_questions(mixed, modules(), "learner-a")
+        long_flags = [q["question_type"] in AI_GRADED_TYPES for q in selected]
+
+        self.assertLessEqual(sum(long_flags), MAX_FINAL_AI_GRADED)
+        self.assertEqual(long_flags, sorted(long_flags))
+        self.assertTrue(all(
+            q["question_type"] not in AI_GRADED_TYPES
+            for q in selected if q["purpose"] == "anchor"
+        ))
 
 
 if __name__ == "__main__":

@@ -1138,7 +1138,11 @@ def _pathway_state(cur, identity, learner: str, training: str) -> Optional[Dict[
     module_progress = {row["module_id"]: row for row in _rows(cur)}
 
     cur.execute(
-        """SELECT m.module_id, q.difficulty, COUNT(DISTINCT q.question_id) AS n
+        """SELECT m.module_id, q.difficulty,
+                  COUNT(DISTINCT q.question_id) AS n,
+                  COUNT(DISTINCT CASE
+                      WHEN q.question_type = 'MultipleChoice'
+                      THEN q.question_id END) AS choice_n
              FROM dbo.TrainingModules m
              JOIN dbo.SourceChunks c
                ON c.company_id = m.company_id AND c.doc_id = m.doc_id AND c.topic = m.topic
@@ -1149,8 +1153,11 @@ def _pathway_state(cur, identity, learner: str, training: str) -> Optional[Dict[
         identity.company_id, doc_id,
     )
     counts: Dict[str, Dict[str, int]] = {}
+    choice_counts: Dict[str, Dict[str, int]] = {}
     for row in _rows(cur):
         counts.setdefault(row["module_id"], {})[row["difficulty"]] = int(row["n"] or 0)
+        choice_counts.setdefault(row["module_id"], {})[row["difficulty"]] = int(
+            row["choice_n"] or 0)
 
     first_incomplete = next(
         (module["module_id"] for module in modules
@@ -1171,6 +1178,7 @@ def _pathway_state(cur, identity, learner: str, training: str) -> Optional[Dict[
         except (TypeError, ValueError):
             weak_sections = []
         difficulty_counts = counts.get(module["module_id"], {})
+        choice_difficulty_counts = choice_counts.get(module["module_id"], {})
         output_modules.append({
             "moduleId": module["module_id"],
             "title": module["heading"] or module["topic"],
@@ -1186,12 +1194,17 @@ def _pathway_state(cur, identity, learner: str, training: str) -> Optional[Dict[
                 difficulty: difficulty_counts.get(difficulty, 0)
                 for difficulty in DIFFICULTIES
             },
+            "choiceDifficultyCounts": {
+                difficulty: choice_difficulty_counts.get(difficulty, 0)
+                for difficulty in DIFFICULTIES
+            },
             "diagnosticScore": scores.get(module["module_id"]),
         })
 
     all_passed = diagnostic_done and all(module["status"] == "passed" for module in output_modules)
     diagnostic_ready = all(
-        all(module["difficultyCounts"].get(difficulty, 0) > 0 for difficulty in DIFFICULTIES)
+        all(module["choiceDifficultyCounts"].get(difficulty, 0) > 0
+            for difficulty in DIFFICULTIES)
         for module in output_modules
     )
     return {
@@ -1325,7 +1338,7 @@ def start_pathway_assessment(req: func.HttpRequest) -> func.HttpResponse:
                     labels = ["{} {}".format(mid, difficulty) for mid, difficulty in missing[:6]]
                     return _error(
                         409, "Diagnostic question bank is incomplete",
-                        "Generate an Easy, Medium and Hard question for every module. Missing: "
+                        "Generate a MultipleChoice Easy, Medium and Hard question for every module. Missing: "
                         + ", ".join(labels),
                     )
                 target, pass_mark = len(selected), None
@@ -1337,10 +1350,14 @@ def start_pathway_assessment(req: func.HttpRequest) -> func.HttpResponse:
                     return _error(404, "Unknown module", module_id)
                 if module["status"] not in ("available", "needs-review", "in-progress"):
                     return _error(409, "Module is locked", "Complete the previous module first.")
-                module_pool = [q for q in pool if q["topic"] == module["topic"]]
+                module_pool = [
+                    q for q in pool
+                    if q["topic"] == module["topic"]
+                    and q["question_type"] in pathway.FAST_MODULE_TYPES
+                ]
                 if len(module_pool) < 10:
                     return _error(409, "Module question bank is incomplete",
-                                  "This module needs at least 10 approved questions.")
+                                  "This module needs at least 10 quick-response approved questions.")
                 diagnostic = module.get("diagnosticScore") or {}
                 wanted = pathway.initial_module_difficulty(
                     int(diagnostic.get("correct") or 0), int(diagnostic.get("possible") or 3))
@@ -1635,8 +1652,11 @@ def answer_pathway_question(req: func.HttpRequest) -> func.HttpResponse:
                     module_rows = _rows(cur)
                     if not module_rows:
                         return _error(409, "Module is unavailable", attempt["module_id"])
-                    pool = _pathway_question_pool(
-                        cur, identity, attempt["training_doc_id"], module_rows[0]["topic"])
+                    pool = [
+                        q for q in _pathway_question_pool(
+                            cur, identity, attempt["training_doc_id"], module_rows[0]["topic"])
+                        if q["question_type"] in pathway.FAST_MODULE_TYPES
+                    ]
                     cur.execute(
                         "SELECT question_id FROM dbo.GeneratedQuizAttemptQuestions WHERE attempt_id = ?",
                         attempt_id,

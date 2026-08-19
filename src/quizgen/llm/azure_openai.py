@@ -162,12 +162,17 @@ class AzureOpenAIGenerator:
         want = "" if difficulty is None else " Target difficulty: {}.".format(difficulty.value)
         augmented = CONFIG.generation_mode == "augmented"
         system = _SYSTEM_AUGMENTED if augmented else _SYSTEM_GROUNDED
+        multiple_choice_minimum = max(1, count - 2)
         instruction = (
             "Write {} question(s) examining this topic. Go beyond what the passage "
             "literally states — test whether someone actually understands the subject.{}"
             if augmented else
             "Write {} question(s) from this passage.{}"
         ).format(count, want)
+        instruction += (
+            " Include at least {} standard MultipleChoice question(s); reserve no more "
+            "than two items for AI-graded ShortAnswer, PromptResponse or PythonCode."
+        ).format(multiple_choice_minimum)
 
         user = (
             "Document: {}\nSection: {}\nTopic: {}\nRole: {}\n\n"
