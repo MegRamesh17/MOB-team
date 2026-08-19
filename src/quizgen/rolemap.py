@@ -39,6 +39,10 @@ class RoleMapping:
     thin_topics: List[str] = field(default_factory=list)
     # model's one-line reading of what the document is
     summary: str = ""
+    # The model's read of what this document actually is, as a short course title.
+    # Empty when the model declines (e.g. genuinely can't tell) -- callers fall back
+    # to the heuristic title in that case, never to an empty string.
+    suggested_title: str = ""
 
 
 @dataclass
@@ -89,9 +93,20 @@ _MAP_SYSTEM = (
     "should have.\n"
     "- Mark a section as thin if its text could not support 2 or more meaningful "
     "quiz questions (e.g. it is only a heading, a duration, or a table of contents).\n"
+    "- You are also given AUTO-DETECTED TITLE, taken mechanically from the source "
+    "(the first line of a PDF page, or a page's <title> tag for a web page). It is "
+    "frequently wrong: cookie banners, promo bars (\"Save 20% today\"), nav menus and "
+    "site-wide headers all end up there just as often as an actual title, because "
+    "the mechanical extraction has no way to tell them apart from real content. Read "
+    "the actual section bodies and judge what the document teaches, then propose "
+    "suggested_title as a short, specific course title for THAT subject -- 3-8 words, "
+    "no site name, no marketing copy, no trailing punctuation. If the auto-detected "
+    "title already looks like a genuine title for this content, you may repeat it. "
+    "Leave suggested_title empty only if the sections give you nothing to title -- "
+    "never fill it with anything resembling an ad, a banner, a menu, or boilerplate.\n"
     "Return ONLY JSON: {\"assignments\": {\"<section>\": \"<ROLE_CODE|ALL|verbatim "
     "unknown role>\"}, \"unknown_roles\": [...], \"thin_topics\": [...], "
-    "\"summary\": \"one line\"}"
+    "\"summary\": \"one line\", \"suggested_title\": \"short course title or empty\"}"
 )
 
 
@@ -118,7 +133,8 @@ def analyze_document(
         for topic, text in sections.items()
     )
     user = (
-        "COMPANY ROLES:\n{}\n\nDOCUMENT: {}\n\n{}\n\n"
+        "COMPANY ROLES:\n{}\n\nAUTO-DETECTED TITLE (may be wrong -- see system "
+        "instructions): {}\n\n{}\n\n"
         "Map every section. Sections for everyone -> ALL."
     ).format(roles_line, doc_title, body)
 
@@ -141,11 +157,18 @@ def analyze_document(
             if raw not in unknown:
                 unknown.append(raw)
 
+    # Trimmed and length-capped, but otherwise trusted: the "don't hand back a promo
+    # banner" judgment call already happened inside the model, per the system prompt.
+    # Capped short enough that a model ignoring the "3-8 words" instruction still
+    # can't hand back a full paragraph as a "title".
+    suggested_title = str(payload.get("suggested_title", "")).strip()[:120]
+
     return RoleMapping(
         assignments=assignments,
         unknown_roles=unknown,
         thin_topics=[t for t in payload.get("thin_topics", []) if t in sections],
         summary=str(payload.get("summary", ""))[:200],
+        suggested_title=suggested_title,
     )
 
 

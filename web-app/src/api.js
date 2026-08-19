@@ -121,6 +121,8 @@ export const lesson = (training, moduleId) => {
   const module = moduleId ? `&moduleId=${encodeURIComponent(moduleId)}` : "";
   return call(`/lesson?training=${encodeURIComponent(training)}${module}`);
 };
+export const completeLessonPage = ({ moduleId, pageId }) =>
+  call("/lesson/page/complete", { method: "POST", body: { moduleId, pageId } });
 export const certificates = () => call("/certificates");
 
 /** This learner's own preferences. Real, persisted server-side -- not a local toggle. */
@@ -198,6 +200,8 @@ export const submitQuiz = ({ attemptId, answers }) =>
 
 export const documents = () => call("/documents");
 export const jobStatus = (jobId) => call(`/jobs/${encodeURIComponent(jobId)}`);
+export const coursePreview = (training) =>
+  call(`/courses/preview?training=${encodeURIComponent(training)}`);
 
 /**
  * Upload a document. The server extracts it inline and returns straight away with the
@@ -241,8 +245,11 @@ export const trustedLinks = () => call("/links");
  * extraction/grounding/confirm-before-generate pipeline, so the same MappingReview
  * component that handles an upload's response handles this one unchanged.
  */
-export const addTrustedLink = ({ url, scope, roleCode }) =>
-  call("/links/add", { method: "POST", body: { url, scope, roleCode } });
+export const addTrustedLink = ({ url, scope, roleCode, crawl, maxPages }) =>
+  call("/links/add", {
+    method: "POST",
+    body: { url, scope, roleCode, crawl: crawl !== false, maxPages: maxPages || 25 },
+  });
 
 /**
  * The manager's decision on an upload: the confirmed section->role mapping, any

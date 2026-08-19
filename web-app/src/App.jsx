@@ -427,15 +427,15 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
   ];
 
   return (
-    <div style={{ ...font, background: C.paper, height: "100vh" }} className="flex overflow-hidden">
+    <div style={{ ...font, background: C.paper, height: "100vh" }} className="flex flex-col md:flex-row overflow-hidden">
       {/* Locked to the viewport height (not min-height) with overflow-hidden, so this
           row never grows past 100vh: the sidebar -- profile chip and sign-out included
           -- stays put while a long page like Profile scrolls inside <main> only.
           min-height let the whole row grow with the page's content instead, which
           dragged the sidebar along with it and buried sign-out below the fold. */}
-      <aside style={{ background: C.rail, width: 252 }} className="flex flex-col shrink-0 h-full overflow-y-auto">
-        <div className="px-5 py-6 flex items-center"><Logo size={38} light /></div>
-        <nav className="flex-1 px-3 py-4 space-y-1">
+      <aside style={{ background: C.rail }} className="w-full md:w-[252px] flex flex-row md:flex-col shrink-0 h-auto md:h-full overflow-x-auto md:overflow-y-auto">
+        <div className="hidden md:flex px-5 py-6 items-center"><Logo size={38} light /></div>
+        <nav className="flex md:flex-col flex-1 px-3 py-2 md:py-4 gap-1 md:space-y-1">
           {nav.map((n) => {
             const Icon = n.icon;
             const isActive = active === n.id;
@@ -447,14 +447,15 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
                   background: isActive ? "rgba(34,197,94,0.18)" : "transparent",
                   color: isActive ? "#fff" : "rgba(240,234,216,0.68)",
                 }}
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-colors hover:text-white"
+                title={n.label}
+                className="min-w-[62px] md:min-w-0 md:w-full flex flex-col md:flex-row items-center gap-1 md:gap-3 px-2 md:px-3 py-2 md:py-2.5 rounded-xl text-[10px] md:text-sm font-semibold transition-colors hover:text-white"
               >
                 <Icon size={16} /> {n.label}
               </button>
             );
           })}
         </nav>
-        <div style={{ borderColor: "rgba(240,234,216,0.14)" }} className="border-t px-4 py-5">
+        <div style={{ borderColor: "rgba(240,234,216,0.14)" }} className="hidden md:block border-t px-4 py-5">
           <button
             onClick={() => setActive("profile")}
             style={{ background: active === "profile" ? "rgba(34,197,94,0.18)" : "transparent" }}
@@ -474,7 +475,7 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
           </button>
         </div>
       </aside>
-      <main className="flex-1 overflow-y-auto">{children}</main>
+      <main className="flex-1 min-h-0 overflow-y-auto">{children}</main>
     </div>
   );
 }
@@ -1051,20 +1052,39 @@ function TrainingDetail({ training, onBack, onStartDiagnostic, onOpenModule, onS
 function LessonScreen({ training, module, onContinue, onBack }) {
   const { data, loading, error, reload } = useAsync(
     () => api.lesson(training.title, module.moduleId), [training.title, module.moduleId]);
-  const [scrolledToEnd, setScrolledToEnd] = useState(false);
-  const boxRef = useRef(null);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [pageError, setPageError] = useState(null);
+  const pages = data?.pages?.length ? data.pages : (data?.sections || []);
+  const generatedPages = Boolean(data?.pages?.length);
 
-  // Short lessons may not overflow at all, in which case there is nothing to scroll
-  // and the gate would never open. Unlock immediately when everything already fits.
   useEffect(() => {
-    const el = boxRef.current;
-    if (el && el.scrollHeight <= el.clientHeight + 8) setScrolledToEnd(true);
-  }, [data]);
+    if (!pages.length) return;
+    const resumeAt = pages.findIndex((page) => !page.completed);
+    setPageIndex(resumeAt >= 0 ? resumeAt : 0);
+  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleScroll = (e) => {
-    const el = e.target;
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) setScrolledToEnd(true);
+  const finishPage = async () => {
+    const page = pages[pageIndex];
+    setPageError(null);
+    if (generatedPages && !page.completed) {
+      setSaving(true);
+      try {
+        await api.completeLessonPage({ moduleId: module.moduleId, pageId: page.id });
+        page.completed = true;
+      } catch (e) {
+        setPageError(e);
+        setSaving(false);
+        return;
+      }
+      setSaving(false);
+    }
+    if (pageIndex < pages.length - 1) setPageIndex((index) => index + 1);
+    else onContinue();
   };
+
+  const current = pages[pageIndex];
+  const weak = current && (module.weakSections || []).includes(current.heading || current.title);
 
   return (
     <div className="p-8 max-w-2xl">
@@ -1091,33 +1111,57 @@ function LessonScreen({ training, module, onContinue, onBack }) {
 
       {data && (
         <>
-          <div ref={boxRef} onScroll={handleScroll} style={{ borderColor: C.line, maxHeight: 420 }}
-            className="border rounded-xl bg-white p-6 overflow-y-auto mb-4 space-y-5">
-            {data.sections.map((s) => {
-              const weak = (module.weakSections || []).includes(s.heading);
-              return <div key={s.id} style={weak ? { borderLeft: `3px solid ${C.amber}`, paddingLeft: 12 } : undefined}>
-                <h3 style={{ ...display, color: C.ink }} className="text-sm font-bold mb-1.5">{s.heading}</h3>
-                {weak && <p style={{ color: C.amber }} className="text-xs font-semibold mb-1">Review this section carefully</p>}
-                <p style={{ color: C.sub }} className="text-sm leading-relaxed">{s.body}</p>
-                {s.sourceUrl && (
-                  <a href={s.sourceUrl} target="_blank" rel="noopener noreferrer"
-                    style={{ color: C.green700 }} className="text-xs font-semibold mt-1 inline-block">
-                    Source ↗
-                  </a>
-                )}
-              </div>;
-            })}
-            <p style={{ color: C.sub }} className="text-xs text-center pt-2 pb-1 italic">End of module</p>
+          <div className="flex gap-1.5 mb-4" aria-label="Lesson progress">
+            {pages.map((page, index) => (
+              <button key={page.id} onClick={() => setPageIndex(index)}
+                title={`Page ${index + 1}: ${page.title || page.heading}`}
+                style={{ background: index === pageIndex ? C.purple : page.completed ? C.success : C.line }}
+                className="h-2 flex-1 min-w-0 rounded-full" />
+            ))}
           </div>
 
-          {!scrolledToEnd && (
-            <p style={{ color: C.sub }} className="text-xs mb-3 flex items-center gap-1.5">
-              <ChevronRight size={12} className="rotate-90" /> Scroll to the end to unlock the quiz
-            </p>
+          {current && (
+            <article style={{ borderColor: weak ? C.amber : C.line }}
+              className="border rounded-lg bg-white p-6 mb-4 min-h-[340px]">
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <p style={{ color: C.sub }} className="text-xs font-semibold">
+                  Page {pageIndex + 1} of {pages.length}
+                </p>
+                {current.completed && (
+                  <span style={{ color: C.success }} className="text-xs font-semibold flex items-center gap-1">
+                    <CheckCircle2 size={13} /> Complete
+                  </span>
+                )}
+              </div>
+              <h2 style={{ ...display, color: C.ink }} className="text-lg font-bold mb-3">
+                {current.title || current.heading}
+              </h2>
+              {weak && <p style={{ color: C.amber }} className="text-xs font-semibold mb-2">Review this section carefully</p>}
+              <div style={{ color: C.sub, whiteSpace: "pre-wrap" }} className="text-sm leading-7">
+                {current.body}
+              </div>
+              {(current.citations || []).filter((citation) => citation.url).length > 0 && (
+                <div style={{ borderColor: C.line }} className="border-t mt-5 pt-3">
+                  {(current.citations || []).filter((citation) => citation.url).map((citation, index) => (
+                    <a key={`${citation.url}-${index}`} href={citation.url} target="_blank" rel="noopener noreferrer"
+                      style={{ color: C.green700 }} className="text-xs font-semibold block truncate">
+                      {citation.title || citation.url} <span aria-hidden="true">↗</span>
+                    </a>
+                  ))}
+                </div>
+              )}
+            </article>
           )}
-          <Button onClick={onContinue} disabled={!scrolledToEnd}>
-            {module.status === "passed" ? "Back to pathway" : "Continue to checkpoint"}
-          </Button>
+
+          {pageError && <ErrorBox error={pageError} />}
+          <div className="flex items-center justify-between gap-3">
+            <Button variant="ghost" onClick={() => setPageIndex((index) => Math.max(0, index - 1))}
+              disabled={pageIndex === 0}>Previous</Button>
+            <Button onClick={finishPage} disabled={saving || !current}>
+              {saving ? "Saving…" : pageIndex < pages.length - 1 ? "Complete & next"
+                : module.status === "passed" ? "Back to pathway" : "Complete lesson"}
+            </Button>
+          </div>
         </>
       )}
     </div>
@@ -1651,6 +1695,8 @@ function TrustedLinkForm({ roles, canPublishCompanyWide, onSubmitted }) {
   const [url, setUrl] = useState("");
   const [scope, setScope] = useState("team");
   const [roleCode, setRoleCode] = useState("");
+  const [crawl, setCrawl] = useState(true);
+  const [maxPages, setMaxPages] = useState(25);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
 
@@ -1661,6 +1707,7 @@ function TrustedLinkForm({ roles, canPublishCompanyWide, onSubmitted }) {
     try {
       const res = await api.addTrustedLink({
         url: url.trim(), scope, roleCode: scope === "company_wide" ? "ALL" : roleCode,
+        crawl, maxPages,
       });
       setUrl(""); setRoleCode("");
       onSubmitted(res);
@@ -1676,12 +1723,26 @@ function TrustedLinkForm({ roles, canPublishCompanyWide, onSubmitted }) {
       {open && (
         <div className="px-4 pb-4">
           <p style={{ color: C.sub }} className="text-xs mb-3">
-            A vetted reference URL — vendor docs, a standards body, your own compliance page.
-            Goes through the same extraction and verbatim-quote check as an uploaded PDF.
+            A vetted vendor, standards, or company website.
           </p>
           <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…"
             style={{ borderColor: C.line, color: C.ink }}
             className="border rounded-lg px-3 py-2 text-xs w-full mb-2" />
+          <div className="flex gap-3 flex-wrap items-center mb-2">
+            <label className="flex items-center gap-2 cursor-pointer text-xs" style={{ color: C.ink }}>
+              <input type="checkbox" checked={crawl} onChange={(e) => setCrawl(e.target.checked)} />
+              Include same-site subpages
+            </label>
+            {crawl && (
+              <select value={maxPages} onChange={(e) => setMaxPages(Number(e.target.value))}
+                aria-label="Maximum pages"
+                style={{ borderColor: C.line, color: C.ink }} className="border rounded-lg px-3 py-2 text-xs">
+                <option value={10}>Up to 10 pages</option>
+                <option value={25}>Up to 25 pages</option>
+                <option value={50}>Up to 50 pages</option>
+              </select>
+            )}
+          </div>
           <div className="flex gap-2 flex-wrap items-center">
             <select value={scope} onChange={(e) => { setScope(e.target.value); setRoleCode(""); }}
               style={{ borderColor: C.line, color: C.ink }} className="border rounded-lg px-3 py-2 text-xs">
@@ -1697,7 +1758,7 @@ function TrustedLinkForm({ roles, canPublishCompanyWide, onSubmitted }) {
               </select>
             )}
             <Button onClick={submit} disabled={!canSubmit} className="!py-2 text-xs">
-              {busy ? "Fetching…" : "Add link"}
+              {busy ? (crawl ? "Crawling site…" : "Fetching page…") : "Add link"}
             </Button>
           </div>
           {scope === "company_wide" && (
@@ -1741,10 +1802,11 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
   const [assignments, setAssignments] = useState(() => {
     const init = {};
     for (const [topic, role] of Object.entries(analysis.proposedRoles || {})) {
+      const proposed = Array.isArray(role) ? role : [role];
       // Proposals naming a role the company hasn't defined start unresolved: the
       // manager must place them before confirm unlocks.
-      init[topic] = knownCodes.has(String(role).toUpperCase()) || role === "ALL"
-        ? String(role).toUpperCase() : "";
+      init[topic] = proposed.map((value) => String(value).toUpperCase())
+        .filter((value) => knownCodes.has(value) || value === "ALL");
     }
     return init;
   });
@@ -1757,7 +1819,7 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
   const [makeRequired, setMakeRequired] = useState(true);
 
   const allCodes = [...selectable.map((r) => r.role_code), ...newRoles.map((r) => r.roleCode)];
-  const unresolved = Object.entries(assignments).filter(([, v]) => !v);
+  const unresolved = Object.entries(assignments).filter(([, values]) => !values.length);
   const nobodyToPublishTo = selectable.length === 0 && !canPublishCompanyWide;
 
   const addInlineRole = (name) => {
@@ -1765,6 +1827,34 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
     if (!roleCode || allCodes.includes(roleCode)) return roleCode;
     setNewRoles((n) => [...n, { roleCode, title: name, description: "" }]);
     return roleCode;
+  };
+
+  const toggleRole = (topic, roleCode) => {
+    setAssignments((current) => {
+      const selected = current[topic] || [];
+      let next;
+      if (roleCode === "ALL") {
+        next = selected.includes("ALL") ? [] : ["ALL"];
+      } else if (selected.includes(roleCode)) {
+        next = selected.filter((code) => code !== roleCode);
+      } else {
+        next = [...selected.filter((code) => code !== "ALL"), roleCode];
+      }
+      return { ...current, [topic]: next };
+    });
+  };
+
+  const applyFirstToAll = () => {
+    const first = Object.values(assignments).find((values) => values.length) || [];
+    if (!first.length) return;
+    setAssignments(Object.fromEntries(
+      Object.keys(analysis.proposedRoles || {}).map((topic) => [topic, [...first]])));
+  };
+
+  const roleTitle = (code) => {
+    if (code === "ALL") return "Everyone";
+    return [...selectable, ...newRoles.map((role) => ({ role_code: role.roleCode, title: role.title }))]
+      .find((role) => role.role_code === code)?.title || code;
   };
 
   const confirm = async () => {
@@ -1795,65 +1885,110 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
 
       {analysis.thinTopics?.length > 0 && (
         <div style={{ background: C.amberBg, color: C.amber }} className="rounded-lg px-3 py-2.5 text-xs mb-4">
-          <strong>Too thin to teach from:</strong> {analysis.thinTopics.join(", ")}.
-          These sections don't have enough material for real questions — consider
-          uploading a fuller document for them. (Nothing is pulled from the internet.)
+          <strong>Thin source sections:</strong> {analysis.thinTopics.join(", ")}.
+          Related sections will be merged first. When enabled, general professional
+          material may be supplemented from independently cited web sources.
         </div>
+      )}
+
+      {analysis.crawl?.pages?.length > 0 && (
+        <details style={{ borderColor: C.line }} className="border rounded-lg px-3 py-2.5 mb-4">
+          <summary style={{ color: C.ink }} className="text-xs font-semibold cursor-pointer">
+            {analysis.crawl.pageCount} source page{analysis.crawl.pageCount === 1 ? "" : "s"} included
+            {analysis.crawl.truncated ? ` (limit ${analysis.crawl.pageLimit})` : ""}
+          </summary>
+          <div className="mt-2 max-h-44 overflow-auto space-y-1.5">
+            {analysis.crawl.pages.map((page) => (
+              <div key={page.url} className="text-xs min-w-0">
+                <p style={{ color: C.ink }} className="font-medium truncate">{page.title}</p>
+                <p style={{ color: C.sub }} className="truncate">{page.url}</p>
+              </div>
+            ))}
+          </div>
+        </details>
       )}
 
       <div className="space-y-2 mb-4">
         {Object.entries(analysis.proposedRoles || {}).map(([topic, proposed]) => {
-          const isUnknown = !knownCodes.has(String(proposed).toUpperCase()) && proposed !== "ALL";
+          const proposedCodes = (Array.isArray(proposed) ? proposed : [proposed])
+            .map((value) => String(value).toUpperCase());
+          const isUnknown = proposedCodes.some((code) => !knownCodes.has(code) && code !== "ALL");
+          const selected = assignments[topic] || [];
           return (
-            <div key={topic} className="flex items-center gap-3 flex-wrap">
+            <div key={topic} className="flex items-start gap-3 flex-wrap">
               <span style={{ color: C.ink }} className="text-sm font-medium flex-1 min-w-[200px]">{topic}</span>
-              {isUnknown && !assignments[topic] && (
+              {isUnknown && !selected.length && (
                 <span style={{ background: C.dangerBg, color: C.danger }} className="text-[11px] font-semibold px-2 py-0.5 rounded-full">
-                  document says “{proposed}” — not a company role
+                  document names an unknown role
                 </span>
               )}
-              <select
-                value={assignments[topic] || ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (v === "__new__") {
-                    const name = window.prompt("New role name:", String(proposed));
+              <details style={{ borderColor: selected.length ? C.line : C.danger }}
+                className="border rounded-lg bg-white w-full sm:w-[300px] relative">
+                <summary style={{ color: selected.length ? C.ink : C.danger }}
+                  className="list-none cursor-pointer px-3 py-2 text-xs font-semibold flex items-center justify-between gap-2">
+                  <span className="truncate">
+                    {selected.length ? selected.map(roleTitle).join(", ") : "Choose one or more roles"}
+                  </span>
+                  <ChevronRight size={14} className="rotate-90 shrink-0" />
+                </summary>
+                <div style={{ borderColor: C.line }} className="border-t px-3 py-2 max-h-56 overflow-auto space-y-1.5">
+                  {canPublishCompanyWide && (
+                    <label className="flex items-center gap-2 text-xs cursor-pointer py-1">
+                      <input type="checkbox" checked={selected.includes("ALL")}
+                        onChange={() => toggleRole(topic, "ALL")} />
+                      Everyone (company-wide)
+                    </label>
+                  )}
+                  {hasTeamGroups && Object.keys(teamGroups).sort().map((team) => (
+                    <div key={team}>
+                      <p style={{ color: C.sub }} className="text-[11px] font-semibold mt-2 mb-1">{team}</p>
+                      {teamGroups[team].map((role) => (
+                        <label key={role.role_code} className="flex items-center gap-2 text-xs cursor-pointer py-1">
+                          <input type="checkbox" checked={selected.includes(role.role_code)}
+                            onChange={() => toggleRole(topic, role.role_code)} />
+                          {role.title}
+                        </label>
+                      ))}
+                    </div>
+                  ))}
+                  {(hasTeamGroups ? ungroupedRoles : selectable).map((role) => (
+                    <label key={role.role_code} className="flex items-center gap-2 text-xs cursor-pointer py-1">
+                      <input type="checkbox" checked={selected.includes(role.role_code)}
+                        onChange={() => toggleRole(topic, role.role_code)} />
+                      {role.title}
+                    </label>
+                  ))}
+                  {newRoles.map((role) => (
+                    <label key={role.roleCode} className="flex items-center gap-2 text-xs cursor-pointer py-1">
+                      <input type="checkbox" checked={selected.includes(role.roleCode)}
+                        onChange={() => toggleRole(topic, role.roleCode)} />
+                      {role.title} (new)
+                    </label>
+                  ))}
+                  <button type="button" onClick={() => {
+                    const name = window.prompt("New role name:", String(proposedCodes[0] || ""));
                     if (name) {
                       const code = addInlineRole(name);
-                      setAssignments((a) => ({ ...a, [topic]: code }));
+                      setAssignments((current) => ({
+                        ...current, [topic]: [...(current[topic] || []), code],
+                      }));
                     }
-                    return;
-                  }
-                  setAssignments((a) => ({ ...a, [topic]: v }));
-                }}
-                style={{ borderColor: assignments[topic] ? C.line : C.danger, color: C.ink }}
-                className="border rounded-lg px-2.5 py-1.5 text-xs"
-              >
-                <option value="">— choose role —</option>
-                {canPublishCompanyWide && <option value="ALL">Everyone (company-wide)</option>}
-                {hasTeamGroups ? (
-                  <>
-                    {Object.keys(teamGroups).sort((a, b) => a.localeCompare(b)).map((team) => (
-                      <optgroup key={team} label={team}>
-                        {teamGroups[team].map((r) => <option key={r.role_code} value={r.role_code}>{r.title}</option>)}
-                      </optgroup>
-                    ))}
-                    {ungroupedRoles.length > 0 && (
-                      <optgroup label="Other roles">
-                        {ungroupedRoles.map((r) => <option key={r.role_code} value={r.role_code}>{r.title}</option>)}
-                      </optgroup>
-                    )}
-                  </>
-                ) : (
-                  selectable.map((r) => <option key={r.role_code} value={r.role_code}>{r.title}</option>)
-                )}
-                {newRoles.map((r) => <option key={r.roleCode} value={r.roleCode}>{r.title} (new)</option>)}
-                <option value="__new__">+ Add as new role…</option>
-              </select>
+                  }} style={{ color: C.green700 }} className="text-xs font-semibold py-1">
+                    + Add a new role
+                  </button>
+                </div>
+              </details>
             </div>
           );
         })}
       </div>
+
+      {Object.keys(assignments).length > 1 && (
+        <button type="button" onClick={applyFirstToAll} style={{ color: C.green700 }}
+          className="text-xs font-semibold mb-4">
+          Apply the first selection to every section
+        </button>
+      )}
 
       {newRoles.length > 0 && (
         <p style={{ color: C.green700 }} className="text-xs font-semibold mb-3">
@@ -1878,6 +2013,50 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
             ? `Resolve ${unresolved.length} section(s) first` : "Confirm & generate"}
         </Button>
         <Button variant="ghost" onClick={onCancel}>Cancel</Button>
+      </div>
+    </div>
+  );
+}
+
+function CoursePreview({ training }) {
+  const { data, loading, error, reload } = useAsync(
+    () => api.coursePreview(training), [training]);
+  if (loading) return <Loading label="Loading lesson preview…" />;
+  if (error) return <ErrorBox error={error} onRetry={reload} />;
+  return (
+    <div style={{ borderColor: C.line }} className="border-t mt-4 pt-4">
+      <h4 style={{ ...display, color: C.ink }} className="text-sm font-bold mb-2">Lesson preview</h4>
+      <div className="space-y-2">
+        {(data?.modules || []).map((module) => (
+          <details key={module.moduleId} style={{ borderColor: C.line }} className="border-b last:border-b-0">
+            <summary className="cursor-pointer list-none px-3 py-2.5 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p style={{ color: C.ink }} className="text-xs font-semibold truncate">{module.title}</p>
+                <p style={{ color: module.status === "ready" ? C.sub : C.amber }} className="text-[11px] mt-0.5">
+                  {module.status === "ready"
+                    ? `${module.pages.length} pages · ${module.wordCount} words · ${module.learningPointCount} learning points`
+                    : "Withheld: source quality requirements were not met"}
+                </p>
+              </div>
+              <ChevronRight size={14} color={C.sub} className="rotate-90 shrink-0" />
+            </summary>
+            <div className="px-3 pb-3 space-y-2">
+              {module.qualityNotes?.length > 0 && (
+                <p style={{ color: C.amber }} className="text-xs">{module.qualityNotes.join(" · ")}</p>
+              )}
+              {module.pages.map((page) => (
+                <details key={page.id} className="px-1 py-1">
+                  <summary style={{ color: C.ink }} className="cursor-pointer text-xs font-semibold">
+                    {page.order}. {page.title}
+                  </summary>
+                  <p style={{ color: C.sub, whiteSpace: "pre-wrap" }} className="text-xs leading-6 mt-2">
+                    {page.body}
+                  </p>
+                </details>
+              ))}
+            </div>
+          </details>
+        ))}
       </div>
     </div>
   );
@@ -1999,10 +2178,10 @@ function DocumentsScreen({ team, principal, onDone }) {
           <div className="flex items-center justify-between gap-3 mb-2">
             <p style={{ color: C.ink }} className="text-sm font-semibold flex items-center gap-2">
               {job.state === "running" && <Loader2 size={14} className="animate-spin" />}
-              {job.state === "running" ? "Writing questions…" : job.state === "error" ? "Generation failed" : "Questions ready"}
+              {job.state === "running" ? "Building course…" : job.state === "error" ? "Generation failed" : "Course ready"}
             </p>
             <span style={{ color: C.sub }} className="text-xs font-semibold">
-              {job.total ? `${job.done}/${job.total} sections` : ""}
+              {job.total ? `${job.done}/${job.total}` : ""}
             </span>
           </div>
           <div style={{ background: C.line }} className="w-full h-2 rounded-full overflow-hidden mb-2">
@@ -2013,7 +2192,10 @@ function DocumentsScreen({ team, principal, onDone }) {
           </div>
           <p style={{ color: job.state === "error" ? C.danger : C.sub }} className="text-xs">{job.message}</p>
           {job.state === "done" && (
-            <div className="mt-3"><Button onClick={onDone}>Done</Button></div>
+            <>
+              {job.title && <CoursePreview training={job.title} />}
+              <div className="mt-3"><Button onClick={onDone}>Done</Button></div>
+            </>
           )}
         </div>
       )}
