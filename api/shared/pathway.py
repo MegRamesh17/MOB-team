@@ -13,6 +13,10 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 DIFFICULTIES = ("Easy", "Medium", "Hard")
 _DIFFICULTY_INDEX = {name: index for index, name in enumerate(DIFFICULTIES)}
+CHOICE_TYPES = frozenset(("MultipleChoice",))
+AI_GRADED_TYPES = frozenset(("ShortAnswer", "PromptResponse", "PythonCode"))
+FAST_MODULE_TYPES = frozenset(("MultipleChoice", "MultiSelect", "TrueFalse", "FillInBlank"))
+MAX_FINAL_AI_GRADED = 3
 
 
 def stable_module_id(company_id: int, doc_id: str, topic: str) -> str:
@@ -49,7 +53,7 @@ def diagnostic_pathway(
 def diagnostic_questions(
     pool: Sequence[Dict[str, Any]], modules: Sequence[Dict[str, Any]], seed: str
 ) -> Tuple[List[Dict[str, Any]], List[Tuple[str, str]]]:
-    """Choose one Easy, Medium and Hard question for each module."""
+    """Choose one choice-only Easy, Medium and Hard question for each module."""
     chosen: List[Dict[str, Any]] = []
     missing: List[Tuple[str, str]] = []
     used = set()
@@ -60,6 +64,7 @@ def diagnostic_questions(
                 q for q in pool
                 if q.get("topic") == module.get("topic")
                 and q.get("difficulty") == difficulty
+                and q.get("question_type") in CHOICE_TYPES
                 and q.get("question_id") not in used
             ]
             if not candidates:
@@ -172,6 +177,15 @@ def final_questions(
             shortages.append({"topic": topic, "difficulty": difficulty})
             continue
 
+        # Shared anchors stay quick and identical for everybody. Variable slots may
+        # include a small number of rubric-graded responses, capped so a final does not
+        # become a wall of model waits.
+        ai_count = sum(1 for question in chosen if is_ai_graded(question))
+        if purpose == "anchor" or ai_count >= MAX_FINAL_AI_GRADED:
+            fast = [question for question in candidates if not is_ai_graded(question)]
+            if fast:
+                candidates = fast
+
         rank_seed = "anchor" if purpose == "anchor" else learner_seed
         wanted_index = _DIFFICULTY_INDEX[difficulty]
         candidates.sort(key=lambda q: (
@@ -181,6 +195,10 @@ def final_questions(
         pick = candidates[0]
         used.add(pick["question_id"])
         chosen.append({**pick, "purpose": purpose})
+
+    # Keep model-graded responses at the end. Learners can move through every instant
+    # item first and only wait for rubric grading in the final portion.
+    chosen.sort(key=is_ai_graded)
 
     difficulty_counts = {
         difficulty: sum(1 for _, value in slots if value == difficulty)
@@ -194,6 +212,10 @@ def final_questions(
         "shortages": shortages,
     }
     return chosen, blueprint
+
+
+def is_ai_graded(question: Dict[str, Any]) -> bool:
+    return question.get("question_type") in AI_GRADED_TYPES
 
 
 def _blueprint_slots(topics: Sequence[str], total: int) -> List[Tuple[str, str]]:

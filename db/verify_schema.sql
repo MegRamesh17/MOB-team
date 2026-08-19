@@ -103,6 +103,15 @@ FROM (VALUES
 WHERE OBJECT_ID('dbo.' + v.tbl, 'U') IS NOT NULL     -- the table itself is reported above
   AND COL_LENGTH('dbo.' + v.tbl, v.col) IS NULL;
 
+-- Free-text pathway answers can exceed the original 300-character legacy limit.
+INSERT INTO @missing (kind, name, added_by)
+SELECT 'column width', 'GeneratedQuizResponses.text_answer', '028'
+WHERE OBJECT_ID('dbo.GeneratedQuizResponses', 'U') IS NOT NULL
+  AND EXISTS (
+      SELECT 1 FROM sys.columns
+      WHERE object_id = OBJECT_ID('dbo.GeneratedQuizResponses')
+        AND name = 'text_answer' AND max_length <> -1);
+
 -- ---------------------------------------------------------------------------
 -- Views
 -- ---------------------------------------------------------------------------
