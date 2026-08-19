@@ -185,6 +185,35 @@ def seed_demo_users(password: str) -> int:
     return len(users)
 
 
+def get_notifications_enabled(employee_id: int) -> bool:
+    """
+    Whether this employee wants reminder/notification email. Mirrors
+    Employees.notifications_enabled (029_add_employee_notification_pref.sql) — defaults
+    to on, same as the column's default, so a user nobody has touched behaves the same
+    locally as it would deployed.
+    """
+    for user in _load_users():
+        if int(user.get("employee_id", -1)) == employee_id:
+            return bool(user.get("notifications_enabled", True))
+    return True
+
+
+def set_notifications_enabled(employee_id: int, enabled: bool) -> bool:
+    """Persist the toggle. Returns False if the employee has no credential record yet
+    (nothing seeded) rather than silently creating a partial one."""
+    users = _load_users()
+    found = False
+    for user in users:
+        if int(user.get("employee_id", -1)) == employee_id:
+            user["notifications_enabled"] = bool(enabled)
+            found = True
+            break
+    if not found:
+        return False
+    USERS_FILE.write_text(json.dumps({"users": users}, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
 def authenticate(email: str, password: str) -> Optional[Identity]:
     email = (email or "").strip().lower()
     for user in _load_users():
@@ -241,6 +270,21 @@ def reports_of(employee_id: int, *, direct_only: bool = False) -> List[Dict]:
         out.append(person)
         queue.extend(by_manager.get(person["employee_id"], []))
     return out
+
+
+def employees_with_role_code(role_code: str) -> List[Dict]:
+    """
+    Everyone holding role_code -- or everyone, when role_code is 'ALL' (a company-wide
+    requirement). Mirrors api/function_app.py's _employees_for_role, which does the
+    same lookup against dbo.Employees/dbo.Roles for the deployed app; there is only one
+    company locally, so nothing here needs a company_id filter the way that query does.
+
+    Used by devserver.py's _confirm_document to find who to notify when a document
+    becomes newly required for a role.
+    """
+    if role_code == "ALL":
+        return list(directory())
+    return [p for p in directory() if (p.get("role_code") or "ALL").upper() == role_code]
 
 
 # ---------------------------------------------------------------------------

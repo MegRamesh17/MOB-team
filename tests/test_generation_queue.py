@@ -14,6 +14,7 @@ sys.path.insert(0, str(API))
 sys.path.insert(0, str(ROOT / "src"))
 
 import function_app  # noqa: E402
+import shared.comms as comms  # noqa: E402
 import shared.sqlbank as sqlbank  # noqa: E402
 import quizgen.pipeline as pipeline  # noqa: E402
 import quizgen.coursegen as coursegen  # noqa: E402
@@ -83,6 +84,16 @@ class FakeRequest:
         }
 
 
+class MultiRoleRequest:
+    def get_json(self):
+        return {
+            "title": "Capacity Planning",
+            "assignments": {"Role Overview": ["SDE1", "SDE2"]},
+            "newRoles": [],
+            "makeRequired": True,
+        }
+
+
 class FakeOutput:
     def __init__(self):
         self.value = None
@@ -128,6 +139,35 @@ class TestGenerationQueueHandoff(unittest.TestCase):
         })
         create_job.assert_called_once()
         generate.assert_not_called()
+
+    def test_multi_role_confirmation_keeps_new_assignment_notifications(self):
+        identity = SimpleNamespace(company_id=7)
+        output = FakeOutput()
+
+        def employees_for_role(cur, company_id, role_code):
+            return [("{}@quizrant.com".format(role_code.lower()), role_code)]
+
+        with (
+            patch.object(function_app, "get_current_employee", return_value=identity),
+            patch.object(function_app, "require_manager", return_value=None),
+            patch.object(function_app, "_permitted_upload_roles", return_value={"SDE1", "SDE2"}),
+            patch.object(function_app, "_employees_for_role", side_effect=employees_for_role) as recipients,
+            patch.object(function_app, "_company_name", return_value="Quadrant"),
+            patch.object(function_app, "_conn", return_value=FakeConnection()),
+            patch.object(sqlbank, "SqlBank", FakeBank),
+            patch.object(FakeBank, "add_role_requirement", return_value=True) as require_role,
+            patch.object(sqlbank, "new_job_id", return_value="job_multi_role"),
+            patch.object(sqlbank, "create_job"),
+            patch.object(comms, "send_new_training_email") as send_email,
+        ):
+            response = function_app.confirm_document(MultiRoleRequest(), output)
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(
+            {call.args[0] for call in require_role.call_args_list}, {"SDE1", "SDE2"})
+        self.assertEqual(
+            {call.args[2] for call in recipients.call_args_list}, {"SDE1", "SDE2"})
+        self.assertEqual(send_email.call_count, 2)
 
     def test_worker_updates_progress_and_marks_the_job_done(self):
         connection = FakeConnection()

@@ -3,7 +3,8 @@ import {
   LogOut, BookOpen, Award, Users, CheckCircle2, Circle, Lock,
   ChevronRight, X, AlertCircle, Clock, ArrowLeft, User, Star,
   Trophy, Flame, Target, Mail, Briefcase, Share2, Download, Copy,
-  Loader2, RefreshCw, Upload, FileText, Link2,
+  Loader2, RefreshCw, Upload, FileText, Link2, Search, Send,
+  Map as MapIcon, Settings as SettingsIcon, Box, Calendar, ShieldCheck,
 } from "lucide-react";
 import * as api from "./api";
 import { Logo } from "./logo.jsx";
@@ -14,11 +15,14 @@ import { Logo } from "./logo.jsx";
  * Wired to the backend — these reflect the actual question bank and this learner's
  * actual answers:
  *   trainings, modules, lesson text, quiz questions, grading, scores,
- *   certificates, Q score, mastery breakdown
+ *   certificates, Q score, mastery breakdown, the manager's team roster and
+ *   completion numbers (api.teamCompletion(), the same qscore.standing() arithmetic
+ *   /qscore uses), and reminder sends (api.sendReminder() -- real, though whether it
+ *   actually delivers depends on RESEND_API_KEY being set for the environment)
  *
  * Still mock — no backend exists for them yet, and they are marked in the UI rather
  * than left to look real:
- *   badges, the companion pet, focus timer, teammates, the manager's team view
+ *   badges, the companion pet, focus timer, teammates
  *
  * The mock parts are kept because they are the product's design direction. They are
  * not kept quiet: pretending a number is measured when it is invented is how a demo
@@ -26,33 +30,42 @@ import { Logo } from "./logo.jsx";
  */
 
 // ---------- design tokens ----------
+// Exact values from the brand brief: forest green primary, fresh green + sage as
+// lighter green steps, teal/coral doing semantic work (compliant / needs-attention),
+// lavender reserved for learning-path accents. Token KEYS keep their older names
+// (green900/700/600/500/300, "mint" for the pale tint) so the ~100 call sites that
+// reference them did not need to change one at a time -- only the values did.
 const C = {
-  ink: "#1E1B2E",
-  sub: "#6B6480",
-  violet900: "#2E1152",
-  violet700: "#6423C9",
-  violet600: "#7A35E0",
-  violet500: "#9459EE",
-  violet300: "#C9AEF5",
-  lavender: "#F1EBFB",
-  paper: "#FBFAFE",
-  line: "#E4DCF5",
-  amber: "#C9971D",
-  amberBg: "#FBF3DF",
-  success: "#1F9D55",
-  successBg: "#E7F7EE",
+  ink: "#0F1214",       // brief's "Charcoal"
+  sub: "#5C6B62",
+  green900: "#0E5536",  // derived deep shade, no brief value for this step
+  green700: "#147A4D",  // brief: Forest green
+  green600: "#1AA05C",  // derived mid step
+  green500: "#22C55E",  // brief: Fresh green
+  green300: "#88C7B7",  // brief: Sage
+  mint: "#E3F1EB",       // derived pale tint of sage/forest
+  paper: "#FFFFFF",      // white, not the brief's cream -- per direct request
+  sand: "#F3EDE1",       // brief: Soft sand -- subtle section backgrounds
+  line: "#E4E7E2",       // cooled from the brief's warm tan now the ground is white, not cream
+  amber: "#FF9E4A",      // brief: Coral/orange
+  amberBg: "#FFEFDD",
+  success: "#14B8A6",    // brief: Teal
+  successBg: "#DFF7F3",
   danger: "#D8443C",
   dangerBg: "#FCEBEA",
+  purple: "#6D5CE7",     // brief: Lavender
+  purpleBg: "#EAE7FC",
+  rail: "#0F1214",       // brief: Charcoal/sidebar
 };
 
 const font = { fontFamily: "'Inter', system-ui, sans-serif" };
-const display = { fontFamily: "'Sora', system-ui, sans-serif" };
+const display = { fontFamily: "'Playfair Display', Georgia, serif" };
 
 // ---------- static (design-only) data ----------
 const FOCUS_PRIORITIES = [
   { id: "urgent", label: "Urgent", color: "#D8443C", bg: "#FCEBEA" },
-  { id: "deep", label: "Deep Work", color: "#6423C9", bg: "#F1EBFB" },
-  { id: "quick", label: "Quick Task", color: "#C9971D", bg: "#FBF3DF" },
+  { id: "deep", label: "Deep Work", color: "#6D5CE7", bg: "#EAE7FC" },
+  { id: "quick", label: "Quick Task", color: "#E07A1F", bg: "#FDECD9" },
   { id: "learning", label: "Learning", color: "#1F9D55", bg: "#E7F7EE" },
 ];
 
@@ -175,7 +188,7 @@ function StatusPill({ status }) {
   const map = {
     completed: { bg: C.successBg, fg: C.success, label: "Completed" },
     "in-progress": { bg: C.amberBg, fg: C.amber, label: "In progress" },
-    "not-started": { bg: C.lavender, fg: C.violet700, label: "Not started" },
+    "not-started": { bg: C.mint, fg: C.green700, label: "Not started" },
     locked: { bg: "#F1F0F3", fg: "#9A93A8", label: "Locked" },
   };
   const s = map[status] || map["not-started"];
@@ -215,19 +228,19 @@ function MasteryRing({ value, size = 64, stroke = 7 }) {
   const c = 2 * Math.PI * r;
   const pct = Math.max(0, Math.min(100, Math.round(value || 0)));
   const dash = (pct / 100) * c;
-  const id = `grad-${size}-${pct}`;
+  const gradId = `mastery-ring-grad-${size}`;
   return (
     <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
       <defs>
-        <linearGradient id={id} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor={C.violet500} />
-          <stop offset="100%" stopColor={C.violet900} />
+        <linearGradient id={gradId} x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor={C.green500} />
+          <stop offset="100%" stopColor={C.green700} />
         </linearGradient>
       </defs>
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={C.line} strokeWidth={stroke} />
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={C.mint} strokeWidth={stroke} />
       <circle
         cx={size / 2} cy={size / 2} r={r} fill="none"
-        stroke={`url(#${id})`} strokeWidth={stroke} strokeLinecap="round"
+        stroke={`url(#${gradId})`} strokeWidth={stroke} strokeLinecap="round"
         strokeDasharray={`${dash} ${c - dash}`}
         transform={`rotate(-90 ${size / 2} ${size / 2})`}
       />
@@ -270,12 +283,12 @@ function TimerRing({ progress, color, size = 160, stroke = 12, label, sublabel }
 
 function Button({ children, onClick, variant = "primary", disabled, className = "", ...rest }) {
   const styles = {
-    primary: { background: C.violet700, color: "#fff" },
-    ghost: { background: "transparent", color: C.violet700, border: `1px solid ${C.line}` },
-    subtle: { background: C.lavender, color: C.violet700 },
+    primary: { background: C.green700, color: "#fff" },
+    ghost: { background: "transparent", color: C.green700, border: `1px solid ${C.line}` },
+    subtle: { background: C.mint, color: C.green700 },
   };
   const [hover, setHover] = useState(false);
-  const hoverBg = variant === "primary" ? C.violet900 : variant === "subtle" ? "#E4D7F7" : C.lavender;
+  const hoverBg = variant === "primary" ? C.green900 : variant === "subtle" ? C.green300 : C.mint;
   return (
     <button
       onClick={onClick}
@@ -330,8 +343,9 @@ function Login({ onLogin }) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center" style={{ ...font, background: `linear-gradient(160deg, ${C.violet900} 0%, ${C.violet700} 45%, ${C.violet500} 100%)` }}>
-      <div className="w-full max-w-md mx-4 bg-white rounded-2xl shadow-2xl overflow-hidden">
+    <div className="min-h-screen flex items-center justify-center" style={{ ...font, background: C.paper }}>
+      <div className="w-full max-w-md mx-4 bg-white rounded-2xl shadow-xl overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
+        <div style={{ background: C.green700, height: 4 }} />
         <div className="px-8 pt-8 pb-6">
           <div className="flex items-center mb-8"><Logo size={30} /></div>
           <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Sign in</h1>
@@ -392,14 +406,24 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
   // manager got Team, Documents and Profile and had no way to reach their own training
   // at all. A manager is also an employee with training of their own, and the old split
   // made that unreachable.
+  //
+  // Labels follow the brand brief's sidebar list, mapped onto the pages that actually
+  // exist rather than adding dead links for the ones that don't: "Learning Paths" is
+  // the existing roadmap, "Team" is the always-visible peer gallery, "Reports" is the
+  // manager-only completion roster (still gated the same as it always was), "Resources"
+  // is Documents. The brief's "Compliance" isn't a separate item -- Certificates already
+  // shows exactly that (compliant / expired / renewing) per document, so a second nav
+  // entry pointing at the same page would just be the same link twice under two names.
+  // "Messages" has no backend anywhere in the app and is left out rather than shipped
+  // as a page with nothing behind it.
   const nav = [
     { id: "dashboard", label: "Dashboard", icon: BookOpen },
-    { id: "path", label: "My Training", icon: CheckCircle2 },
-    ...(manages ? [{ id: "team", label: "My Team", icon: Users }] : []),
-    { id: "documents", label: "Documents", icon: FileText },
+    { id: "path", label: "Learning Paths", icon: MapIcon },
+    { id: "teammates", label: "Team", icon: Users },
+    ...(manages ? [{ id: "team", label: "Reports", icon: Target }] : []),
     { id: "certificates", label: "Certificates", icon: Award },
-    { id: "teammates", label: "Teammates", icon: Users },
-    { id: "profile", label: "Profile", icon: User },
+    { id: "documents", label: "Resources", icon: FileText },
+    { id: "settings", label: "Settings", icon: SettingsIcon },
   ];
 
   return (
@@ -409,9 +433,9 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
           -- stays put while a long page like Profile scrolls inside <main> only.
           min-height let the whole row grow with the page's content instead, which
           dragged the sidebar along with it and buried sign-out below the fold. */}
-      <aside style={{ borderColor: C.line }} className="w-full md:w-60 border-b md:border-b-0 md:border-r flex flex-row md:flex-col shrink-0 h-auto md:h-full overflow-x-auto md:overflow-y-auto">
-        <div className="hidden md:flex px-5 py-5 items-center"><Logo size={26} /></div>
-        <nav className="flex md:flex-col flex-1 px-2 py-2 md:px-3 md:py-4 gap-1 md:gap-0 md:space-y-1">
+      <aside style={{ background: C.rail }} className="w-full md:w-[252px] flex flex-row md:flex-col shrink-0 h-auto md:h-full overflow-x-auto md:overflow-y-auto">
+        <div className="hidden md:flex px-5 py-6 items-center"><Logo size={38} light /></div>
+        <nav className="flex md:flex-col flex-1 px-3 py-2 md:py-4 gap-1 md:space-y-1">
           {nav.map((n) => {
             const Icon = n.icon;
             const isActive = active === n.id;
@@ -419,27 +443,34 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
               <button
                 key={n.id}
                 onClick={() => setActive(n.id)}
-                style={{ background: isActive ? C.violet700 : "transparent", color: isActive ? "#fff" : C.sub }}
+                style={{
+                  background: isActive ? "rgba(34,197,94,0.18)" : "transparent",
+                  color: isActive ? "#fff" : "rgba(240,234,216,0.68)",
+                }}
                 title={n.label}
-                className="min-w-[62px] md:min-w-0 md:w-full flex flex-col md:flex-row items-center gap-1 md:gap-3 px-2 md:px-3 py-2 md:py-2.5 rounded-lg text-[10px] md:text-sm font-semibold transition-colors"
+                className="min-w-[62px] md:min-w-0 md:w-full flex flex-col md:flex-row items-center gap-1 md:gap-3 px-2 md:px-3 py-2 md:py-2.5 rounded-xl text-[10px] md:text-sm font-semibold transition-colors hover:text-white"
               >
                 <Icon size={16} /> {n.label}
               </button>
             );
           })}
         </nav>
-        <div style={{ borderColor: C.line }} className="hidden md:block border-t px-5 py-4">
-          <div className="flex items-center gap-2 mb-3">
-            <div style={{ background: C.lavender, color: C.violet700 }} className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold">
+        <div style={{ borderColor: "rgba(240,234,216,0.14)" }} className="hidden md:block border-t px-4 py-5">
+          <button
+            onClick={() => setActive("profile")}
+            style={{ background: active === "profile" ? "rgba(34,197,94,0.18)" : "transparent" }}
+            className="w-full flex items-center gap-3 mb-3 p-2 -m-2 rounded-xl text-left hover:bg-white/5"
+          >
+            <div style={{ background: "rgba(240,234,216,0.14)", color: "#F0EAD8" }} className="w-11 h-11 rounded-full flex items-center justify-center text-sm font-bold shrink-0">
               {name.split(" ").map((p) => p[0]).join("")}
             </div>
-            <div>
-              <div style={{ color: C.ink }} className="text-sm font-semibold leading-tight">{name}</div>
-              <div style={{ color: C.sub }} className="text-xs">{department || "—"}</div>
-              {title && <div style={{ color: C.sub }} className="text-[11px] opacity-80">{title}</div>}
+            <div className="min-w-0">
+              <div style={{ color: "#F0EAD8" }} className="text-base font-semibold leading-tight">{name}</div>
+              <div style={{ color: "rgba(240,234,216,0.65)" }} className="text-sm truncate">{department || "—"}</div>
+              {title && <div style={{ color: "rgba(240,234,216,0.5)" }} className="text-xs truncate">{title}</div>}
             </div>
-          </div>
-          <button onClick={onLogout} style={{ color: C.sub }} className="flex items-center gap-2 text-xs font-semibold hover:opacity-80">
+          </button>
+          <button onClick={onLogout} style={{ color: "rgba(240,234,216,0.6)" }} className="flex items-center gap-2 text-xs font-semibold hover:text-white">
             <LogOut size={13} /> Sign out
           </button>
         </div>
@@ -547,88 +578,248 @@ function FocusSession() {
 }
 
 // ---------- Dashboard ----------
-function Dashboard({ name, onOpenPath, onOpenTraining }) {
+// Four cards. The brief's "Due soon" turned out to be real, not invented: /certificates
+// already returns renewalsDue (qscore.renewal_candidates -- certificates valid today but
+// expiring within 30 days), the same data the Certificates page uses. Counting the
+// not-yet-expired ones is exactly "due soon"; the already-expired ones are counted
+// separately below, since "expired" and "about to expire" are different facts.
+function DashboardStats({ trainings, renewalsDue, onOpenPath, onOpenCertificates }) {
+  if (trainings.length === 0) return null;
+  const total = trainings.length;
+  const completed = trainings.filter((t) => t.status === "completed").length;
+  const compliant = trainings.filter((t) => t.compliant && !t.expired).length;
+  const dueSoon = renewalsDue.filter((r) => !r.expired).length;
+  const pct = Math.round((completed / total) * 100);
+
+  const Link = ({ onClick, children }) => (
+    <button onClick={onClick} style={{ color: C.green700 }}
+      className="text-xs font-semibold flex items-center gap-0.5 mt-2 hover:opacity-75">
+      {children} <ChevronRight size={12} />
+    </button>
+  );
+
+  return (
+    <div className="grid grid-cols-4 gap-4 mb-8">
+      <div style={{ borderColor: C.line }} className="border rounded-2xl bg-white p-6 flex items-center gap-4">
+        <MasteryRing value={pct} size={72} stroke={7} />
+        <div>
+          <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-1">{pct}%</div>
+          <div style={{ color: C.sub }} className="text-xs font-semibold">Overall Progress</div>
+          <Link onClick={onOpenPath}>View progress</Link>
+        </div>
+      </div>
+      <div style={{ borderColor: C.line }} className="border rounded-2xl bg-white p-6 flex items-center gap-4">
+        <div style={{ background: C.mint }} className="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0">
+          <Box size={26} color={C.green700} />
+        </div>
+        <div>
+          <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-1">{completed}</div>
+          <div style={{ color: C.sub }} className="text-xs font-semibold">Trainings Completed</div>
+          <Link onClick={onOpenPath}>View all</Link>
+        </div>
+      </div>
+      <div style={{ borderColor: C.line }} className="border rounded-2xl bg-white p-6 flex items-center gap-4">
+        <div style={{ background: C.amberBg }} className="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0">
+          <Calendar size={26} color={C.amber} />
+        </div>
+        <div>
+          <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-1">{dueSoon}</div>
+          <div style={{ color: C.sub }} className="text-xs font-semibold">Due Soon</div>
+          <Link onClick={onOpenCertificates}>View all</Link>
+        </div>
+      </div>
+      <div style={{ borderColor: C.line }} className="border rounded-2xl bg-white p-6 flex items-center gap-4">
+        <div style={{ background: C.successBg }} className="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0">
+          <ShieldCheck size={26} color={C.success} />
+        </div>
+        <div>
+          <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-1">
+            {Math.round((compliant / total) * 100)}%
+          </div>
+          <div style={{ color: C.sub }} className="text-xs font-semibold">Compliant</div>
+          {compliant === total
+            ? <p style={{ color: C.success }} className="text-xs font-semibold mt-2">All caught up</p>
+            : <Link onClick={onOpenCertificates}>View all</Link>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Manager-only, real: the same qscore coverage numbers My Team's roster uses, just the
+// worst-off few direct reports at a glance rather than the full table. Nobody here is
+// asked to trust an invented percentage next to a real name.
+function TeamProgressCard({ team }) {
+  const { data } = useAsync(() => api.teamCompletion(), []);
+  const direct = (team?.people || []).filter((p) => p.direct);
+  if (!direct.length) return null;
+
+  const byId = new Map((data?.people || []).map((p) => [p.employeeId, p]));
+  const rows = direct
+    .map((p) => ({ ...p, stat: byId.get(p.employeeId) }))
+    .filter((p) => p.stat)
+    .sort((a, b) => a.stat.coverage - b.stat.coverage)
+    .slice(0, 5);
+
+  return (
+    <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 h-full flex flex-col">
+      <h3 style={{ ...display, color: C.ink }} className="font-bold mb-4">Team progress</h3>
+      {!rows.length ? (
+        <p style={{ color: C.sub }} className="text-xs">Completion numbers are still loading.</p>
+      ) : (
+        <div className="flex-1 flex flex-col justify-between gap-3.5">
+          {rows.map((p) => (
+            <div key={p.employeeId}>
+              <div className="flex items-center gap-2 mb-1">
+                <div style={{ background: C.mint, color: C.green700 }} className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0">
+                  {p.name.split(" ").map((x) => x[0]).join("")}
+                </div>
+                <p style={{ color: C.ink }} className="text-xs font-semibold truncate flex-1">{p.name}</p>
+                <span style={{ color: C.sub }} className="text-xs font-semibold shrink-0">{Math.round(p.stat.coverage)}%</span>
+              </div>
+              <div style={{ background: C.line }} className="w-full h-1.5 rounded-full overflow-hidden">
+                <div style={{ width: `${p.stat.coverage}%`, background: C.green500 }} className="h-full rounded-full" />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Dashboard({ name, team, onOpenPath, onOpenTraining, onOpenCertificates }) {
   const { data, loading, error, reload } = useAsync(() => api.trainings(), []);
+  const { data: certData } = useAsync(() => api.certificates(), []);
   const trainings = data?.trainings || [];
+  const renewalsDue = certData?.renewalsDue || [];
+  const upcoming = renewalsDue.filter((r) => !r.expired);
+  const manages = Boolean(team?.manages);
   // Resume the one in progress; failing that, whatever hasn't been started.
   const focus = trainings.find((t) => t.status === "in-progress")
     || trainings.find((t) => t.status === "not-started")
     || trainings[0];
 
   return (
-    <div className="p-8 max-w-4xl">
-      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Welcome back, {name.split(" ")[0]}</h1>
-      <p style={{ color: C.sub }} className="text-sm mb-8">Here's where your compliance training stands.</p>
+    <div className="p-8 max-w-6xl">
+      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Good morning, {name.split(" ")[0]}</h1>
+      <p style={{ color: C.sub }} className="text-sm mb-8">Here's where your training stands.</p>
 
       {loading && <Loading label="Loading your trainings…" />}
       {error && <ErrorBox error={error} onRetry={reload} />}
 
+      {!loading && !error && (
+        <DashboardStats trainings={trainings} renewalsDue={renewalsDue}
+          onOpenPath={onOpenPath} onOpenCertificates={onOpenCertificates} />
+      )}
+
       {focus && (
-        <div style={{ background: `linear-gradient(120deg, ${C.violet900}, ${C.violet700})` }}
-          className="rounded-2xl p-6 flex items-center justify-between gap-6 mb-8 text-white">
-          <div className="min-w-0">
-            <p className="text-xs uppercase tracking-wide opacity-80 mb-1 font-semibold">
+        <div style={{ borderColor: C.line }}
+          className="border rounded-2xl p-6 flex items-center gap-5 mb-8 bg-white">
+          <div style={{ background: C.mint }} className="w-16 h-16 rounded-xl flex items-center justify-center shrink-0">
+            <BookOpen size={26} color={C.green700} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p style={{ color: C.green700 }} className="text-xs uppercase tracking-wide mb-1 font-semibold">
               {focus.status === "not-started" ? "Start here" : "Continue where you left off"}
             </p>
-            <h2 style={display} className="text-lg font-bold mb-1">{focus.title}</h2>
-            <p className="text-sm opacity-90 mb-4">
+            <h2 style={{ ...display, color: C.ink }} className="text-lg font-bold mb-1">{focus.title}</h2>
+            <p style={{ color: C.sub }} className="text-sm mb-4">
               {focus.modules.length} modules · {focus.questionCount} questions
               {focus.answered > 0 ? ` · ${focus.answered} answered` : ""}
             </p>
-            <button onClick={() => onOpenTraining(focus)} style={{ color: C.violet700 }}
-              className="bg-white px-4 py-2 rounded-xl text-sm font-semibold hover:opacity-90">
+            <Button onClick={() => onOpenTraining(focus)}>
               {focus.status === "not-started" ? "Start training" : "Continue training"}
-            </button>
+            </Button>
           </div>
-          <MasteryRing value={focus.mastery} size={84} />
+          <MasteryRing value={focus.mastery} size={72} />
         </div>
       )}
 
       {!loading && !error && trainings.length > 0 && (
-        <>
-          <div className="flex items-center justify-between mb-3">
-            <h3 style={{ ...display, color: C.ink }} className="font-bold">Your trainings</h3>
-            <button onClick={onOpenPath} style={{ color: C.violet700 }} className="text-sm font-semibold flex items-center gap-1">
-              View full path <ChevronRight size={14} />
-            </button>
-          </div>
-          <div className="space-y-2">
-            {trainings.map((t) => (
-              <button key={t.id} onClick={() => onOpenTraining(t)} style={{ borderColor: C.line }}
-                className="w-full text-left border rounded-xl p-4 flex items-center justify-between gap-3 bg-white hover:shadow-sm transition-shadow">
-                <div className="flex items-center gap-3 min-w-0">
-                  {t.status === "completed"
-                    ? <CheckCircle2 size={16} color={C.success} className="shrink-0" />
-                    : <Circle size={16} color={C.violet500} className="shrink-0" />}
-                  <div className="min-w-0">
-                    <p style={{ color: C.ink }} className="text-sm font-semibold truncate">{t.title}</p>
-                    <p style={{ color: C.sub }} className="text-xs">
-                      {t.modules.length} modules · {t.questionCount} questions
-                      {t.compliant && t.expiresAt ? ` · renews ${String(t.expiresAt).slice(0, 10)}` : ""}
-                    </p>
-                  </div>
-                </div>
-                {t.expired ? (
-                  <span style={{ background: C.dangerBg, color: C.danger, fontWeight: 600 }}
-                    className="text-xs px-2.5 py-1 rounded-full whitespace-nowrap">Expired — retake</span>
-                ) : t.compliant ? (
-                  <span style={{ background: C.successBg, color: C.success, fontWeight: 600 }}
-                    className="text-xs px-2.5 py-1 rounded-full whitespace-nowrap">Compliant</span>
-                ) : (
-                  <StatusPill status={t.status} />
-                )}
+        <div className={manages ? "grid grid-cols-3 gap-6 items-stretch mb-8" : "mb-8"}>
+          <div className={manages ? "col-span-2" : ""}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 style={{ ...display, color: C.ink }} className="font-bold">Your learning path</h3>
+              <button onClick={onOpenPath} style={{ color: C.green700 }} className="text-sm font-semibold flex items-center gap-1">
+                View full path <ChevronRight size={14} />
               </button>
-            ))}
+            </div>
+            <div className="space-y-2">
+              {trainings.map((t) => (
+                <button key={t.id} onClick={() => onOpenTraining(t)} style={{ borderColor: C.line }}
+                  className="w-full text-left border rounded-xl p-4 flex items-center justify-between gap-3 bg-white hover:shadow-sm transition-shadow">
+                  <div className="flex items-center gap-3 min-w-0">
+                    {t.status === "completed"
+                      ? <CheckCircle2 size={16} color={C.success} className="shrink-0" />
+                      : <Circle size={16} color={C.green500} className="shrink-0" />}
+                    <div className="min-w-0">
+                      <p style={{ color: C.ink }} className="text-sm font-semibold truncate">{t.title}</p>
+                      <p style={{ color: C.sub }} className="text-xs">
+                        {t.modules.length} modules · {t.questionCount} questions
+                        {t.compliant && t.expiresAt ? ` · renews ${String(t.expiresAt).slice(0, 10)}` : ""}
+                      </p>
+                    </div>
+                  </div>
+                  {t.expired ? (
+                    <span style={{ background: C.dangerBg, color: C.danger, fontWeight: 600 }}
+                      className="text-xs px-2.5 py-1 rounded-full whitespace-nowrap">Expired — retake</span>
+                  ) : t.compliant ? (
+                    <span style={{ background: C.successBg, color: C.success, fontWeight: 600 }}
+                      className="text-xs px-2.5 py-1 rounded-full whitespace-nowrap">Compliant</span>
+                  ) : (
+                    <StatusPill status={t.status} />
+                  )}
+                </button>
+              ))}
+            </div>
           </div>
-        </>
+          {manages && <TeamProgressCard team={team} />}
+        </div>
       )}
 
       {!loading && !error && trainings.length === 0 && (
-        <div style={{ borderColor: C.line }} className="border rounded-xl p-6 bg-white text-center">
+        <div style={{ borderColor: C.line }} className="border rounded-xl p-6 bg-white text-center mb-8">
           <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">No trainings yet</p>
           <p style={{ color: C.sub }} className="text-xs">
             Nothing has been assigned to your role yet. Check back soon, or ask your manager if you think this is unexpected.
           </p>
+        </div>
+      )}
+
+      {upcoming.length > 0 && (
+        <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 mb-8">
+          <h3 style={{ ...display, color: C.ink }} className="font-bold mb-4">Upcoming deadlines</h3>
+          <div className="space-y-2">
+            {upcoming.map((r) => (
+              <div key={r.doc_title} style={{ borderColor: C.line }}
+                className="flex items-center justify-between gap-3 border-t pt-2.5 first:border-t-0 first:pt-0">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Clock size={14} color={C.amber} className="shrink-0" />
+                  <p style={{ color: C.ink }} className="text-sm font-medium truncate">{r.doc_title}</p>
+                </div>
+                <span style={{ color: C.amber }} className="text-xs font-semibold shrink-0">
+                  {r.daysUntilExpiry === 0 ? "expires today" : `expires in ${r.daysUntilExpiry} day${r.daysUntilExpiry === 1 ? "" : "s"}`}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!loading && !error && trainings.length > 0 && (
+        <div style={{ background: C.green700 }}
+          className="rounded-2xl p-6 flex items-center justify-between gap-6 text-white">
+          <div>
+            <h3 style={{ ...display }} className="text-lg font-bold mb-1">Keep growing, keep leading.</h3>
+            <p className="text-sm opacity-90">
+              The full roadmap shows every module ahead, in order, with what's already done.
+            </p>
+          </div>
+          <button onClick={onOpenPath} style={{ color: C.green700 }}
+            className="bg-white px-4 py-2 rounded-xl text-sm font-semibold hover:opacity-90 shrink-0">
+            View full path
+          </button>
         </div>
       )}
 
@@ -652,7 +843,7 @@ const EXAMPLE_TRAININGS = [
 const ROADMAP_STATUS_STYLE = {
   completed: { fg: C.success, bg: C.successBg, ring: C.success, Icon: CheckCircle2 },
   "in-progress": { fg: C.amber, bg: C.amberBg, ring: C.amber, Icon: BookOpen },
-  "not-started": { fg: C.violet700, bg: C.lavender, ring: C.violet500, Icon: Circle },
+  "not-started": { fg: C.green700, bg: C.mint, ring: C.green500, Icon: Circle },
   locked: { fg: "#9A93A8", bg: "#F1F0F3", ring: "#C7C2D6", Icon: Lock },
 };
 
@@ -740,7 +931,7 @@ function LearningPath({ onBack, onOpenTraining }) {
         <ArrowLeft size={14} /> Back to dashboard
       </button>
       <div className="flex items-center gap-2 mb-6">
-        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold">My training path</h1>
+        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold">Learning paths</h1>
         {showExample && <MockNote>example path</MockNote>}
       </div>
 
@@ -790,7 +981,7 @@ function TrainingDetail({ training, onBack, onStartDiagnostic, onOpenModule, onS
       {path && !path.diagnostic.completed && (
         <div style={{ borderColor: C.line }} className="border rounded-lg p-5 bg-white mb-6">
           <div className="flex items-start gap-3">
-            <Target size={18} color={C.violet700} className="shrink-0 mt-0.5" />
+            <Target size={18} color={C.green700} className="shrink-0 mt-0.5" />
             <div className="min-w-0 flex-1">
               <h2 style={{ ...display, color: C.ink }} className="text-sm font-bold mb-1">Start with a diagnostic</h2>
               <p style={{ color: C.sub }} className="text-sm mb-4">
@@ -822,7 +1013,7 @@ function TrainingDetail({ training, onBack, onStartDiagnostic, onOpenModule, onS
                   className="w-full border rounded-lg p-4 flex items-center gap-3 bg-white text-left disabled:cursor-not-allowed">
                   {passed ? <CheckCircle2 size={17} color={C.success} className="shrink-0" />
                     : locked ? <Lock size={16} color={C.sub} className="shrink-0" />
-                      : <Circle size={17} color={needsReview ? C.amber : C.violet700} className="shrink-0" />}
+                      : <Circle size={17} color={needsReview ? C.amber : C.green700} className="shrink-0" />}
                   <div className="min-w-0 flex-1">
                     <p style={{ color: C.ink }} className="text-sm font-semibold">
                       {module.pathwayOrder}. {module.title || module.topic}
@@ -904,7 +1095,7 @@ function LessonScreen({ training, module, onContinue, onBack }) {
       <div className="flex items-center justify-between gap-3 mb-1">
         <h1 style={{ ...display, color: C.ink }} className="text-xl font-bold min-w-0">{module.title || module.topic}</h1>
         {data && (
-          <span style={{ color: C.sub, background: C.lavender }} className="text-xs font-semibold px-2.5 py-1 rounded-full flex items-center gap-1 shrink-0">
+          <span style={{ color: C.sub, background: C.mint }} className="text-xs font-semibold px-2.5 py-1 rounded-full flex items-center gap-1 shrink-0">
             <Clock size={12} /> {data.readTime}
           </span>
         )}
@@ -924,7 +1115,7 @@ function LessonScreen({ training, module, onContinue, onBack }) {
             {pages.map((page, index) => (
               <button key={page.id} onClick={() => setPageIndex(index)}
                 title={`Page ${index + 1}: ${page.title || page.heading}`}
-                style={{ background: index === pageIndex ? C.violet700 : page.completed ? C.success : C.line }}
+                style={{ background: index === pageIndex ? C.purple : page.completed ? C.success : C.line }}
                 className="h-2 flex-1 min-w-0 rounded-full" />
             ))}
           </div>
@@ -953,7 +1144,7 @@ function LessonScreen({ training, module, onContinue, onBack }) {
                 <div style={{ borderColor: C.line }} className="border-t mt-5 pt-3">
                   {(current.citations || []).filter((citation) => citation.url).map((citation, index) => (
                     <a key={`${citation.url}-${index}`} href={citation.url} target="_blank" rel="noopener noreferrer"
-                      style={{ color: C.violet700 }} className="text-xs font-semibold block truncate">
+                      style={{ color: C.green700 }} className="text-xs font-semibold block truncate">
                       {citation.title || citation.url} <span aria-hidden="true">↗</span>
                     </a>
                   ))}
@@ -999,8 +1190,8 @@ function QuizPreScreen({ training, assessment, onStart, onBack, starting, error 
         <ArrowLeft size={14} /> Back
       </button>
       <div style={{ borderColor: C.line }} className="border rounded-2xl p-8 bg-white text-center">
-        <div style={{ background: C.lavender }} className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-4">
-          <Clock size={22} color={C.violet700} />
+        <div style={{ background: C.mint }} className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-4">
+          <Clock size={22} color={C.green700} />
         </div>
         <h1 style={{ ...display, color: C.ink }} className="text-xl font-bold mb-2">{title}</h1>
         <p style={{ color: C.sub }} className="text-sm mb-2">{detail}</p>
@@ -1100,7 +1291,7 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
       return {
         state: "default",
         selected,
-        style: { borderColor: selected ? C.violet700 : C.line, background: selected ? C.lavender : "#fff", color: C.ink },
+        style: { borderColor: selected ? C.green700 : C.line, background: selected ? C.mint : "#fff", color: C.ink },
       };
     }
     const isRight = (verdict.correctOptionIds || []).includes(optionId);
@@ -1123,7 +1314,7 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
         </span>
       </div>
       <div style={{ background: C.line }} className="w-full h-1.5 rounded-full overflow-hidden mb-6">
-        <div style={{ width: `${((answeredCount) / quiz.questionTarget) * 100}%`, background: C.violet700 }}
+        <div style={{ width: `${((answeredCount) / quiz.questionTarget) * 100}%`, background: C.green700 }}
           className="h-full rounded-full transition-all" />
       </div>
 
@@ -1140,7 +1331,7 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
           <ProvenanceBadge provenance={verdict?.provenance} sourceTitle={verdict?.sourceTitle} />
         </div>
         <div className="flex items-center gap-2 mb-3">
-          <span style={{ background: C.lavender, color: C.violet700 }} className="text-[11px] font-semibold px-2 py-0.5 rounded-full">{q.topic}</span>
+          <span style={{ background: C.mint, color: C.green700 }} className="text-[11px] font-semibold px-2 py-0.5 rounded-full">{q.topic}</span>
           <span style={{ borderColor: C.line, color: C.sub }} className="text-[11px] font-semibold px-2 py-0.5 rounded-full border">{q.difficulty}</span>
         </div>
 
@@ -1174,8 +1365,8 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
                   className="w-full text-left border rounded-lg px-3 py-2.5 text-sm flex items-center gap-2"
                 >
                   <span style={{
-                    borderColor: state === "correct" ? C.success : state === "incorrect" ? C.danger : selected ? C.violet700 : "#C9C2DB",
-                    background: state === "correct" ? C.success : state === "incorrect" ? C.danger : selected ? C.violet700 : "transparent",
+                    borderColor: state === "correct" ? C.success : state === "incorrect" ? C.danger : selected ? C.green700 : "#C9C2DB",
+                    background: state === "correct" ? C.success : state === "incorrect" ? C.danger : selected ? C.green700 : "transparent",
                     borderRadius: isMulti ? 4 : 999,
                   }} className="w-4 h-4 border-2 shrink-0 flex items-center justify-center">
                     {state === "correct" ? <CheckCircle2 size={11} color="#fff" />
@@ -1306,7 +1497,7 @@ function QuizResults({ result, onRetake, onDone }) {
                 className="text-xs font-semibold px-2.5 py-1 rounded-full">
                 {r.correct ? "Correct" : "Incorrect"}
               </span>
-              <span style={{ background: C.lavender, color: C.violet700 }} className="text-[11px] font-semibold px-2 py-0.5 rounded-full">{r.topic}</span>
+              <span style={{ background: C.mint, color: C.green700 }} className="text-[11px] font-semibold px-2 py-0.5 rounded-full">{r.topic}</span>
               <span className="flex-1" />
               <ProvenanceBadge provenance={r.provenance} sourceTitle={r.sourceTitle} />
             </div>
@@ -1410,7 +1601,7 @@ function Certificates() {
             )}
             {c.certificateUrl ? (
               <button onClick={() => download(c)} disabled={downloading === c.certificateId}
-                style={{ color: C.violet700 }} className="text-xs font-semibold mt-3 flex items-center gap-1.5 disabled:opacity-60">
+                style={{ color: C.green700 }} className="text-xs font-semibold mt-3 flex items-center gap-1.5 disabled:opacity-60">
                 {downloading === c.certificateId
                   ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
                 Download PDF
@@ -1472,7 +1663,7 @@ function RoleManager({ roles, onChanged }) {
           </p>
           <div className="flex flex-wrap gap-2 mb-3">
             {roles.map((r) => (
-              <span key={r.role_code} style={{ background: C.lavender, color: C.violet700 }}
+              <span key={r.role_code} style={{ background: C.mint, color: C.green700 }}
                 className="text-xs font-semibold px-2.5 py-1 rounded-full flex items-center gap-1.5">
                 {r.title}
                 <button onClick={() => remove(r.role_code)} title="Remove role"><X size={11} /></button>
@@ -1677,7 +1868,7 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
   };
 
   return (
-    <div style={{ borderColor: C.violet300 }} className="border-2 rounded-xl p-5 bg-white mb-5">
+    <div style={{ borderColor: C.green300 }} className="border-2 rounded-xl p-5 bg-white mb-5">
       <h3 style={{ ...display, color: C.ink }} className="font-bold mb-1">Confirm who trains on what</h3>
       <p style={{ color: C.sub }} className="text-xs mb-1">
         The AI read “{analysis.title}” and proposed this. Nothing is generated until you confirm.
@@ -1782,7 +1973,7 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
                         ...current, [topic]: [...(current[topic] || []), code],
                       }));
                     }
-                  }} style={{ color: C.violet700 }} className="text-xs font-semibold py-1">
+                  }} style={{ color: C.green700 }} className="text-xs font-semibold py-1">
                     + Add a new role
                   </button>
                 </div>
@@ -1793,14 +1984,14 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
       </div>
 
       {Object.keys(assignments).length > 1 && (
-        <button type="button" onClick={applyFirstToAll} style={{ color: C.violet700 }}
+        <button type="button" onClick={applyFirstToAll} style={{ color: C.green700 }}
           className="text-xs font-semibold mb-4">
           Apply the first selection to every section
         </button>
       )}
 
       {newRoles.length > 0 && (
-        <p style={{ color: C.violet700 }} className="text-xs font-semibold mb-3">
+        <p style={{ color: C.green700 }} className="text-xs font-semibold mb-3">
           Will be added to the company list: {newRoles.map((r) => r.title).join(", ")}
         </p>
       )}
@@ -1926,7 +2117,7 @@ function DocumentsScreen({ team, principal, onDone }) {
 
   return (
     <div className="p-8 max-w-3xl">
-      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Documents</h1>
+      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Resources</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">
         Upload a training document. The AI maps each section to the role it trains,
         you confirm, and employees in those roles owe the module — renewed yearly.
@@ -1934,11 +2125,11 @@ function DocumentsScreen({ team, principal, onDone }) {
 
       <RoleManager roles={roles} onChanged={rolesQ.reload} />
 
-      <div style={{ background: billed ? C.amberBg : C.lavender, borderColor: billed ? C.amber : C.line }}
+      <div style={{ background: billed ? C.amberBg : C.mint, borderColor: billed ? C.amber : C.line }}
         className="border rounded-xl px-4 py-3 mb-5 flex items-start gap-2.5">
-        <AlertCircle size={16} color={billed ? C.amber : C.violet700} className="shrink-0 mt-0.5" />
+        <AlertCircle size={16} color={billed ? C.amber : C.green700} className="shrink-0 mt-0.5" />
         <div>
-          <p style={{ color: billed ? C.amber : C.violet700 }} className="text-sm font-semibold">
+          <p style={{ color: billed ? C.amber : C.green700 }} className="text-sm font-semibold">
             Role mapping uses gpt-5 (a few cents per upload).
             {billed ? ` Question generation also uses ${generator} — billed.` : " Question generation is on the free mock provider."}
           </p>
@@ -1950,13 +2141,13 @@ function DocumentsScreen({ team, principal, onDone }) {
         onDragLeave={() => setDragging(false)}
         onDrop={(e) => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files); }}
         onClick={() => fileRef.current?.click()}
-        style={{ borderColor: dragging ? C.violet700 : C.line, background: dragging ? C.lavender : "#fff" }}
+        style={{ borderColor: dragging ? C.green700 : C.line, background: dragging ? C.mint : "#fff" }}
         className="border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition-colors mb-5"
       >
         <input ref={fileRef} type="file" accept=".pdf,.txt,.md" className="hidden"
           onChange={(e) => handleFiles(e.target.files)} />
-        <div style={{ background: C.lavender }} className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-3">
-          {uploading ? <Loader2 size={20} color={C.violet700} className="animate-spin" /> : <Upload size={20} color={C.violet700} />}
+        <div style={{ background: C.mint }} className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-3">
+          {uploading ? <Loader2 size={20} color={C.green700} className="animate-spin" /> : <Upload size={20} color={C.green700} />}
         </div>
         <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">
           {uploading ? "Reading and mapping roles… (~10-30s)" : "Drop a PDF here, or click to choose"}
@@ -1996,7 +2187,7 @@ function DocumentsScreen({ team, principal, onDone }) {
           <div style={{ background: C.line }} className="w-full h-2 rounded-full overflow-hidden mb-2">
             <div style={{
               width: `${job.state === "done" ? 100 : pct}%`,
-              background: job.state === "error" ? C.danger : `linear-gradient(90deg, ${C.violet500}, ${C.violet700})`,
+              background: job.state === "error" ? C.danger : C.green700,
             }} className="h-full rounded-full transition-all" />
           </div>
           <p style={{ color: job.state === "error" ? C.danger : C.sub }} className="text-xs">{job.message}</p>
@@ -2011,7 +2202,7 @@ function DocumentsScreen({ team, principal, onDone }) {
 
       <div className="flex items-center justify-between mb-3">
         <h3 style={{ ...display, color: C.ink }} className="font-bold">Documents in the bank</h3>
-        <button onClick={reload} style={{ color: C.violet700 }} className="text-xs font-semibold flex items-center gap-1">
+        <button onClick={reload} style={{ color: C.green700 }} className="text-xs font-semibold flex items-center gap-1">
           <RefreshCw size={12} /> Refresh
         </button>
       </div>
@@ -2040,7 +2231,7 @@ function DocumentsScreen({ team, principal, onDone }) {
 
       <div className="flex items-center justify-between mb-3 mt-8">
         <h3 style={{ ...display, color: C.ink }} className="font-bold">Trusted links</h3>
-        <button onClick={linksQ.reload} style={{ color: C.violet700 }} className="text-xs font-semibold flex items-center gap-1">
+        <button onClick={linksQ.reload} style={{ color: C.green700 }} className="text-xs font-semibold flex items-center gap-1">
           <RefreshCw size={12} /> Refresh
         </button>
       </div>
@@ -2078,90 +2269,282 @@ function DocumentsScreen({ team, principal, onDone }) {
 }
 
 // ---------- Manager team (design-only) ----------
+/** Who this person reports to — shown on My Team above the reports table, so the
+    chain reads both directions instead of only downward. Its own component: shown
+    whether or not there's anyone below you, so it can't get lost inside the
+    "nobody reports to you yet" early return below. */
+function ReportsToCard({ manager }) {
+  if (!manager) return null;
+  return (
+    <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white flex items-center gap-3 mb-6">
+      <div style={{ background: C.mint, color: C.green700 }}
+        className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold shrink-0">
+        {manager.name.split(" ").map((p) => p[0]).join("")}
+      </div>
+      <div className="min-w-0">
+        <p style={{ color: C.sub }} className="text-xs font-semibold">You report to</p>
+        <p style={{ color: C.ink }} className="text-sm font-semibold truncate">
+          {manager.name} <span style={{ color: C.sub }} className="font-normal">— {manager.title || manager.roleCode}</span>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One row per direct report, rolling up everyone who reports through them (their own
+ * subtree, however deep) into one line: team size, how many of that team are missing
+ * required training right now, how many are still compliant but have something expiring
+ * soon, and the team's average completion. Real numbers only -- every count here comes
+ * from api.teamCompletion(), which is qscore.standing() run for each person, the same
+ * arithmetic /qscore uses for one person's own score page.
+ */
+function buildTeamRows(people, completionByEmployeeId) {
+  const direct = people.filter((p) => p.direct);
+  const childrenByManager = new Map();
+  for (const p of people) {
+    const key = p.managerId;
+    if (!childrenByManager.has(key)) childrenByManager.set(key, []);
+    childrenByManager.get(key).push(p);
+  }
+  const subtreeOf = (root) => {
+    const out = [root];
+    const queue = [root];
+    while (queue.length) {
+      const current = queue.shift();
+      for (const kid of childrenByManager.get(current.employeeId) || []) {
+        out.push(kid);
+        queue.push(kid);
+      }
+    }
+    return out;
+  };
+
+  return direct.map((rep) => {
+    const members = subtreeOf(rep);
+    const stats = members
+      .map((m) => completionByEmployeeId.get(m.employeeId))
+      .filter(Boolean);
+    let incomplete = 0, withinDeadline = 0, coverageSum = 0;
+    for (const s of stats) {
+      const compliant = s.current >= s.required;
+      if (!compliant) incomplete += 1;
+      else if (s.renewalDueCount > 0) withinDeadline += 1;
+      coverageSum += s.coverage;
+    }
+    return {
+      employeeId: rep.employeeId,
+      name: rep.name,
+      email: rep.email,
+      teamSize: members.length,
+      incomplete,
+      withinDeadline,
+      completionPercent: stats.length ? Math.round(coverageSum / stats.length) : null,
+      statsKnown: stats.length === members.length,
+    };
+  });
+}
+
+function downloadTeamCsv(rows, showTeamSize) {
+  const header = ["Name", "Email", ...(showTeamSize ? ["Team size"] : []),
+    "Incomplete", "Within deadline", "Completion %"];
+  const lines = [header, ...rows.map((r) => [
+    r.name, r.email, ...(showTeamSize ? [r.teamSize] : []), r.incomplete, r.withinDeadline,
+    r.completionPercent == null ? "" : r.completionPercent,
+  ])];
+  const csv = lines
+    .map((line) => line.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+    .join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "my-team.csv";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function ReminderCell({ employeeId }) {
+  // "idle" -> "sending" -> a short-lived result string ("Sent" or the server's own
+  // reason, e.g. "Already compliant" or "Email isn't configured"). Never assumes
+  // success client-side -- the label always reflects what POST /team/remind actually
+  // returned.
+  const [state, setState] = useState("idle");
+  const [note, setNote] = useState({ label: "", full: "" });
+
+  // The server's `reason` is a full sentence (it has to be honest about exactly why
+  // nothing was delivered) but a table cell is not the place for one -- show a short
+  // label and put the whole thing in a tooltip rather than reflowing the row.
+  const shortLabel = (reason) => {
+    if (!reason) return "Not sent";
+    const r = reason.toLowerCase();
+    if (r.includes("already compliant")) return "Already compliant";
+    if (r.includes("does not send email") || r.includes("not configured") || r.includes("resend_api_key")) {
+      return "Email not configured";
+    }
+    return reason.length > 28 ? reason.slice(0, 27) + "…" : reason;
+  };
+
+  const send = async () => {
+    setState("sending");
+    try {
+      const res = await api.sendReminder(employeeId);
+      setNote(res.sent
+        ? { label: "Sent", full: "Reminder email sent." }
+        : { label: shortLabel(res.reason), full: res.reason || "Not sent." });
+      setState("done");
+    } catch (err) {
+      const msg = err.message || "Failed";
+      setNote({ label: shortLabel(msg), full: msg });
+      setState("done");
+    }
+  };
+
+  if (state === "sending") return <Loader2 size={14} className="animate-spin" color={C.green700} />;
+  if (state === "done") {
+    return (
+      <span style={{ color: C.sub }} className="text-xs whitespace-nowrap" title={note.full}>
+        {note.label}
+      </span>
+    );
+  }
+  return (
+    <button
+      onClick={send}
+      style={{ background: C.green700, color: "#fff" }}
+      className="opacity-0 group-hover:opacity-100 transition-opacity text-xs font-semibold px-3 py-1.5 rounded-full inline-flex items-center gap-1.5 whitespace-nowrap"
+    >
+      <Send size={12} /> Send reminder
+    </button>
+  );
+}
+
 function ManagerTeam({ team }) {
   const people = team?.people || [];
   const targets = team?.uploadTargets || [];
-  const direct = people.filter((p) => p.direct);
-  const indirect = people.filter((p) => !p.direct);
+  const { data: completion, loading: completionLoading, error: completionError } =
+    useAsync(() => api.teamCompletion(), []);
+  const [query, setQuery] = useState("");
 
   if (!people.length) {
     return (
       <div className="p-8 max-w-4xl">
-        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">My team</h1>
+        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Reports</h1>
+        <ReportsToCard manager={team?.manager} />
         <p style={{ color: C.sub }} className="text-sm">Nobody reports to you yet.</p>
       </div>
     );
   }
 
-  const Row = ({ p }) => (
-    <tr key={p.employeeId} style={{ borderTop: `1px solid ${C.line}` }}>
-      <td className="px-4 py-3" style={{ color: C.ink }}>{p.name}</td>
-      <td className="px-4 py-3" style={{ color: C.sub }}>{p.title || p.roleCode}</td>
-      <td className="px-4 py-3">
-        <span style={{ background: p.direct ? C.lavender : "#F1F0F3", color: p.direct ? C.violet700 : C.sub }}
-              className="text-[11px] font-semibold px-2 py-0.5 rounded-full">
-          {p.direct ? "direct report" : "reports to " + (people.find((x) => x.employeeId === p.managerId)?.name || "a manager")}
-        </span>
-      </td>
-    </tr>
+  const completionByEmployeeId = new Map(
+    (completion?.people || []).map((p) => [p.employeeId, p])
+  );
+  const rows = buildTeamRows(people, completionByEmployeeId);
+  const q = query.trim().toLowerCase();
+  const filteredRows = rows.filter(
+    (r) => !q || r.name.toLowerCase().includes(q) || r.email.toLowerCase().includes(q)
   );
 
+  // "Team size" only means something once a row can BE more than one person. A
+  // manager whose direct reports are individual contributors (SDE1s, SDE2s, ...) gets
+  // rows that are always size 1 -- the column would just repeat "1" down the whole
+  // table. It only earns its place once at least one direct report is themselves a
+  // manager, which is also when this reads more like "my managers" than "my team".
+  const showTeamSize = rows.some((r) => r.teamSize > 1);
+  const tableLabel = showTeamSize ? "Managers" : "My team";
+
   return (
-    <div className="p-8 max-w-4xl">
-      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">My team</h1>
+    <div className="p-8 max-w-5xl">
+      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Reports</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">
-        Everyone who reports to you, and the roles you can upload training for.
+        Everyone who reports to you, and how their training is going.
       </p>
 
-      <div className="grid grid-cols-3 gap-4 mb-6">
-        {[["Direct reports", direct.length],
-          ["Further down", indirect.length],
-          ["Roles you can upload for", targets.length]].map(([label, value]) => (
-          <div key={label} style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white">
-            <p style={{ color: C.sub }} className="text-xs font-semibold mb-1">{label}</p>
-            <p style={{ ...display, color: C.ink }} className="text-2xl font-bold">{value}</p>
-          </div>
-        ))}
-      </div>
+      <ReportsToCard manager={team?.manager} />
+
+      {completionError && <ErrorBox error={completionError} />}
 
       <div style={{ borderColor: C.line }} className="border rounded-xl bg-white overflow-hidden mb-6">
+        <div style={{ borderColor: C.line }} className="border-b px-5 py-4 flex items-center justify-between gap-4 flex-wrap">
+          <h2 style={{ ...display, color: C.ink }} className="font-bold">
+            {tableLabel} <span style={{ color: C.sub }} className="font-normal">({rows.length})</span>
+          </h2>
+          <div className="flex items-center gap-3">
+            <div style={{ borderColor: C.line }} className="border rounded-xl px-3 py-1.5 flex items-center gap-2">
+              <Search size={14} color={C.sub} />
+              <input
+                value={query} onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search team"
+                style={{ color: C.ink }}
+                className="text-sm outline-none w-32 bg-transparent"
+              />
+            </div>
+            <button onClick={() => downloadTeamCsv(rows, showTeamSize)} style={{ color: C.green700 }}
+              className="text-sm font-semibold flex items-center gap-1.5 whitespace-nowrap">
+              <Download size={14} /> CSV file
+            </button>
+          </div>
+        </div>
+
         <table className="w-full text-sm">
           <thead>
-            <tr style={{ background: C.lavender, color: C.violet700 }} className="text-left text-xs uppercase tracking-wide">
-              <th className="px-4 py-3 font-semibold">Name</th>
-              <th className="px-4 py-3 font-semibold">Role</th>
-              <th className="px-4 py-3 font-semibold">Reporting line</th>
+            <tr style={{ background: C.mint, color: C.green700 }} className="text-left text-xs uppercase tracking-wide">
+              <th className="px-5 py-3 font-semibold whitespace-nowrap">Name</th>
+              {showTeamSize && <th className="px-5 py-3 font-semibold whitespace-nowrap">Team size</th>}
+              <th className="px-5 py-3 font-semibold whitespace-nowrap">Incomplete</th>
+              <th className="px-5 py-3 font-semibold whitespace-nowrap">Within deadline</th>
+              <th className="px-5 py-3 font-semibold whitespace-nowrap">Completion</th>
+              <th className="px-5 py-3 font-semibold text-right whitespace-nowrap min-w-[160px]">&nbsp;</th>
             </tr>
           </thead>
           <tbody>
-            {direct.map((p) => <Row key={p.employeeId} p={p} />)}
-            {indirect.map((p) => <Row key={p.employeeId} p={p} />)}
+            {filteredRows.map((r) => (
+              <tr key={r.employeeId} style={{ borderTop: `1px solid ${C.line}` }} className="group">
+                <td className="px-5 py-3.5">
+                  <p style={{ color: C.ink }} className="font-semibold">{r.name}</p>
+                  <p style={{ color: C.sub }} className="text-xs">{r.email}</p>
+                </td>
+                {showTeamSize && <td className="px-5 py-3.5" style={{ color: C.ink }}>{r.teamSize}</td>}
+                <td className="px-5 py-3.5" style={{ color: C.ink }}>
+                  {completionLoading && !r.statsKnown ? "…" : r.incomplete}
+                </td>
+                <td className="px-5 py-3.5" style={{ color: C.ink }}>
+                  {completionLoading && !r.statsKnown ? "…" : r.withinDeadline}
+                </td>
+                <td className="px-5 py-3.5" style={{ color: C.ink }}>
+                  {r.completionPercent == null ? (completionLoading ? "…" : "—") : `${r.completionPercent}%`}
+                </td>
+                <td className="px-5 py-3.5 text-right">
+                  <ReminderCell employeeId={r.employeeId} />
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
 
-      {/* Progress and overdue counts are deliberately absent. There is no per-employee
-          completion model behind this yet, and the previous version filled the gap with
-          invented figures under a "sample data" label. An empty column is honest; a
-          fabricated percentage next to a real name is not. */}
-      <div style={{ borderColor: C.line }} className="border rounded-xl p-5 bg-white">
-        <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">Upload training for</p>
-        <p style={{ color: C.sub }} className="text-xs mb-3">
-          Roles held by your reports. The ones your direct reports hold are marked; you can
-          also upload for roles further down if you need to.
-        </p>
-        <div className="flex flex-wrap gap-2">
-          {targets.map((t) => (
-            <span key={t.roleCode}
-                  style={{ borderColor: t.direct ? C.violet700 : C.line,
-                           color: t.direct ? C.violet700 : C.sub,
-                           background: t.direct ? C.lavender : "#fff" }}
-                  className="border rounded-full px-3 py-1 text-xs font-semibold">
-              {t.title} · {t.headcount}
-            </span>
-          ))}
+      {targets.length > 0 && (
+        <div style={{ borderColor: C.line }} className="border rounded-xl p-5 bg-white">
+          <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">Upload training for</p>
+          <p style={{ color: C.sub }} className="text-xs mb-3">
+            Roles held by your reports. The ones your direct reports hold are marked; you can
+            also upload for roles further down if you need to.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {targets.map((t) => (
+              <span key={t.roleCode}
+                    style={{ borderColor: t.direct ? C.green700 : C.line,
+                             color: t.direct ? C.green700 : C.sub,
+                             background: t.direct ? C.mint : "#fff" }}
+                    className="border rounded-full px-3 py-1 text-xs font-semibold">
+                {t.title} · {t.headcount}
+              </span>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -2181,50 +2564,39 @@ function PetCreature({ stageIdx, size }) {
   const uid = `${size}-${stageIdx}`;
   return (
     <svg width={s} height={s} viewBox={`0 0 ${s} ${s}`}>
-      <defs>
-        <linearGradient id={`pet-grad-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor={C.violet500} />
-          <stop offset="100%" stopColor={C.violet700} />
-        </linearGradient>
-        <linearGradient id={`pet-crown-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor={C.violet300} />
-          <stop offset="100%" stopColor={C.violet700} />
-        </linearGradient>
-      </defs>
-
       {stageIdx >= 4 && (
-        <ellipse cx={cx} cy={cy} rx={bodyR * 1.55} ry={bodyR * 0.5} fill="none" stroke={C.violet300} strokeWidth="2" opacity="0.7" />
+        <ellipse cx={cx} cy={cy} rx={bodyR * 1.55} ry={bodyR * 0.5} fill="none" stroke={C.green300} strokeWidth="2" opacity="0.7" />
       )}
 
       {stageIdx >= 3 && (
         <>
           <ellipse cx={cx - bodyR * 1.05} cy={cy} rx={bodyR * 0.5} ry={bodyR * 0.72}
-            fill={C.lavender} stroke={C.violet500} strokeWidth="1.5" transform={`rotate(-18 ${cx - bodyR} ${cy})`} />
+            fill={C.mint} stroke={C.green500} strokeWidth="1.5" transform={`rotate(-18 ${cx - bodyR} ${cy})`} />
           <ellipse cx={cx + bodyR * 1.05} cy={cy} rx={bodyR * 0.5} ry={bodyR * 0.72}
-            fill={C.lavender} stroke={C.violet500} strokeWidth="1.5" transform={`rotate(18 ${cx + bodyR} ${cy})`} />
+            fill={C.mint} stroke={C.green500} strokeWidth="1.5" transform={`rotate(18 ${cx + bodyR} ${cy})`} />
         </>
       )}
 
       {stageIdx >= 2 && [-1, 0, 1].map((i) => (
         <polygon key={i}
           points={`${cx + i * bodyR * 0.42},${cy - bodyR * 0.95} ${cx + i * bodyR * 0.42 - 5},${cy - bodyR * 0.55} ${cx + i * bodyR * 0.42 + 5},${cy - bodyR * 0.55}`}
-          fill={C.violet500} />
+          fill={C.green500} />
       ))}
 
       {stageIdx >= 1 && (
         <>
           <ellipse cx={cx - bodyR * 0.72} cy={cy - bodyR * 0.85} rx={bodyR * 0.24} ry={bodyR * 0.34}
-            fill={`url(#pet-grad-${uid})`} transform={`rotate(-25 ${cx - bodyR * 0.72} ${cy - bodyR * 0.85})`} />
+            fill={C.green600} transform={`rotate(-25 ${cx - bodyR * 0.72} ${cy - bodyR * 0.85})`} />
           <ellipse cx={cx + bodyR * 0.72} cy={cy - bodyR * 0.85} rx={bodyR * 0.24} ry={bodyR * 0.34}
-            fill={`url(#pet-grad-${uid})`} transform={`rotate(25 ${cx + bodyR * 0.72} ${cy - bodyR * 0.85})`} />
+            fill={C.green600} transform={`rotate(25 ${cx + bodyR * 0.72} ${cy - bodyR * 0.85})`} />
         </>
       )}
 
       <path d={`M ${cx + bodyR * 0.48} ${cy + bodyR * 0.58} L ${cx + bodyR * 1.02} ${cy + bodyR * 1.12}`}
-        stroke={C.violet900} strokeWidth={Math.max(2.5, bodyR * 0.16)} strokeLinecap="round" />
+        stroke={C.green900} strokeWidth={Math.max(2.5, bodyR * 0.16)} strokeLinecap="round" />
 
-      <circle cx={cx} cy={cy} r={bodyR} fill={`url(#pet-grad-${uid})`} />
-      <ellipse cx={cx} cy={cy + bodyR * 0.32} rx={bodyR * 0.62} ry={bodyR * 0.42} fill={C.lavender} opacity="0.85" />
+      <circle cx={cx} cy={cy} r={bodyR} fill={C.green600} />
+      <ellipse cx={cx} cy={cy + bodyR * 0.32} rx={bodyR * 0.62} ry={bodyR * 0.42} fill={C.mint} opacity="0.85" />
 
       <circle cx={cx - bodyR * 0.32} cy={cy - bodyR * 0.05} r={bodyR * 0.15} fill="#fff" />
       <circle cx={cx + bodyR * 0.32} cy={cy - bodyR * 0.05} r={bodyR * 0.15} fill="#fff" />
@@ -2234,13 +2606,13 @@ function PetCreature({ stageIdx, size }) {
       <path d={`M ${cx - bodyR * 0.2} ${cy + bodyR * 0.28} Q ${cx} ${cy + bodyR * 0.42} ${cx + bodyR * 0.2} ${cy + bodyR * 0.28}`}
         fill="none" stroke={C.ink} strokeWidth={Math.max(1.5, bodyR * 0.05)} strokeLinecap="round" />
 
-      <circle cx={cx - bodyR * 0.55} cy={cy + bodyR * 0.15} r={bodyR * 0.12} fill={C.violet300} opacity="0.6" />
-      <circle cx={cx + bodyR * 0.55} cy={cy + bodyR * 0.15} r={bodyR * 0.12} fill={C.violet300} opacity="0.6" />
+      <circle cx={cx - bodyR * 0.55} cy={cy + bodyR * 0.15} r={bodyR * 0.12} fill={C.green300} opacity="0.6" />
+      <circle cx={cx + bodyR * 0.55} cy={cy + bodyR * 0.15} r={bodyR * 0.12} fill={C.green300} opacity="0.6" />
 
       {stageIdx >= 5 && (
         <polygon
           points={`${cx - bodyR * 0.5},${cy - bodyR * 0.95} ${cx - bodyR * 0.28},${cy - bodyR * 1.25} ${cx},${cy - bodyR * 0.98} ${cx + bodyR * 0.28},${cy - bodyR * 1.25} ${cx + bodyR * 0.5},${cy - bodyR * 0.95}`}
-          fill={`url(#pet-crown-${uid})`} stroke={C.violet900} strokeWidth="1" strokeLinejoin="round" />
+          fill={C.green500} stroke={C.green900} strokeWidth="1" strokeLinejoin="round" />
       )}
     </svg>
   );
@@ -2271,7 +2643,7 @@ function TeamHabitat({ members, highlightName }) {
 
   return (
     <div>
-      <div style={{ borderColor: C.line, background: `linear-gradient(160deg, ${C.lavender}, #ffffff)` }} className="border rounded-2xl p-3 overflow-hidden">
+      <div style={{ borderColor: C.line, background: C.mint }} className="border rounded-2xl p-3 overflow-hidden">
         <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ display: "block" }}>
           <style>{`
             @keyframes qhub-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 0.95; } }
@@ -2281,18 +2653,18 @@ function TeamHabitat({ members, highlightName }) {
           {n >= 3 && nodes.map((nd, i) => {
             const nxt = nodes[(i + 1) % n];
             return <line key={`edge-${i}`} x1={nd.pos.x} y1={nd.pos.y} x2={nxt.pos.x} y2={nxt.pos.y}
-              stroke={C.violet300} strokeWidth="1.5" strokeDasharray="3 5" opacity="0.5" />;
+              stroke={C.green300} strokeWidth="1.5" strokeDasharray="3 5" opacity="0.5" />;
           })}
 
           {nodes.map((nd, i) => {
             const isSelected = selected === nd.name;
             return <line key={`spoke-${i}`} x1={cx} y1={cy} x2={nd.pos.x} y2={nd.pos.y}
-              stroke={isSelected ? C.violet700 : C.violet300} strokeWidth={isSelected ? 2.5 : 1.5} opacity={isSelected ? 0.9 : 0.45} />;
+              stroke={isSelected ? C.green700 : C.green300} strokeWidth={isSelected ? 2.5 : 1.5} opacity={isSelected ? 0.9 : 0.45} />;
           })}
 
-          <circle cx={cx} cy={cy} r="28" fill={C.violet700} className="qhub-pulse" />
-          <circle cx={cx} cy={cy} r="28" fill="none" stroke={C.violet300} strokeWidth="1.5" />
-          <text x={cx} y={cy + 6} textAnchor="middle" fill="#fff" fontSize="17" fontWeight="700" fontFamily="Sora, sans-serif">Q</text>
+          <circle cx={cx} cy={cy} r="28" fill={C.green700} className="qhub-pulse" />
+          <circle cx={cx} cy={cy} r="28" fill="none" stroke={C.green300} strokeWidth="1.5" />
+          <text x={cx} y={cy + 6} textAnchor="middle" fill="#fff" fontSize="17" fontWeight="700" fontFamily="'Playfair Display', serif">Q</text>
 
           {nodes.map((nd) => {
             const isYou = nd.name === highlightName;
@@ -2300,15 +2672,15 @@ function TeamHabitat({ members, highlightName }) {
             return (
               <g key={nd.name} onClick={() => setSelected(isSelected ? null : nd.name)} style={{ cursor: "pointer" }}>
                 <circle cx={nd.pos.x} cy={nd.pos.y} r={nd.size / 2 + 9}
-                  fill="#fff" stroke={isYou ? C.violet700 : isSelected ? C.violet500 : C.line}
+                  fill="#fff" stroke={isYou ? C.green700 : isSelected ? C.green500 : C.line}
                   strokeWidth={isYou || isSelected ? 2.5 : 1.5} />
                 <svg x={nd.pos.x - nd.size / 2} y={nd.pos.y - nd.size / 2} width={nd.size} height={nd.size} viewBox={`0 0 ${nd.size} ${nd.size}`}>
                   <PetCreature stageIdx={nd.stageIdx} size={nd.size} />
                 </svg>
-                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 19} textAnchor="middle" fill={C.ink} fontSize="11" fontWeight="700" fontFamily="Inter, sans-serif">
+                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 19} textAnchor="middle" fill={C.ink} fontSize="11" fontWeight="700" fontFamily="'Inter', sans-serif">
                   {nd.name.split(" ")[0]}{isYou ? " (you)" : ""}
                 </text>
-                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 32} textAnchor="middle" fill={C.violet700} fontSize="9" fontWeight="600" fontFamily="Inter, sans-serif">
+                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 32} textAnchor="middle" fill={C.green700} fontSize="9" fontWeight="600" fontFamily="'Inter', sans-serif">
                   Lv {nd.stage.level} · {nd.stage.name}
                 </text>
               </g>
@@ -2319,7 +2691,7 @@ function TeamHabitat({ members, highlightName }) {
 
       {selectedNode ? (
         <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white mt-4 flex items-center gap-4">
-          <div className="rounded-xl flex items-center justify-center shrink-0" style={{ width: 60, height: 60, background: C.lavender }}>
+          <div className="rounded-xl flex items-center justify-center shrink-0" style={{ width: 60, height: 60, background: C.mint }}>
             <PetCreature stageIdx={selectedNode.stageIdx} size={44} />
           </div>
           <div>
@@ -2352,36 +2724,41 @@ function TeammatesGallery({ team, name }) {
   if (!team) {
     return (
       <div className="p-8 max-w-4xl">
-        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Teammates</h1>
+        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Team</h1>
         <p style={{ color: C.sub }} className="text-sm">Loading your team…</p>
       </div>
     );
   }
 
-  const people = team.people || [];
+  // Peers, not the reporting subtree: teammates are the people who share YOUR
+  // manager (an SDE1 has SDE2/SDE3 as teammates this way), not people below you --
+  // that's My Team, a separate screen, and most people have nobody below them at
+  // all. Someone with direct reports still sees their own peers here, same as
+  // anyone else; who they manage stays on My Team.
+  const peers = team.peers || [];
 
-  // Nobody below you is a fact about the org chart, not an error — the endpoint returns
-  // 200 with empty lists rather than 403. TeamHabitat divides by members.length to place
-  // nodes on a circle, so it must not be handed an empty list either way.
-  if (people.length === 0) {
+  // Nobody sharing your manager is a fact about the org chart, not an error -- the
+  // endpoint returns 200 with an empty list rather than 403. TeamHabitat divides by
+  // members.length to place nodes on a circle, so it must not be handed an empty
+  // list either way.
+  if (peers.length === 0) {
     return (
       <div className="p-8 max-w-4xl">
-        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Teammates</h1>
+        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Team</h1>
         <p style={{ color: C.sub }} className="text-sm">
-          Nobody reports to you, so there is no team to show. If that looks wrong, it means
-          reporting lines have not been set for your organisation yet.
+          Nobody else shares your manager, so there is no team to show. If that looks
+          wrong, it means reporting lines have not been set for your organisation yet.
         </p>
       </div>
     );
   }
 
-  const directs = people.filter((p) => p.direct).length;
   // trainingsCompleted drives the character stage. GET /team does not return it — it
-  // answers who reports to you, not how far along each of them is — so it is passed as 0
-  // rather than invented. Everyone renders at the first stage until there is a real
-  // per-person figure to use; a plausible-looking fake number is the one thing this
-  // screen must not go back to.
-  const members = people.map((p) => ({
+  // answers who your teammates are, not how far along each of them is — so it is
+  // passed as 0 rather than invented. Everyone renders at the first stage until
+  // there is a real per-person figure to use; a plausible-looking fake number is
+  // the one thing this screen must not go back to.
+  const members = peers.map((p) => ({
     name: p.name,
     role: p.title || p.roleCode,
     trainingsCompleted: 0,
@@ -2389,10 +2766,9 @@ function TeammatesGallery({ team, name }) {
 
   return (
     <div className="p-8 max-w-4xl">
-      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Teammates</h1>
+      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Team</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">
-        Everyone who reports to you — {people.length} {people.length === 1 ? "person" : "people"}
-        {directs > 0 && `, ${directs} directly`}.
+        People who share your manager — {peers.length} {peers.length === 1 ? "person" : "people"}.
       </p>
       <TeamHabitat members={members} highlightName={name} />
     </div>
@@ -2413,18 +2789,18 @@ function CompanionCard({ trainingsCompleted, name, qScore }) {
       <div className="flex items-center justify-between mb-4">
         <h3 style={{ ...display, color: C.ink }} className="font-bold">Your Q character</h3>
         <div className="flex items-center gap-2">
-          <button onClick={() => setShowShare(true)} style={{ borderColor: C.line, color: C.violet700 }}
+          <button onClick={() => setShowShare(true)} style={{ borderColor: C.line, color: C.green700 }}
             className="border text-xs font-semibold px-3 py-1.5 rounded-full flex items-center gap-1.5">
             <Share2 size={12} /> Share
           </button>
-          <span style={{ background: C.lavender, color: C.violet700 }} className="text-xs font-semibold px-2.5 py-1 rounded-full">
+          <span style={{ background: C.mint, color: C.green700 }} className="text-xs font-semibold px-2.5 py-1 rounded-full">
             Level {stage.level}
           </span>
         </div>
       </div>
 
       <div className="flex items-center gap-6 mb-5 flex-wrap">
-        <div className="rounded-2xl flex items-center justify-center shrink-0" style={{ width: 160, height: 160, background: C.lavender }}>
+        <div className="rounded-2xl flex items-center justify-center shrink-0" style={{ width: 160, height: 160, background: C.mint }}>
           <PetCreature stageIdx={stageIdx} size={stage.size} />
         </div>
         <div className="flex-1 min-w-[200px]">
@@ -2441,11 +2817,11 @@ function CompanionCard({ trainingsCompleted, name, qScore }) {
                 <span style={{ color: C.sub }} className="text-xs font-semibold">{progressPct}%</span>
               </div>
               <div style={{ background: C.line }} className="w-full h-2.5 rounded-full overflow-hidden">
-                <div style={{ width: `${progressPct}%`, background: `linear-gradient(90deg, ${C.violet500}, ${C.violet700})` }} className="h-full rounded-full transition-all" />
+                <div style={{ width: `${progressPct}%`, background: C.green700 }} className="h-full rounded-full transition-all" />
               </div>
             </>
           ) : (
-            <p style={{ color: C.violet700 }} className="text-xs font-semibold flex items-center gap-1.5">
+            <p style={{ color: C.green700 }} className="text-xs font-semibold flex items-center gap-1.5">
               <Trophy size={13} /> Max level reached — {stage.name} is fully grown
             </p>
           )}
@@ -2459,13 +2835,13 @@ function CompanionCard({ trainingsCompleted, name, qScore }) {
           return (
             <React.Fragment key={st.level}>
               <div className="flex flex-col items-center" style={{ width: 56 }}>
-                <div style={{ background: reached ? C.violet700 : "#F1F0F3", color: reached ? "#fff" : "#9A93A8" }}
+                <div style={{ background: reached ? C.green700 : "#F1F0F3", color: reached ? "#fff" : "#9A93A8" }}
                   className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0">
                   {reached ? (i === stageIdx ? st.level : <CheckCircle2 size={14} />) : <Lock size={11} />}
                 </div>
                 <span style={{ color: reached ? C.ink : C.sub }} className="text-[10px] font-semibold mt-1 text-center leading-tight">{st.name}</span>
               </div>
-              {!isLast && <div style={{ background: i < stageIdx ? C.violet700 : C.line }} className="flex-1 h-0.5 -mt-4" />}
+              {!isLast && <div style={{ background: i < stageIdx ? C.green700 : C.line }} className="flex-1 h-0.5 -mt-4" />}
             </React.Fragment>
           );
         })}
@@ -2498,13 +2874,13 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
       URL.revokeObjectURL(url);
       const a = document.createElement("a");
       a.href = canvas.toDataURL("image/png");
-      a.download = `${stage.name.toLowerCase()}-quizrant-card.png`;
+      a.download = `${stage.name.toLowerCase()}-ascend-card.png`;
       a.click();
     };
     img.src = url;
   };
 
-  const caption = `I just reached Level ${stage.level} with ${stage.name} on Quizrant! ${trainingsCompleted} trainings completed, Q Score ${qScore}.`;
+  const caption = `I just reached Level ${stage.level} with ${stage.name} on Ascend! ${trainingsCompleted} trainings completed, Q Score ${qScore}.`;
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(caption);
@@ -2523,35 +2899,29 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
 
         <div className="flex justify-center mb-4">
           <svg ref={svgRef} width="240" height="340" viewBox="0 0 240 340" xmlns="http://www.w3.org/2000/svg">
-            <defs>
-              <linearGradient id="share-bg" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stopColor={C.violet900} />
-                <stop offset="100%" stopColor={C.violet700} />
-              </linearGradient>
-            </defs>
-            <rect x="0" y="0" width="240" height="340" rx="20" fill="url(#share-bg)" />
-            <text x="20" y="32" fill="#fff" fontSize="13" fontWeight="700" fontFamily="Sora, sans-serif" letterSpacing="1">QUIZRANT</text>
+            <rect x="0" y="0" width="240" height="340" rx="20" fill={C.green900} />
+            <text x="20" y="32" fill="#fff" fontSize="13" fontWeight="700" fontFamily="'Playfair Display', serif" letterSpacing="1">ASCEND</text>
             <svg x="45" y="52" width="150" height="150" viewBox="0 0 150 150">
               <PetCreature stageIdx={stageIdx} size={150} />
             </svg>
-            <text x="120" y="228" textAnchor="middle" fill="#fff" fontSize="20" fontWeight="700" fontFamily="Sora, sans-serif">{stage.name}</text>
-            <text x="120" y="250" textAnchor="middle" fill="#E4D7F7" fontSize="12" fontWeight="600" fontFamily="Inter, sans-serif">Level {stage.level} · {name}</text>
+            <text x="120" y="228" textAnchor="middle" fill="#fff" fontSize="20" fontWeight="700" fontFamily="'Playfair Display', serif">{stage.name}</text>
+            <text x="120" y="250" textAnchor="middle" fill="#CFE9D9" fontSize="12" fontWeight="600" fontFamily="'Inter', sans-serif">Level {stage.level} · {name}</text>
             <line x1="30" y1="268" x2="210" y2="268" stroke="rgba(255,255,255,0.2)" />
-            <text x="70" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="Sora, sans-serif">{qScore}</text>
-            <text x="70" y="308" textAnchor="middle" fill="#C9AEF5" fontSize="9" fontFamily="Inter, sans-serif">Q SCORE</text>
-            <text x="170" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="Sora, sans-serif">{trainingsCompleted}</text>
-            <text x="170" y="308" textAnchor="middle" fill="#C9AEF5" fontSize="9" fontFamily="Inter, sans-serif">TRAININGS</text>
-            <text x="120" y="325" textAnchor="middle" fill="rgba(255,255,255,0.5)" fontSize="9" fontFamily="Inter, sans-serif">quizrant.app</text>
+            <text x="70" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="'Playfair Display', serif">{qScore}</text>
+            <text x="70" y="308" textAnchor="middle" fill="#A9DFC0" fontSize="9" fontFamily="'Inter', sans-serif">Q SCORE</text>
+            <text x="170" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="'Playfair Display', serif">{trainingsCompleted}</text>
+            <text x="170" y="308" textAnchor="middle" fill="#A9DFC0" fontSize="9" fontFamily="'Inter', sans-serif">TRAININGS</text>
+            <text x="120" y="325" textAnchor="middle" fill="rgba(255,255,255,0.5)" fontSize="9" fontFamily="'Inter', sans-serif">ascend.app</text>
           </svg>
         </div>
 
         <p style={{ color: C.sub }} className="text-xs text-center mb-4">Download the card, or copy a caption to post alongside a screenshot.</p>
 
         <div className="flex gap-2">
-          <button onClick={handleDownload} style={{ background: C.violet700 }} className="flex-1 flex items-center justify-center gap-1.5 text-white text-sm font-semibold rounded-xl py-2.5">
+          <button onClick={handleDownload} style={{ background: C.green700 }} className="flex-1 flex items-center justify-center gap-1.5 text-white text-sm font-semibold rounded-xl py-2.5">
             <Download size={14} /> Download
           </button>
-          <button onClick={handleCopy} style={{ borderColor: C.line, color: C.violet700 }} className="flex-1 border flex items-center justify-center gap-1.5 text-sm font-semibold rounded-xl py-2.5">
+          <button onClick={handleCopy} style={{ borderColor: C.line, color: C.green700 }} className="flex-1 border flex items-center justify-center gap-1.5 text-sm font-semibold rounded-xl py-2.5">
             <Copy size={14} /> {copied ? "Copied!" : "Copy caption"}
           </button>
         </div>
@@ -2561,6 +2931,57 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
 }
 
 // ---------- Profile ----------
+function Settings() {
+  const { data, loading, error, reload } = useAsync(() => api.getSettings(), []);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
+
+  const toggle = async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await api.updateSettings(!data.notificationsEnabled);
+      await reload();
+    } catch (err) {
+      setSaveError(err.message || "Could not save.");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="p-8 max-w-2xl">
+      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Settings</h1>
+      <p style={{ color: C.sub }} className="text-sm mb-8">Your account preferences.</p>
+
+      {loading && <Loading />}
+      {error && <ErrorBox error={error} onRetry={reload} />}
+
+      {data && (
+        <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 flex items-center justify-between gap-6">
+          <div className="min-w-0">
+            <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">Email notifications</p>
+            <p style={{ color: C.sub }} className="text-xs">
+              Reminders about training that's due soon, and a notice when something new is
+              assigned to your role.
+            </p>
+          </div>
+          <button
+            onClick={toggle} disabled={saving} aria-pressed={data.notificationsEnabled}
+            style={{ background: data.notificationsEnabled ? C.green700 : C.line }}
+            className="w-11 h-6 rounded-full relative shrink-0 transition-colors disabled:opacity-60"
+          >
+            <span
+              style={{ background: "#fff", left: data.notificationsEnabled ? 22 : 2 }}
+              className="w-5 h-5 rounded-full absolute top-0.5 transition-all"
+            />
+          </button>
+        </div>
+      )}
+      {saveError && <p style={{ color: C.danger }} className="text-xs font-semibold mt-3">{saveError}</p>}
+    </div>
+  );
+}
+
 function Profile({ principal }) {
   // Identity from the signed-in principal. PROFILES is a fallback ONLY for the fields
   // that still have no backend (joined date) — using it for name or email would show
@@ -2616,7 +3037,7 @@ function Profile({ principal }) {
       {loading && <Loading />}
       {error && <ErrorBox error={error} onRetry={reload} />}
 
-      <div style={{ background: `linear-gradient(120deg, ${C.violet900}, ${C.violet700})` }}
+      <div style={{ background: C.green700 }}
         className="rounded-2xl p-6 mb-6 text-white flex items-center justify-between gap-6 flex-wrap">
         <div className="flex items-center gap-4">
           <div style={{ background: "rgba(255,255,255,0.15)" }} className="w-16 h-16 rounded-2xl flex items-center justify-center text-xl font-bold shrink-0">
@@ -2673,8 +3094,8 @@ function Profile({ principal }) {
 
       <div className="grid grid-cols-3 gap-4 mb-8">
         <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white flex items-center gap-3">
-          <div style={{ background: C.lavender }} className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0">
-            <Flame size={16} color={C.violet700} />
+          <div style={{ background: C.mint }} className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0">
+            <Flame size={16} color={C.green700} />
           </div>
           <div className="min-w-0">
             <p style={{ ...display, color: C.ink }} className="text-lg font-bold leading-tight">{streak}</p>
@@ -2715,7 +3136,7 @@ function Profile({ principal }) {
               </span>
             </div>
             <div style={{ background: C.line }} className="w-full h-2 rounded-full overflow-hidden">
-              <div style={{ width: `${b.accuracyPercent}%`, background: `linear-gradient(90deg, ${C.violet500}, ${C.violet700})` }} className="h-full rounded-full" />
+              <div style={{ width: `${b.accuracyPercent}%`, background: C.green700 }} className="h-full rounded-full" />
             </div>
           </div>
         ))}
@@ -2735,8 +3156,8 @@ function Profile({ principal }) {
                   <Lock size={11} color="#9A93A8" />
                 </div>
               )}
-              <div style={{ background: b.earned ? C.lavender : "#F1F0F3" }} className="w-10 h-10 rounded-xl flex items-center justify-center mb-3">
-                <Icon size={18} color={b.earned ? C.violet700 : "#9A93A8"} />
+              <div style={{ background: b.earned ? C.mint : "#F1F0F3" }} className="w-10 h-10 rounded-xl flex items-center justify-center mb-3">
+                <Icon size={18} color={b.earned ? C.green700 : "#9A93A8"} />
               </div>
               <p style={{ color: C.ink }} className="text-sm font-semibold mb-0.5">{b.title}</p>
               <p style={{ color: C.sub }} className="text-xs mb-2">{b.desc}</p>
@@ -2793,7 +3214,7 @@ export default function App() {
   if (restoring) {
     return (
       <div className="min-h-screen flex items-center justify-center"
-           style={{ ...font, background: `linear-gradient(160deg, ${C.violet900} 0%, ${C.violet700} 45%, ${C.violet500} 100%)` }}>
+           style={{ ...font, background: C.paper }}>
         <Logo size={36} />
       </div>
     );
@@ -2847,7 +3268,7 @@ export default function App() {
   } else if (view === "team") {
     content = <ManagerTeam team={team} />;
   } else if (view === "dashboard") {
-    content = <Dashboard name={auth.name || auth.email} onOpenPath={() => goto("path")} onOpenTraining={openTraining} />;
+    content = <Dashboard name={auth.name || auth.email} team={team} onOpenPath={() => goto("path")} onOpenTraining={openTraining} onOpenCertificates={() => goto("certificates")} />;
   } else if (view === "path") {
     content = <LearningPath onBack={() => goto("dashboard")} onOpenTraining={openTraining} />;
   } else if (view === "trainingDetail") {
@@ -2894,6 +3315,8 @@ export default function App() {
     content = <Certificates />;
   } else if (view === "teammates") {
     content = <TeammatesGallery team={team} name={auth.name || auth.email} />;
+  } else if (view === "settings") {
+    content = <Settings />;
   }
 
   const quizViews = ["trainingDetail", "lesson", "quizPre", "quizRunner", "quizResults"];

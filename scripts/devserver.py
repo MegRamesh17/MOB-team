@@ -400,6 +400,10 @@ class Handler(BaseHTTPRequestHandler):
 
             if route == "/api/team":
                 return self._team()
+            if route == "/api/team/completion":
+                return self._team_completion()
+            if route == "/api/settings":
+                return self._settings_get()
             if route == "/api/qscore":
                 return self._qscore(query)
             if route == "/api/requirements":
@@ -464,6 +468,10 @@ class Handler(BaseHTTPRequestHandler):
 
             if route == "/api/requirements":
                 return self._set_requirements()
+            if route == "/api/team/remind":
+                return self._team_remind()
+            if route == "/api/settings":
+                return self._settings_set()
             if route == "/api/quiz/start":
                 return self._start()
             if route == "/api/quiz/answer":
@@ -498,6 +506,28 @@ class Handler(BaseHTTPRequestHandler):
         subtree = devauth.reports_of(identity.employee_id)
         direct_ids = {p["employee_id"] for p in
                       devauth.reports_of(identity.employee_id, direct_only=True)}
+
+        # Peers: everyone else who shares my manager, available to everyone -- an
+        # SDE1 has SDE2/SDE3 as teammates because they share a manager, even with
+        # nobody reporting to the SDE1 themselves. Plain Python "==" handles the
+        # top-of-chain case (manager_id None on both sides) correctly on its own,
+        # unlike SQL's "=" on NULL.
+        directory = devauth.directory()
+        by_id = {p["employee_id"]: p for p in directory}
+        peers = [
+            p for p in directory
+            if p["employee_id"] != identity.employee_id
+            and p.get("manager_id") == identity.manager_id
+        ]
+        manager = None
+        if identity.manager_id is not None:
+            m = by_id.get(identity.manager_id)
+            if m:
+                manager = {
+                    "employeeId": m["employee_id"], "name": m.get("name", ""),
+                    "email": m.get("email", ""), "title": m.get("title", ""),
+                    "roleCode": (m.get("role_code") or "ALL").upper(),
+                }
 
         # Role -> whether anyone directly reporting to me holds it. A role held by both
         # a direct report and someone deeper counts as direct: it is the closer
@@ -537,9 +567,130 @@ class Handler(BaseHTTPRequestHandler):
                 }
                 for p in subtree
             ],
+            "peers": [
+                {
+                    "employeeId": p["employee_id"],
+                    "name": p.get("name", ""),
+                    "email": p.get("email", ""),
+                    "title": p.get("title", ""),
+                    "roleCode": (p.get("role_code") or "ALL").upper(),
+                }
+                for p in peers
+            ],
+            "manager": manager,
             "uploadTargets": sorted(
                 targets.values(), key=lambda t: (not t["direct"], t["title"])),
         })
+
+    def _team_completion(self):
+        """
+        Real coverage numbers for everyone in the caller's reporting subtree, batched.
+
+        Same qscore.standing call GET /qscore uses for one person, just looped over the
+        whole subtree so the My Team roster is one request instead of one per row. No
+        invented numbers: a person with nothing required counts as fully covered, same
+        as everywhere else Standing is used.
+        """
+        from quizgen import qscore
+
+        identity = self._require()
+        if identity is None:
+            return None
+
+        subtree = devauth.reports_of(identity.employee_id)
+
+        with Bank(DB, self._company()) as bank:
+            self._seed_requirements_if_empty(bank)
+            req_cache = {}
+            rows = []
+            for person in subtree:
+                role = (person.get("role_code") or "ALL").upper()
+                if role not in req_cache:
+                    req_cache[role] = bank.role_requirements(role)
+                held = bank.certificates(person["email"])
+                overall = qscore.standing(req_cache[role], held)["overall"]
+                renewal_due = [r for r in qscore.renewal_candidates(held) if not r["expired"]]
+                rows.append({
+                    "employeeId": person["employee_id"],
+                    **overall.to_dict(),
+                    "renewalDueCount": len(renewal_due),
+                })
+
+        return self._send({"people": rows})
+
+    def _team_remind(self):
+        """
+        Manager-triggered nudge for one person in the caller's reporting subtree.
+
+        What would be sent is computed here from that person's real missing/expired
+        requirements, same as the deployed route -- but this dev server does not send
+        email (no Resend key, no such dependency in requirements.txt; see devauth.py's
+        note on why a dev shim does not gain a production dependency). It reports
+        honestly what WOULD go out rather than pretending delivery happened, which is
+        enough to demo the button and wire the real send in api/function_app.py.
+        """
+        from quizgen import qscore
+
+        identity = self._require()
+        if identity is None:
+            return None
+
+        body = self._body()
+        target_id = body.get("employeeId")
+        if not isinstance(target_id, int):
+            return self._error(400, "Bad request", "employeeId is required.")
+
+        subtree = {p["employee_id"]: p for p in devauth.reports_of(identity.employee_id)}
+        person = subtree.get(target_id)
+        if person is None:
+            return self._error(404, "Not found", "No such employee in your team.")
+
+        role = (person.get("role_code") or "ALL").upper()
+        with Bank(DB, self._company()) as bank:
+            self._seed_requirements_if_empty(bank)
+            requirements = bank.role_requirements(role)
+            held = bank.certificates(person["email"])
+
+        overall = qscore.standing(requirements, held)["overall"]
+        if not overall.missing and not overall.expired:
+            return self._send({
+                "sent": False, "reason": "Already compliant -- nothing outstanding.",
+                "missing": [], "expired": [],
+            })
+
+        if not devauth.get_notifications_enabled(target_id):
+            return self._send({
+                "sent": False,
+                "reason": "This person has email notifications turned off in Settings.",
+                "missing": overall.missing, "expired": overall.expired,
+            })
+
+        return self._send({
+            "sent": False,
+            "reason": "The local dev server does not send email. In Azure this calls "
+                       "shared.comms.send_manager_reminder_email once RESEND_API_KEY is set.",
+            "missing": overall.missing, "expired": overall.expired,
+        })
+
+    def _settings_get(self):
+        identity = self._require()
+        if identity is None:
+            return None
+        return self._send({
+            "notificationsEnabled": devauth.get_notifications_enabled(identity.employee_id),
+        })
+
+    def _settings_set(self):
+        identity = self._require()
+        if identity is None:
+            return None
+        body = self._body()
+        enabled = body.get("notificationsEnabled")
+        if not isinstance(enabled, bool):
+            return self._error(400, "Bad request", "notificationsEnabled (boolean) is required.")
+        if not devauth.set_notifications_enabled(identity.employee_id, enabled):
+            return self._error(404, "Not found", "No credential record for this account.")
+        return self._send({"notificationsEnabled": enabled})
 
     def _static(self, relative: str):
         target = (WEB / relative).resolve()
@@ -1001,10 +1152,18 @@ class Handler(BaseHTTPRequestHandler):
             # manager can only make required the exact thing they were already
             # trusted to assign.
             required_for = []
+            # (email, name) pairs to notify, collected here but sent after the `with`
+            # block closes -- same reasoning as function_app.py's confirm_document:
+            # a slow or failing Resend call must not hold the Bank connection open.
+            to_notify = []
             if make_required:
                 for role_code in set(normalized.values()):
-                    bank.add_role_requirement(role_code, doc_title)
+                    newly_required = bank.add_role_requirement(role_code, doc_title)
                     required_for.append(role_code)
+                    if newly_required:
+                        to_notify.extend(
+                            (p["email"], p["name"])
+                            for p in devauth.employees_with_role_code(role_code))
 
             # Update-vs-add was decided by gpt-5 and shown to the manager before
             # this call; supersede arrives here already reviewed. Old questions stop
@@ -1013,6 +1172,20 @@ class Handler(BaseHTTPRequestHandler):
             supersede = str(body.get("supersede", "")).strip()
             if supersede and supersede != doc_title:
                 retired = bank.retire_document_questions(supersede)
+
+        if to_notify:
+            sys.path.insert(0, str(REPO / "api"))
+            from shared.comms import send_new_training_email
+            for email, name in dict.fromkeys(to_notify):
+                try:
+                    send_new_training_email(email, name, doc_title, "Your company")
+                except Exception as exc:  # noqa: BLE001
+                    # A notification failure must never fail the confirm itself -- the
+                    # document is already saved and generating either way. print, not
+                    # logging -- this file never imports logging, only print, for
+                    # exactly this kind of "surface it, don't crash" diagnostic.
+                    print("    ! failed to notify {} of new training {!r}: {}".format(
+                        email, doc_title, exc))
 
         job_id = _start_generation_job(doc_title)
         return self._send({

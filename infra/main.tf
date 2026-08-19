@@ -71,26 +71,32 @@ module "keyvault" {
   jwt_signing_secret        = random_password.jwt_signing_secret.result
 }
 
-# TEMPORARILY DISABLED: blocked on Microsoft.Communication provider
-# registration - subscription lacks permission, admin request pending.
-# Re-enable once registered; also switch functions' comms_connection_string
-# back to module.comms.comms_connection_string when this comes back.
-#
-# module "comms" {
-#   source              = "./modules/comms"
-#   environment         = var.environment
-#   resource_group_name = var.resource_group_name
-# }
+# Was Azure Communication Services, blocked on Microsoft.Communication provider
+# registration (no subscription permission, admin request never went through).
+# Switched to Resend, a third-party API with no Azure resource to register --
+# this module only writes two secrets into the Key Vault that already exists.
+module "comms" {
+  source         = "./modules/comms"
+  environment    = var.environment
+  key_vault_id   = module.keyvault.key_vault_id
+  resend_api_key = var.resend_api_key
+}
 module "functions" {
   source                    = "./modules/functions"
   environment               = var.environment
   resource_group_name       = var.resource_group_name
   location                  = var.location
   key_vault_uri             = module.keyvault.key_vault_uri
-  comms_connection_string   = "placeholder-until-comms-unblocked"
   app_integration_subnet_id = module.network.app_integration_subnet_id
   sql_server_fqdn           = module.sql.server_fqdn
   sql_database_name         = module.sql.database_name
+  resend_api_key            = var.resend_api_key
+
+  # Not a plan-time data dependency (the Function App's RESEND_* app settings are just
+  # @Microsoft.KeyVault(...) reference strings, not values read from module.comms), but
+  # the secrets those references resolve to at RUNTIME need to already exist by the time
+  # the Function App starts, so the apply itself must not race the two.
+  depends_on = [module.comms]
   allowed_origins = concat(
     ["https://${module.staticwebapp.default_host_name}"],
     var.additional_frontend_origins,

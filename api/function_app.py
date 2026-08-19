@@ -2316,6 +2316,44 @@ def get_team(req: func.HttpRequest) -> func.HttpResponse:
             )
             people = _rows(cur)
 
+            # Peers: everyone else who shares my manager. Available to everyone, not
+            # only people who manage someone -- an SDE1 has SDE2/SDE3 as teammates
+            # because they share a manager, even though nobody reports to the SDE1
+            # themselves. ISNULL sentinel rather than a plain "=" comparison: NULL =
+            # NULL is never true in SQL, so someone at the top of the chain with no
+            # manager_id at all would otherwise match nobody, including other people
+            # also at the top with no manager.
+            cur.execute(
+                """SELECT e.id, e.name, e.email, r.title, r.role_code
+                     FROM dbo.Employees e
+                     LEFT JOIN dbo.Roles r ON r.id = e.role_id
+                    WHERE e.company_id = ?
+                      AND e.id <> ?
+                      AND ISNULL(e.manager_id, -1) = ISNULL(?, -1)
+                    ORDER BY e.name""",
+                identity.company_id, identity.employee_id, identity.manager_id,
+            )
+            peers = _rows(cur)
+
+            # Who I report to -- shown alongside "people below you" on My Team, so a
+            # manager sees both directions of the chain, not just downward.
+            manager = None
+            if identity.manager_id:
+                cur.execute(
+                    """SELECT e.id, e.name, e.email, r.title, r.role_code
+                         FROM dbo.Employees e
+                         LEFT JOIN dbo.Roles r ON r.id = e.role_id
+                        WHERE e.id = ? AND e.company_id = ?""",
+                    identity.manager_id, identity.company_id,
+                )
+                row = cur.fetchone()
+                if row:
+                    manager = {
+                        "employeeId": row.id, "name": row.name, "email": row.email,
+                        "title": row.title,
+                        "roleCode": (row.role_code or "ALL").upper(),
+                    }
+
         # ALL is company-wide, not a role anyone "controls", so it is not an upload
         # target for a manager — only for admin and executive. A subtree member whose
         # role_code is unmapped surfaces as ALL and must not smuggle it in.
@@ -2353,6 +2391,17 @@ def get_team(req: func.HttpRequest) -> func.HttpResponse:
                 }
                 for p in people
             ],
+            "peers": [
+                {
+                    "employeeId": p["id"],
+                    "name": p["name"],
+                    "email": p["email"],
+                    "title": p.get("title"),
+                    "roleCode": (p.get("role_code") or "ALL").upper(),
+                }
+                for p in peers
+            ],
+            "manager": manager,
             "uploadTargets": sorted(
                 targets.values(), key=lambda t: (not t["direct"], t["title"])),
         })
@@ -2412,6 +2461,194 @@ def _certificates_for(cur, employee_id: int, company_id: int) -> List[Dict[str, 
         }
         for r in _rows(cur)
     ]
+
+
+@app.route(route="team/completion", methods=["GET"])
+def get_team_completion(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Real coverage numbers for everyone in the caller's reporting subtree, batched.
+
+    Powers the My Team roster: team size, how many people are missing required
+    training, how many have something expiring soon, and completion -- computed the
+    same way GET /qscore computes one person's (same qscore.standing call, same
+    definition of "missing" and "expired"), just for the whole subtree in one request
+    instead of one per row. No number here is invented; a person with nothing required
+    counts as fully covered, the same rule qscore.standing already applies.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """WITH subtree AS (
+                       SELECT e.id, e.role_id
+                         FROM dbo.Employees e WHERE e.manager_id = ?
+                       UNION ALL
+                       SELECT e.id, e.role_id
+                         FROM dbo.Employees e
+                         JOIN subtree s ON e.manager_id = s.id
+                   )
+                   SELECT s.id, r.role_code
+                     FROM subtree s
+                     LEFT JOIN dbo.Roles r ON r.id = s.role_id
+                   OPTION (MAXRECURSION 32)""",
+                identity.employee_id,
+            )
+            subtree = _rows(cur)
+
+            req_cache: Dict[str, List[Dict[str, Any]]] = {}
+            rows = []
+            for person in subtree:
+                role = (person.get("role_code") or "ALL").upper()
+                if role not in req_cache:
+                    req_cache[role] = _role_requirements(cur, role, identity.company_id)
+                held = _certificates_for(cur, person["id"], identity.company_id)
+                overall = qscore.standing(req_cache[role], held)["overall"]
+                renewal_due = [r for r in qscore.renewal_candidates(held) if not r["expired"]]
+                rows.append({
+                    "employeeId": person["id"],
+                    **overall.to_dict(),
+                    "renewalDueCount": len(renewal_due),
+                })
+
+        return _json({"people": rows})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="team/remind", methods=["POST"])
+def send_team_reminder(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Manager-triggered nudge for one person in the caller's reporting subtree.
+
+    What the email says is computed here from that person's actual missing/expired
+    requirements -- never passed by the client -- so this cannot be used to send an
+    arbitrary message, and the target must resolve inside the caller's own subtree, the
+    same check GET /qscore?employee= makes. A 404 rather than 403 for someone outside
+    it: whether a given employee exists is not something to confirm to someone with no
+    business asking.
+
+    Sending is real (shared.comms, the same module the daily expiry-reminder job uses),
+    but depends on RESEND_API_KEY being configured for this environment. Where it is
+    not, this still reports honestly what would have been sent rather than pretending
+    delivery succeeded.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+
+    target_id = body.get("employeeId")
+    if not isinstance(target_id, int):
+        return _error(400, "Bad request", "employeeId is required.")
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """WITH subtree AS (
+                       SELECT e.id, e.name, e.email, e.role_id
+                         FROM dbo.Employees e WHERE e.manager_id = ?
+                       UNION ALL
+                       SELECT e.id, e.name, e.email, e.role_id
+                         FROM dbo.Employees e
+                         JOIN subtree s ON e.manager_id = s.id
+                   )
+                   SELECT TOP 1 s.id, s.name, s.email, r.role_code
+                     FROM subtree s
+                     LEFT JOIN dbo.Roles r ON r.id = s.role_id
+                    WHERE s.id = ?
+                   OPTION (MAXRECURSION 32)""",
+                identity.employee_id, target_id,
+            )
+            person = cur.fetchone()
+            if person is None:
+                return _error(404, "Not found", "No such employee in your team.")
+
+            role = (person.role_code or "ALL").upper()
+            requirements = _role_requirements(cur, role, identity.company_id)
+            held = _certificates_for(cur, person.id, identity.company_id)
+            company_name = _company_name(identity.company_id)
+
+        overall = qscore.standing(requirements, held)["overall"]
+        if not overall.missing and not overall.expired:
+            return _json({
+                "sent": False, "reason": "Already compliant -- nothing outstanding.",
+                "missing": [], "expired": [],
+            })
+
+        from shared.comms import CommsNotConfigured, send_manager_reminder_email
+        try:
+            send_manager_reminder_email(
+                person.email, person.name, overall.missing, overall.expired, company_name,
+            )
+            return _json({"sent": True, "missing": overall.missing, "expired": overall.expired})
+        except CommsNotConfigured as exc:
+            return _json({
+                "sent": False, "reason": str(exc),
+                "missing": overall.missing, "expired": overall.expired,
+            })
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="settings", methods=["GET"])
+def get_settings(req: func.HttpRequest) -> func.HttpResponse:
+    """This employee's own preferences. One so far: whether they want the reminder/
+    notification email shared.comms already knows how to send."""
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT notifications_enabled FROM dbo.Employees WHERE id = ? AND company_id = ?",
+                identity.employee_id, identity.company_id,
+            )
+            row = cur.fetchone()
+        return _json({"notificationsEnabled": bool(row.notifications_enabled) if row else True})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="settings", methods=["POST"])
+def set_settings(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Update the caller's own preferences -- never someone else's: there is no
+    employeeId in the body, only what the token says about who is asking, the same
+    rule every other write in this file follows.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+
+    enabled = body.get("notificationsEnabled")
+    if not isinstance(enabled, bool):
+        return _error(400, "Bad request", "notificationsEnabled (boolean) is required.")
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "UPDATE dbo.Employees SET notifications_enabled = ? WHERE id = ? AND company_id = ?",
+                enabled, identity.employee_id, identity.company_id,
+            )
+            c.commit()
+        return _json({"notificationsEnabled": enabled})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
 
 
 @app.route(route="certificates", methods=["GET"])
@@ -2679,6 +2916,45 @@ def _permitted_upload_roles(cur, identity) -> set:
     if (identity.access_role or "") in ("admin", "executive"):
         allowed.add("ALL")
     return allowed
+
+
+def _employees_for_role(cur, company_id: int, role_code: str) -> List[tuple]:
+    """
+    (email, name) for everyone in this company holding role_code -- or the whole
+    company, when role_code is 'ALL' (a company-wide requirement, per the same
+    'ALL means company-wide, not a role anyone controls' rule _permitted_upload_roles
+    already enforces on the write side).
+
+    Used by confirm_document to find who to notify when a document becomes newly
+    required for a role. Read-only, so it doesn't need SqlBank -- a plain query is
+    clearer than routing a two-column SELECT through a class built for chunks/questions.
+    """
+    if role_code == "ALL":
+        cur.execute(
+            "SELECT email, name, notifications_enabled FROM dbo.Employees WHERE company_id = ?",
+            company_id,
+        )
+    else:
+        cur.execute(
+            """SELECT e.email, e.name, e.notifications_enabled FROM dbo.Employees e
+                 JOIN dbo.Roles r ON r.id = e.role_id
+                WHERE e.company_id = ? AND r.role_code = ?""",
+            company_id, role_code,
+        )
+    return [(r.email, r.name) for r in cur.fetchall() if r.notifications_enabled]
+
+
+def _company_name(company_id: int) -> str:
+    """For the email's greeting/sign-off. Falls back to a generic label rather than
+    failing the whole notification over a display string."""
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT name FROM dbo.Companies WHERE id = ?", company_id)
+            row = cur.fetchone()
+            return row.name if row else "Your company"
+    except Exception:  # noqa: BLE001
+        return "Your company"
 
 
 def _ingest_and_propose(chunks, identity, label: str, retitle_suffix: str,
@@ -2950,10 +3226,21 @@ def confirm_document(req: func.HttpRequest, generation_message) -> func.HttpResp
             # they were already trusted to assign; they still cannot touch
             # requirements for any role outside their own chain.
             required_for: List[str] = []
+            # (email, name) pairs to notify once this transaction is committed --
+            # collected here, while cur is open, but the actual sends happen after the
+            # `with` block closes, so a slow or failing Resend call never holds the DB
+            # connection open.
+            to_notify: List[tuple] = []
             if make_required:
-                for code in {role for roles in assignments.values() for role in roles}:
-                    bank.add_role_requirement(code, doc_title)
+                for code in {
+                    str(role or "ALL").upper()
+                    for roles in assignments.values()
+                    for role in roles
+                }:
+                    newly_required = bank.add_role_requirement(code, doc_title)
                     required_for.append(code)
+                    if newly_required:
+                        to_notify.extend(_employees_for_role(cur, identity.company_id, code))
 
             retired = 0
             if supersede and supersede != doc_title:
@@ -2968,6 +3255,22 @@ def confirm_document(req: func.HttpRequest, generation_message) -> func.HttpResp
             "docTitle": doc_title,
             "assignments": assignments,
         }))
+
+        if to_notify:
+            from shared.comms import send_new_training_email
+            company_name = _company_name(identity.company_id)
+            # Same email can appear twice if, say, a role holder's role_code happens
+            # to match two different assignments in this same confirm -- dict.fromkeys
+            # on the pair de-dupes without needing the pairs to be hashable-sorted.
+            for email, name in dict.fromkeys(to_notify):
+                try:
+                    send_new_training_email(email, name, doc_title, company_name)
+                except Exception:  # noqa: BLE001
+                    # A notification failure must never fail the confirm itself -- the
+                    # document is already saved and generating either way.
+                    logging.exception(
+                        "confirm_document: failed to notify %s of new training %s",
+                        email, doc_title)
 
         return _json({
             "title": doc_title, "taggedChunks": tagged, "retired": retired,
@@ -3344,3 +3647,93 @@ def remove_role(req: func.HttpRequest) -> func.HttpResponse:
     if not removed:
         return _error(404, "No such role", code)
     return _json({"removed": code})
+
+
+# --------------------------------------------------------------------------
+# Track E: daily certificate-expiry reminders
+# --------------------------------------------------------------------------
+
+@app.timer_trigger(schedule="0 0 8 * * *", arg_name="mytimer",
+                    run_on_startup=False, use_monitor=True)
+def send_expiry_reminders(mytimer: func.TimerRequest) -> None:
+    """
+    Daily at 08:00 UTC (NCRONTAB "0 0 8 * * *"). Finds Certificates rows expiring
+    within EXPIRY_WARNING_DAYS days that have not already been reminded about, emails
+    the holder via Resend, then stamps reminder_sent_at so the same certificate is
+    never reminded twice.
+
+    Reads dbo.Certificates, not dbo.Completions -- Completions has had its own
+    reminder_sent_at column since 004_create_completions.sql, but nothing writes to
+    Completions any more. POST /quiz/submit issues real certificates into
+    dbo.Certificates (018_extend_certificates.sql). A job built against Completions
+    would run daily against a table nothing populates and silently do nothing.
+
+    A cross-tenant scan, deliberately: this runs once for every company, not once per
+    company_id, the same way the quarterly regeneration job (Track B, not yet built)
+    will need to. Every row already carries its own company via the Employees/Companies
+    join, so there is nothing to leak between tenants -- each email only ever
+    references its own recipient's own certificate.
+    """
+    warning_days = int(os.getenv("EXPIRY_WARNING_DAYS", "30"))
+    sent, failed, skipped_unconfigured, skipped_disabled = 0, 0, 0, 0
+
+    from shared.comms import CommsNotConfigured, send_expiry_email
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """SELECT cert.id, cert.doc_title, cert.expires_at,
+                          e.email, e.name AS employee_name, e.notifications_enabled,
+                          comp.name AS company_name
+                     FROM dbo.Certificates cert
+                     JOIN dbo.Employees e   ON e.id = cert.employee_id
+                     JOIN dbo.Companies comp ON comp.id = e.company_id
+                    WHERE cert.status = 'Active'
+                      AND cert.reminder_sent_at IS NULL
+                      AND cert.expires_at BETWEEN SYSUTCDATETIME()
+                          AND DATEADD(DAY, ?, SYSUTCDATETIME())""",
+                warning_days,
+            )
+            rows = cur.fetchall()
+
+            for row in rows:
+                if not row.notifications_enabled:
+                    # Left unstamped, deliberately: this person is still genuinely due,
+                    # just opted out today. Re-checking them tomorrow is a cheap no-op,
+                    # and stamping reminder_sent_at would mean re-enabling notifications
+                    # later gets them silently skipped for the rest of this cert's life.
+                    skipped_disabled += 1
+                    continue
+                try:
+                    send_expiry_email(
+                        row.email, row.employee_name, row.doc_title,
+                        row.expires_at, row.company_name,
+                    )
+                except CommsNotConfigured:
+                    # Not a per-recipient failure -- nobody has set RESEND_API_KEY yet.
+                    # Every remaining row would fail the identical way, so stop the
+                    # loop rather than log the same cause N times, but this run is not
+                    # an error: it is expected until Resend is configured.
+                    skipped_unconfigured = len(rows) - sent - failed - skipped_disabled
+                    break
+                except Exception:  # noqa: BLE001
+                    failed += 1
+                    logging.exception(
+                        "send_expiry_reminders: failed to email certificate %s (%s)",
+                        row.id, row.email)
+                    continue
+
+                cur.execute(
+                    "UPDATE dbo.Certificates SET reminder_sent_at = SYSUTCDATETIME() "
+                    "WHERE id = ?",
+                    row.id,
+                )
+                c.commit()
+                sent += 1
+
+        logging.info(
+            "send_expiry_reminders: sent=%d failed=%d skipped_unconfigured=%d skipped_disabled=%d",
+            sent, failed, skipped_unconfigured, skipped_disabled)
+    except Exception:  # noqa: BLE001
+        logging.exception("send_expiry_reminders: run failed")

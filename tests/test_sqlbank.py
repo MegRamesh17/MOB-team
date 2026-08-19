@@ -178,6 +178,21 @@ class FakeCursor:
             (company_id,) = p
             self._result = [r for r in t["QuizgenRoles"] if r["company_id"] == company_id]
 
+        elif "IF NOT EXISTS (SELECT 1 FROM dbo.RoleRequirements" in s:
+            company_id, role_code, doc_title, cid2, code2, title2, category = p
+            exists = any(
+                r["company_id"] == company_id and r["role_code"] == role_code
+                and r["doc_title"] == doc_title
+                for r in t["RoleRequirements"])
+            if exists:
+                self.rowcount = 0
+            else:
+                t["RoleRequirements"].append({
+                    "company_id": cid2, "role_code": code2, "doc_title": title2,
+                    "category": category,
+                })
+                self.rowcount = 1
+
         elif "MERGE dbo.QuizgenRoles" in s:
             # MERGE, not the old IF EXISTS/ELSE INSERT -- see add_role's own comment:
             # that two-step version let two near-simultaneous calls for an empty table
@@ -274,7 +289,7 @@ class FakeConn:
         self.tables = {
             "SourceChunks": [], "GeneratedQuestions": [], "GeneratedOptions": [],
             "GeneratedAnswerKeys": [], "QuizgenRoles": [], "GenerationJobs": [],
-            "TrustedLinks": [],
+            "TrustedLinks": [], "RoleRequirements": [],
         }
 
     def cursor(self):
@@ -455,6 +470,32 @@ class TestRoles(unittest.TestCase):
         self.assertEqual(bank.remove_role("SDE2"), 1)
         self.assertEqual(bank.roles(), [])
         self.assertEqual(bank.remove_role("SDE2"), 0, "removing twice should be a no-op, not an error")
+
+
+class TestRoleRequirements(unittest.TestCase):
+    def test_first_assignment_returns_true(self):
+        conn = FakeConn()
+        bank = SqlBank(conn, company_id=1)
+        self.assertTrue(bank.add_role_requirement("SDE2", "Workplace Safety"))
+        self.assertEqual(len(conn.tables["RoleRequirements"]), 1)
+
+    def test_re_confirming_the_same_pair_returns_false(self):
+        # This is the notification gate: confirm_document only emails when this is
+        # True. If a re-confirm of an already-required document returned True again,
+        # every manager clicking "confirm" a second time would spam the whole role.
+        conn = FakeConn()
+        bank = SqlBank(conn, company_id=1)
+        bank.add_role_requirement("SDE2", "Workplace Safety")
+        again = bank.add_role_requirement("SDE2", "Workplace Safety")
+        self.assertFalse(again)
+        self.assertEqual(len(conn.tables["RoleRequirements"]), 1, "duplicated the row")
+
+    def test_different_company_same_pair_is_still_new(self):
+        conn = FakeConn()
+        SqlBank(conn, company_id=1).add_role_requirement("SDE2", "Workplace Safety")
+        self.assertTrue(
+            SqlBank(conn, company_id=2).add_role_requirement("SDE2", "Workplace Safety"),
+            "a requirement scoped to company 1 blocked the identical one for company 2")
 
 
 class TestGenerationJobs(unittest.TestCase):
