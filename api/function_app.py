@@ -29,6 +29,7 @@ review/decide additionally requires manager tier or above.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
@@ -1442,6 +1443,83 @@ def _permitted_upload_roles(cur, identity) -> set:
     return allowed
 
 
+def _ingest_and_propose(chunks, identity, label: str, retitle_suffix: str) -> func.HttpResponse:
+    """
+    Save already-extracted chunks, seed the role catalog if empty, and ask the model to
+    propose a section->role mapping -- the part upload_document and add_trusted_link
+    share in full. Generation itself happens later, in /documents/confirm, once a
+    manager approves the mapping; nothing here writes a GeneratedQuestions row.
+
+    label is what the response's "file" field shows (a filename or a URL). retitle_suffix
+    is the parenthetical used only if doc_title collides with a different document
+    (Path(safe).stem for an upload, the URL's host for a link) -- kept separate from
+    label because a suffix built from a full URL would be unreadable.
+    """
+    if not chunks:
+        return _error(422, "No teachable content found",
+                      "Text was extracted but nothing usable was found in it.")
+
+    doc_title = chunks[0].doc_title
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            # Two different documents must never share a title -- they would merge
+            # into one training, mixing roles and letting set_chunk_roles tag the
+            # wrong sections.
+            cur.execute(
+                "SELECT DISTINCT doc_id FROM dbo.SourceChunks WHERE doc_title = ? AND company_id = ?",
+                doc_title, identity.company_id,
+            )
+            existing_ids = {r.doc_id for r in cur.fetchall()}
+            if existing_ids and chunks[0].doc_id not in existing_ids:
+                doc_title = "{} ({})".format(doc_title, retitle_suffix)
+                for ch in chunks:
+                    ch.doc_title = doc_title
+
+            from shared.sqlbank import SqlBank
+            bank = SqlBank(c, identity.company_id)
+            bank.save_chunks(chunks)
+
+            from quizgen.rolemap import seed_roles
+            seed_roles(bank)
+            known_roles = bank.roles()
+
+            permitted = _permitted_upload_roles(cur, identity)
+
+            topics = sorted({ch.topic for ch in chunks})
+            sections = {}
+            for ch in chunks:
+                sections.setdefault(ch.topic, ch.text)
+
+            from quizgen.rolemap import analyze_document
+            try:
+                mapping = analyze_document(doc_title, sections, known_roles)
+            except RuntimeError as exc:
+                # No model credentials. The chunks are already saved (committed by
+                # save_chunks/seed_roles above), so nothing is lost -- confirm can
+                # still be called once credentials exist.
+                return _error(503, "Role mapping needs the real model", str(exc)[:300])
+            except Exception as exc:  # noqa: BLE001
+                return _error(502, "Role analysis failed",
+                              "{}: {}".format(type(exc).__name__, str(exc)[:250]))
+
+        from quizgen.pipeline import generator_name
+        return _json({
+            "file": label, "title": doc_title, "chunks": len(chunks), "topics": topics,
+            "summary": mapping.summary,
+            "proposedRoles": mapping.assignments,
+            "permittedRoles": sorted(permitted),
+            "unknownRoles": mapping.unknown_roles,
+            "thinTopics": mapping.thin_topics,
+            "knownRoles": known_roles,
+            "generator": generator_name(),
+            "needsConfirmation": True,
+        }, 201)
+    except Exception as exc:  # noqa: BLE001
+        logging.exception("ingest/propose failed for %s", label)
+        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
+
+
 @app.route(route="documents", methods=["GET"])
 def list_documents(req: func.HttpRequest) -> func.HttpResponse:
     """What has been uploaded, and how far each one got."""
@@ -1480,6 +1558,7 @@ def list_documents(req: func.HttpRequest) -> func.HttpResponse:
         return _json({"documents": docs, "files": [], "generator": generator_name(),
                       "uploadDir": ""})
     except Exception as exc:  # noqa: BLE001
+        logging.exception("GET /documents failed")
         return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
 
 
@@ -1527,68 +1606,8 @@ def upload_document(req: func.HttpRequest) -> func.HttpResponse:
             return _error(422, "Could not read this document",
                           "{}: {}".format(type(exc).__name__, str(exc)[:200]))
 
-    if not chunks:
-        return _error(422, "No teachable content found",
-                      "Text was extracted but nothing usable was found in it.")
-
-    doc_title = chunks[0].doc_title
-    try:
-        with _conn() as c:
-            cur = c.cursor()
-            # Two different documents must never share a title -- they would merge
-            # into one training, mixing roles and letting set_chunk_roles tag the
-            # wrong sections.
-            cur.execute(
-                "SELECT DISTINCT doc_id FROM dbo.SourceChunks WHERE doc_title = ? AND company_id = ?",
-                doc_title, identity.company_id,
-            )
-            existing_ids = {r.doc_id for r in cur.fetchall()}
-            if existing_ids and chunks[0].doc_id not in existing_ids:
-                doc_title = "{} ({})".format(doc_title, Path(safe).stem.replace("_", " "))
-                for ch in chunks:
-                    ch.doc_title = doc_title
-
-            from shared.sqlbank import SqlBank
-            bank = SqlBank(c, identity.company_id)
-            bank.save_chunks(chunks)
-
-            from quizgen.rolemap import seed_roles
-            seed_roles(bank)
-            known_roles = bank.roles()
-
-            permitted = _permitted_upload_roles(cur, identity)
-
-            topics = sorted({ch.topic for ch in chunks})
-            sections = {}
-            for ch in chunks:
-                sections.setdefault(ch.topic, ch.text)
-
-            from quizgen.rolemap import analyze_document
-            try:
-                mapping = analyze_document(doc_title, sections, known_roles)
-            except RuntimeError as exc:
-                # No model credentials. The chunks are already saved (committed by
-                # save_chunks/seed_roles above), so nothing is lost -- confirm can
-                # still be called once credentials exist.
-                return _error(503, "Role mapping needs the real model", str(exc)[:300])
-            except Exception as exc:  # noqa: BLE001
-                return _error(502, "Role analysis failed",
-                              "{}: {}".format(type(exc).__name__, str(exc)[:250]))
-
-        from quizgen.pipeline import generator_name
-        return _json({
-            "file": safe, "title": doc_title, "chunks": len(chunks), "topics": topics,
-            "summary": mapping.summary,
-            "proposedRoles": mapping.assignments,
-            "permittedRoles": sorted(permitted),
-            "unknownRoles": mapping.unknown_roles,
-            "thinTopics": mapping.thin_topics,
-            "knownRoles": known_roles,
-            "generator": generator_name(),
-            "needsConfirmation": True,
-        }, 201)
-    except Exception as exc:  # noqa: BLE001
-        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
+    return _ingest_and_propose(
+        chunks, identity, label=safe, retitle_suffix=Path(safe).stem.replace("_", " "))
 
 
 @app.route(route="documents/confirm", methods=["POST"])
@@ -1674,6 +1693,109 @@ def confirm_document(req: func.HttpRequest) -> func.HttpResponse:
             "jobId": job_id,
         }, 201)
     except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
+
+
+@app.route(route="links/add", methods=["POST"])
+def add_trusted_link(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Manager submits a trusted reference URL. Same targeting rule as an upload (own
+    reporting subtree, or company-wide for admin/executive only), and the fetched page
+    goes through the exact same extraction/grounding/confirm-before-generate pipeline as
+    an uploaded PDF -- see _ingest_and_propose. The only thing that differs from
+    upload_document is where the text comes from.
+    """
+    identity = get_current_employee(req)
+    forbidden = require_manager(identity)
+    if forbidden:
+        return forbidden
+
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+
+    url = str(body.get("url", "")).strip()
+    scope = str(body.get("scope", "")).strip().lower()
+    role_code = str(body.get("roleCode", "")).strip().upper()
+
+    if not url or not (url.startswith("http://") or url.startswith("https://")):
+        return _error(400, "Bad request", "A valid http(s) url is required.")
+    if scope not in ("team", "company_wide"):
+        return _error(400, "Bad request", "scope must be 'team' or 'company_wide'.")
+
+    if scope == "company_wide":
+        # Same tier _permitted_upload_roles grants "ALL" to for uploads -- a company-wide
+        # link reaches every role the same way an ALL-scoped upload does.
+        if (identity.access_role or "") not in ("admin", "executive"):
+            return _error(403, "Forbidden",
+                          "Only admin/executive may add a company-wide trusted link.")
+        role_code = "ALL"
+    else:
+        if not role_code:
+            return _error(400, "Bad request", "roleCode is required for a team-scoped link.")
+        with _conn() as c:
+            permitted = _permitted_upload_roles(c.cursor(), identity)
+        if role_code not in permitted:
+            return _error(403, "Forbidden",
+                          "You may only target roles within your own reporting chain.")
+
+    from quizgen.web import fetch
+    try:
+        title, text, fetched_at = fetch(url)
+    except Exception as exc:  # noqa: BLE001
+        return _error(422, "Could not fetch this URL",
+                      "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+
+    if not text or not text.strip():
+        return _error(422, "No teachable content found",
+                      "The page was reachable but had no readable text.")
+
+    from urllib.parse import urlparse
+    host = urlparse(url).netloc or url[:40]
+
+    from quizgen.ingest import chunks_from_text
+    display_title = title or host
+    chunks = chunks_from_text(text, source_name=display_title)
+    for ch in chunks:
+        # Matches the ProvenanceClass.EXTERNAL contract validators.py already enforces:
+        # a web-sourced chunk carries a URL and a retrieval date, and any question drawn
+        # from it may not speak with the company's own authority.
+        ch.source_type = "web"
+        ch.source_url = url
+        ch.fetched_at = fetched_at
+        ch.role_scope = role_code
+
+    # Recorded once the page has actually yielded something teachable, same point
+    # upload_document's chunks are considered "saved" -- before the AI role-mapping step,
+    # so a manager can still see and re-confirm this link even if that step fails for
+    # lack of model credentials.
+    try:
+        with _conn() as c:
+            from shared.sqlbank import SqlBank
+            bank = SqlBank(c, identity.company_id)
+            bank.add_trusted_link(identity.employee_id, scope, role_code, url)
+    except Exception as exc:  # noqa: BLE001
+        logging.exception("Failed to record trusted link row for %s", url)
+        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
+
+    return _ingest_and_propose(chunks, identity, label=url, retitle_suffix=host)
+
+
+@app.route(route="links", methods=["GET"])
+def list_trusted_links(req: func.HttpRequest) -> func.HttpResponse:
+    """A manager's company's trusted links, active and retired."""
+    identity = get_current_employee(req)
+    forbidden = require_manager(identity)
+    if forbidden:
+        return forbidden
+    try:
+        with _conn() as c:
+            from shared.sqlbank import SqlBank
+            bank = SqlBank(c, identity.company_id)
+            return _json({"links": bank.trusted_links()})
+    except Exception as exc:  # noqa: BLE001
+        logging.exception("GET /links failed")
         return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
 
 
