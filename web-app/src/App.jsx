@@ -29,23 +29,32 @@ import { Logo } from "./logo.jsx";
  */
 
 // ---------- design tokens ----------
+// "Ascend" palette: warm cream ground, forest green as the one primary color, teal and
+// orange doing semantic work (compliant / needs-attention) rather than competing with
+// green for attention, purple kept as a single deliberate accent rather than spread
+// everywhere. Token KEYS keep their old violet-era names (green900/700/600/500/300,
+// "mint" for the pale tint) so the ~100 call sites that reference them did not need to
+// change one at a time -- only the values did.
 const C = {
-  ink: "#1E1B2E",
-  sub: "#6B6480",
-  violet900: "#2E1152",
-  violet700: "#6423C9",
-  violet600: "#7A35E0",
-  violet500: "#9459EE",
-  violet300: "#C9AEF5",
-  lavender: "#F1EBFB",
-  paper: "#FBFAFE",
-  line: "#E4DCF5",
-  amber: "#C9971D",
-  amberBg: "#FBF3DF",
-  success: "#1F9D55",
-  successBg: "#E7F7EE",
+  ink: "#12201A",
+  sub: "#5C6B62",
+  green900: "#0D4A30",
+  green700: "#147A4D",
+  green600: "#1E8F5A",
+  green500: "#47B37A",
+  green300: "#A9DFC0",
+  mint: "#E7F3EC",
+  paper: "#F6F3EC",
+  line: "#E3DECF",
+  amber: "#E07A1F",
+  amberBg: "#FDECD9",
+  success: "#0E9C89",
+  successBg: "#DFF7F3",
   danger: "#D8443C",
   dangerBg: "#FCEBEA",
+  purple: "#6D5CE7",
+  purpleBg: "#EAE7FC",
+  rail: "#0F1B15",
 };
 
 const font = { fontFamily: "'IBM Plex Sans', system-ui, sans-serif" };
@@ -54,8 +63,8 @@ const display = { fontFamily: "'Fraunces', Georgia, serif" };
 // ---------- static (design-only) data ----------
 const FOCUS_PRIORITIES = [
   { id: "urgent", label: "Urgent", color: "#D8443C", bg: "#FCEBEA" },
-  { id: "deep", label: "Deep Work", color: "#6423C9", bg: "#F1EBFB" },
-  { id: "quick", label: "Quick Task", color: "#C9971D", bg: "#FBF3DF" },
+  { id: "deep", label: "Deep Work", color: "#6D5CE7", bg: "#EAE7FC" },
+  { id: "quick", label: "Quick Task", color: "#E07A1F", bg: "#FDECD9" },
   { id: "learning", label: "Learning", color: "#1F9D55", bg: "#E7F7EE" },
 ];
 
@@ -178,7 +187,7 @@ function StatusPill({ status }) {
   const map = {
     completed: { bg: C.successBg, fg: C.success, label: "Completed" },
     "in-progress": { bg: C.amberBg, fg: C.amber, label: "In progress" },
-    "not-started": { bg: C.lavender, fg: C.violet700, label: "Not started" },
+    "not-started": { bg: C.mint, fg: C.green700, label: "Not started" },
     locked: { bg: "#F1F0F3", fg: "#9A93A8", label: "Locked" },
   };
   const s = map[status] || map["not-started"];
@@ -223,7 +232,7 @@ function MasteryRing({ value, size = 64, stroke = 7 }) {
       <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={C.line} strokeWidth={stroke} />
       <circle
         cx={size / 2} cy={size / 2} r={r} fill="none"
-        stroke={C.violet700} strokeWidth={stroke} strokeLinecap="round"
+        stroke={C.green700} strokeWidth={stroke} strokeLinecap="round"
         strokeDasharray={`${dash} ${c - dash}`}
         transform={`rotate(-90 ${size / 2} ${size / 2})`}
       />
@@ -266,12 +275,12 @@ function TimerRing({ progress, color, size = 160, stroke = 12, label, sublabel }
 
 function Button({ children, onClick, variant = "primary", disabled, className = "", ...rest }) {
   const styles = {
-    primary: { background: C.violet700, color: "#fff" },
-    ghost: { background: "transparent", color: C.violet700, border: `1px solid ${C.line}` },
-    subtle: { background: C.lavender, color: C.violet700 },
+    primary: { background: C.green700, color: "#fff" },
+    ghost: { background: "transparent", color: C.green700, border: `1px solid ${C.line}` },
+    subtle: { background: C.mint, color: C.green700 },
   };
   const [hover, setHover] = useState(false);
-  const hoverBg = variant === "primary" ? C.violet900 : variant === "subtle" ? "#E4D7F7" : C.lavender;
+  const hoverBg = variant === "primary" ? C.green900 : variant === "subtle" ? C.green300 : C.mint;
   return (
     <button
       onClick={onClick}
@@ -326,9 +335,9 @@ function Login({ onLogin }) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center" style={{ ...font, background: "#F5F4F9" }}>
+    <div className="min-h-screen flex items-center justify-center" style={{ ...font, background: C.paper }}>
       <div className="w-full max-w-md mx-4 bg-white rounded-2xl shadow-xl overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
-        <div style={{ background: C.violet700, height: 4 }} />
+        <div style={{ background: C.green700, height: 4 }} />
         <div className="px-8 pt-8 pb-6">
           <div className="flex items-center mb-8"><Logo size={30} /></div>
           <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Sign in</h1>
@@ -406,8 +415,8 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
           -- stays put while a long page like Profile scrolls inside <main> only.
           min-height let the whole row grow with the page's content instead, which
           dragged the sidebar along with it and buried sign-out below the fold. */}
-      <aside style={{ borderColor: C.line }} className="w-60 border-r flex flex-col shrink-0 h-full overflow-y-auto">
-        <div className="px-5 py-5 flex items-center"><Logo size={26} /></div>
+      <aside style={{ background: C.rail }} className="w-60 flex flex-col shrink-0 h-full overflow-y-auto">
+        <div className="px-5 py-5 flex items-center"><Logo size={26} light /></div>
         <nav className="flex-1 px-3 py-4 space-y-1">
           {nav.map((n) => {
             const Icon = n.icon;
@@ -416,26 +425,29 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
               <button
                 key={n.id}
                 onClick={() => setActive(n.id)}
-                style={{ background: isActive ? C.violet700 : "transparent", color: isActive ? "#fff" : C.sub }}
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-colors"
+                style={{
+                  background: isActive ? C.green700 : "transparent",
+                  color: isActive ? "#fff" : "rgba(240,234,216,0.68)",
+                }}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-colors hover:text-white"
               >
                 <Icon size={16} /> {n.label}
               </button>
             );
           })}
         </nav>
-        <div style={{ borderColor: C.line }} className="border-t px-5 py-4">
+        <div style={{ borderColor: "rgba(240,234,216,0.14)" }} className="border-t px-5 py-4">
           <div className="flex items-center gap-2 mb-3">
-            <div style={{ background: C.lavender, color: C.violet700 }} className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold">
+            <div style={{ background: "rgba(240,234,216,0.14)", color: "#F0EAD8" }} className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold">
               {name.split(" ").map((p) => p[0]).join("")}
             </div>
             <div>
-              <div style={{ color: C.ink }} className="text-sm font-semibold leading-tight">{name}</div>
-              <div style={{ color: C.sub }} className="text-xs">{department || "—"}</div>
-              {title && <div style={{ color: C.sub }} className="text-[11px] opacity-80">{title}</div>}
+              <div style={{ color: "#F0EAD8" }} className="text-sm font-semibold leading-tight">{name}</div>
+              <div style={{ color: "rgba(240,234,216,0.6)" }} className="text-xs">{department || "—"}</div>
+              {title && <div style={{ color: "rgba(240,234,216,0.5)" }} className="text-[11px]">{title}</div>}
             </div>
           </div>
-          <button onClick={onLogout} style={{ color: C.sub }} className="flex items-center gap-2 text-xs font-semibold hover:opacity-80">
+          <button onClick={onLogout} style={{ color: "rgba(240,234,216,0.6)" }} className="flex items-center gap-2 text-xs font-semibold hover:text-white">
             <LogOut size={13} /> Sign out
           </button>
         </div>
@@ -547,29 +559,44 @@ function FocusSession() {
 // (LearningPath) already renders per-course progress, so this only needs to answer
 // "how am I doing overall," aggregated from the same /trainings response Dashboard
 // already fetches.
+// Three cards, deliberately not four: the reference this was modeled on also had a
+// "Due soon" card, but nothing in the schema tracks an assignment deadline (only
+// certificate expiry, which is a different fact), and a card with an invented number
+// is worse than one fewer card.
 function DashboardStats({ trainings }) {
   if (trainings.length === 0) return null;
   const total = trainings.length;
   const completed = trainings.filter((t) => t.status === "completed").length;
-  const inProgress = trainings.filter((t) => t.status === "in-progress").length;
   const compliant = trainings.filter((t) => t.compliant && !t.expired).length;
   const pct = Math.round((completed / total) * 100);
 
-  const stats = [
-    { value: `${pct}%`, label: "Complete" },
-    { value: `${completed}/${total}`, label: "Trainings finished" },
-    { value: compliant, label: "Compliant now" },
-    { value: inProgress, label: "In progress" },
-  ];
-
   return (
-    <div style={{ borderColor: C.line }} className="border-y flex mb-8">
-      {stats.map((s, i) => (
-        <div key={s.label} style={{ borderColor: C.line }} className={`flex-1 px-5 py-4 ${i > 0 ? "border-l" : ""}`}>
-          <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-1">{s.value}</div>
-          <div style={{ color: C.sub }} className="text-xs font-semibold uppercase tracking-wide">{s.label}</div>
+    <div className="grid grid-cols-3 gap-4 mb-8">
+      <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 flex items-center gap-4">
+        <MasteryRing value={pct} size={52} stroke={5} />
+        <div>
+          <div style={{ color: C.sub }} className="text-xs font-semibold uppercase tracking-wide mb-0.5">Overall progress</div>
+          <div style={{ color: C.sub }} className="text-xs">across {total} training{total === 1 ? "" : "s"}</div>
         </div>
-      ))}
+      </div>
+      <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 flex items-center gap-4">
+        <div style={{ background: C.mint }} className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0">
+          <CheckCircle2 size={20} color={C.green700} />
+        </div>
+        <div>
+          <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-0.5">{completed}/{total}</div>
+          <div style={{ color: C.sub }} className="text-xs font-semibold uppercase tracking-wide">Trainings completed</div>
+        </div>
+      </div>
+      <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 flex items-center gap-4">
+        <div style={{ background: C.successBg }} className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0">
+          <Award size={20} color={C.success} />
+        </div>
+        <div>
+          <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-0.5">{compliant}/{total}</div>
+          <div style={{ color: C.sub }} className="text-xs font-semibold uppercase tracking-wide">Compliant now</div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -593,23 +620,25 @@ function Dashboard({ name, onOpenPath, onOpenTraining }) {
       {!loading && !error && <DashboardStats trainings={trainings} />}
 
       {focus && (
-        <div style={{ background: C.violet900 }}
-          className="rounded-2xl p-6 flex items-center justify-between gap-6 mb-8 text-white">
-          <div className="min-w-0">
-            <p className="text-xs uppercase tracking-wide opacity-80 mb-1 font-semibold">
+        <div style={{ borderColor: C.line }}
+          className="border rounded-2xl p-6 flex items-center gap-5 mb-8 bg-white">
+          <div style={{ background: C.mint }} className="w-16 h-16 rounded-xl flex items-center justify-center shrink-0">
+            <BookOpen size={26} color={C.green700} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p style={{ color: C.green700 }} className="text-xs uppercase tracking-wide mb-1 font-semibold">
               {focus.status === "not-started" ? "Start here" : "Continue where you left off"}
             </p>
-            <h2 style={display} className="text-lg font-bold mb-1">{focus.title}</h2>
-            <p className="text-sm opacity-90 mb-4">
+            <h2 style={{ ...display, color: C.ink }} className="text-lg font-bold mb-1">{focus.title}</h2>
+            <p style={{ color: C.sub }} className="text-sm mb-4">
               {focus.modules.length} modules · {focus.questionCount} questions
               {focus.answered > 0 ? ` · ${focus.answered} answered` : ""}
             </p>
-            <button onClick={() => onOpenTraining(focus)} style={{ color: C.violet700 }}
-              className="bg-white px-4 py-2 rounded-xl text-sm font-semibold hover:opacity-90">
+            <Button onClick={() => onOpenTraining(focus)}>
               {focus.status === "not-started" ? "Start training" : "Continue training"}
-            </button>
+            </Button>
           </div>
-          <MasteryRing value={focus.mastery} size={84} />
+          <MasteryRing value={focus.mastery} size={72} />
         </div>
       )}
 
@@ -617,7 +646,7 @@ function Dashboard({ name, onOpenPath, onOpenTraining }) {
         <>
           <div className="flex items-center justify-between mb-3">
             <h3 style={{ ...display, color: C.ink }} className="font-bold">Your trainings</h3>
-            <button onClick={onOpenPath} style={{ color: C.violet700 }} className="text-sm font-semibold flex items-center gap-1">
+            <button onClick={onOpenPath} style={{ color: C.green700 }} className="text-sm font-semibold flex items-center gap-1">
               View full path <ChevronRight size={14} />
             </button>
           </div>
@@ -628,7 +657,7 @@ function Dashboard({ name, onOpenPath, onOpenTraining }) {
                 <div className="flex items-center gap-3 min-w-0">
                   {t.status === "completed"
                     ? <CheckCircle2 size={16} color={C.success} className="shrink-0" />
-                    : <Circle size={16} color={C.violet500} className="shrink-0" />}
+                    : <Circle size={16} color={C.green500} className="shrink-0" />}
                   <div className="min-w-0">
                     <p style={{ color: C.ink }} className="text-sm font-semibold truncate">{t.title}</p>
                     <p style={{ color: C.sub }} className="text-xs">
@@ -661,6 +690,22 @@ function Dashboard({ name, onOpenPath, onOpenTraining }) {
         </div>
       )}
 
+      {!loading && !error && trainings.length > 0 && (
+        <div style={{ background: C.green700 }}
+          className="rounded-2xl p-6 mt-8 flex items-center justify-between gap-6 text-white">
+          <div>
+            <h3 style={{ ...display }} className="text-lg font-bold mb-1">Keep going</h3>
+            <p className="text-sm opacity-90">
+              The full roadmap shows every module ahead, in order, with what's already done.
+            </p>
+          </div>
+          <button onClick={onOpenPath} style={{ color: C.green700 }}
+            className="bg-white px-4 py-2 rounded-xl text-sm font-semibold hover:opacity-90 shrink-0">
+            View full path
+          </button>
+        </div>
+      )}
+
       <div className="mt-8"><FocusSession /></div>
     </div>
   );
@@ -681,7 +726,7 @@ const EXAMPLE_TRAININGS = [
 const ROADMAP_STATUS_STYLE = {
   completed: { fg: C.success, bg: C.successBg, ring: C.success, Icon: CheckCircle2 },
   "in-progress": { fg: C.amber, bg: C.amberBg, ring: C.amber, Icon: BookOpen },
-  "not-started": { fg: C.violet700, bg: C.lavender, ring: C.violet500, Icon: Circle },
+  "not-started": { fg: C.green700, bg: C.mint, ring: C.green500, Icon: Circle },
   locked: { fg: "#9A93A8", bg: "#F1F0F3", ring: "#C7C2D6", Icon: Lock },
 };
 
@@ -819,7 +864,7 @@ function TrainingDetail({ training, onBack, onStartDiagnostic, onOpenModule, onS
       {path && !path.diagnostic.completed && (
         <div style={{ borderColor: C.line }} className="border rounded-lg p-5 bg-white mb-6">
           <div className="flex items-start gap-3">
-            <Target size={18} color={C.violet700} className="shrink-0 mt-0.5" />
+            <Target size={18} color={C.green700} className="shrink-0 mt-0.5" />
             <div className="min-w-0 flex-1">
               <h2 style={{ ...display, color: C.ink }} className="text-sm font-bold mb-1">Start with a diagnostic</h2>
               <p style={{ color: C.sub }} className="text-sm mb-4">
@@ -851,7 +896,7 @@ function TrainingDetail({ training, onBack, onStartDiagnostic, onOpenModule, onS
                   className="w-full border rounded-lg p-4 flex items-center gap-3 bg-white text-left disabled:cursor-not-allowed">
                   {passed ? <CheckCircle2 size={17} color={C.success} className="shrink-0" />
                     : locked ? <Lock size={16} color={C.sub} className="shrink-0" />
-                      : <Circle size={17} color={needsReview ? C.amber : C.violet700} className="shrink-0" />}
+                      : <Circle size={17} color={needsReview ? C.amber : C.green700} className="shrink-0" />}
                   <div className="min-w-0 flex-1">
                     <p style={{ color: C.ink }} className="text-sm font-semibold">
                       {module.pathwayOrder}. {module.title || module.topic}
@@ -914,7 +959,7 @@ function LessonScreen({ training, module, onContinue, onBack }) {
       <div className="flex items-center justify-between gap-3 mb-1">
         <h1 style={{ ...display, color: C.ink }} className="text-xl font-bold min-w-0">{module.title || module.topic}</h1>
         {data && (
-          <span style={{ color: C.sub, background: C.lavender }} className="text-xs font-semibold px-2.5 py-1 rounded-full flex items-center gap-1 shrink-0">
+          <span style={{ color: C.sub, background: C.mint }} className="text-xs font-semibold px-2.5 py-1 rounded-full flex items-center gap-1 shrink-0">
             <Clock size={12} /> {data.readTime}
           </span>
         )}
@@ -940,7 +985,7 @@ function LessonScreen({ training, module, onContinue, onBack }) {
                 <p style={{ color: C.sub }} className="text-sm leading-relaxed">{s.body}</p>
                 {s.sourceUrl && (
                   <a href={s.sourceUrl} target="_blank" rel="noopener noreferrer"
-                    style={{ color: C.violet700 }} className="text-xs font-semibold mt-1 inline-block">
+                    style={{ color: C.green700 }} className="text-xs font-semibold mt-1 inline-block">
                     Source ↗
                   </a>
                 )}
@@ -985,8 +1030,8 @@ function QuizPreScreen({ training, assessment, onStart, onBack, starting, error 
         <ArrowLeft size={14} /> Back
       </button>
       <div style={{ borderColor: C.line }} className="border rounded-2xl p-8 bg-white text-center">
-        <div style={{ background: C.lavender }} className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-4">
-          <Clock size={22} color={C.violet700} />
+        <div style={{ background: C.mint }} className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-4">
+          <Clock size={22} color={C.green700} />
         </div>
         <h1 style={{ ...display, color: C.ink }} className="text-xl font-bold mb-2">{title}</h1>
         <p style={{ color: C.sub }} className="text-sm mb-2">{detail}</p>
@@ -1086,7 +1131,7 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
       return {
         state: "default",
         selected,
-        style: { borderColor: selected ? C.violet700 : C.line, background: selected ? C.lavender : "#fff", color: C.ink },
+        style: { borderColor: selected ? C.green700 : C.line, background: selected ? C.mint : "#fff", color: C.ink },
       };
     }
     const isRight = (verdict.correctOptionIds || []).includes(optionId);
@@ -1109,7 +1154,7 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
         </span>
       </div>
       <div style={{ background: C.line }} className="w-full h-1.5 rounded-full overflow-hidden mb-6">
-        <div style={{ width: `${((answeredCount) / quiz.questionTarget) * 100}%`, background: C.violet700 }}
+        <div style={{ width: `${((answeredCount) / quiz.questionTarget) * 100}%`, background: C.green700 }}
           className="h-full rounded-full transition-all" />
       </div>
 
@@ -1126,7 +1171,7 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
           <ProvenanceBadge provenance={verdict?.provenance} sourceTitle={verdict?.sourceTitle} />
         </div>
         <div className="flex items-center gap-2 mb-3">
-          <span style={{ background: C.lavender, color: C.violet700 }} className="text-[11px] font-semibold px-2 py-0.5 rounded-full">{q.topic}</span>
+          <span style={{ background: C.mint, color: C.green700 }} className="text-[11px] font-semibold px-2 py-0.5 rounded-full">{q.topic}</span>
           <span style={{ borderColor: C.line, color: C.sub }} className="text-[11px] font-semibold px-2 py-0.5 rounded-full border">{q.difficulty}</span>
         </div>
 
@@ -1160,8 +1205,8 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
                   className="w-full text-left border rounded-lg px-3 py-2.5 text-sm flex items-center gap-2"
                 >
                   <span style={{
-                    borderColor: state === "correct" ? C.success : state === "incorrect" ? C.danger : selected ? C.violet700 : "#C9C2DB",
-                    background: state === "correct" ? C.success : state === "incorrect" ? C.danger : selected ? C.violet700 : "transparent",
+                    borderColor: state === "correct" ? C.success : state === "incorrect" ? C.danger : selected ? C.green700 : "#C9C2DB",
+                    background: state === "correct" ? C.success : state === "incorrect" ? C.danger : selected ? C.green700 : "transparent",
                     borderRadius: isMulti ? 4 : 999,
                   }} className="w-4 h-4 border-2 shrink-0 flex items-center justify-center">
                     {state === "correct" ? <CheckCircle2 size={11} color="#fff" />
@@ -1292,7 +1337,7 @@ function QuizResults({ result, onRetake, onDone }) {
                 className="text-xs font-semibold px-2.5 py-1 rounded-full">
                 {r.correct ? "Correct" : "Incorrect"}
               </span>
-              <span style={{ background: C.lavender, color: C.violet700 }} className="text-[11px] font-semibold px-2 py-0.5 rounded-full">{r.topic}</span>
+              <span style={{ background: C.mint, color: C.green700 }} className="text-[11px] font-semibold px-2 py-0.5 rounded-full">{r.topic}</span>
               <span className="flex-1" />
               <ProvenanceBadge provenance={r.provenance} sourceTitle={r.sourceTitle} />
             </div>
@@ -1396,7 +1441,7 @@ function Certificates() {
             )}
             {c.certificateUrl ? (
               <button onClick={() => download(c)} disabled={downloading === c.certificateId}
-                style={{ color: C.violet700 }} className="text-xs font-semibold mt-3 flex items-center gap-1.5 disabled:opacity-60">
+                style={{ color: C.green700 }} className="text-xs font-semibold mt-3 flex items-center gap-1.5 disabled:opacity-60">
                 {downloading === c.certificateId
                   ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
                 Download PDF
@@ -1458,7 +1503,7 @@ function RoleManager({ roles, onChanged }) {
           </p>
           <div className="flex flex-wrap gap-2 mb-3">
             {roles.map((r) => (
-              <span key={r.role_code} style={{ background: C.lavender, color: C.violet700 }}
+              <span key={r.role_code} style={{ background: C.mint, color: C.green700 }}
                 className="text-xs font-semibold px-2.5 py-1 rounded-full flex items-center gap-1.5">
                 {r.title}
                 <button onClick={() => remove(r.role_code)} title="Remove role"><X size={11} /></button>
@@ -1617,7 +1662,7 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
   };
 
   return (
-    <div style={{ borderColor: C.violet300 }} className="border-2 rounded-xl p-5 bg-white mb-5">
+    <div style={{ borderColor: C.green300 }} className="border-2 rounded-xl p-5 bg-white mb-5">
       <h3 style={{ ...display, color: C.ink }} className="font-bold mb-1">Confirm who trains on what</h3>
       <p style={{ color: C.sub }} className="text-xs mb-1">
         The AI read “{analysis.title}” and proposed this. Nothing is generated until you confirm.
@@ -1695,7 +1740,7 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
       </div>
 
       {newRoles.length > 0 && (
-        <p style={{ color: C.violet700 }} className="text-xs font-semibold mb-3">
+        <p style={{ color: C.green700 }} className="text-xs font-semibold mb-3">
           Will be added to the company list: {newRoles.map((r) => r.title).join(", ")}
         </p>
       )}
@@ -1785,11 +1830,11 @@ function DocumentsScreen({ team, principal, onDone }) {
 
       <RoleManager roles={roles} onChanged={rolesQ.reload} />
 
-      <div style={{ background: billed ? C.amberBg : C.lavender, borderColor: billed ? C.amber : C.line }}
+      <div style={{ background: billed ? C.amberBg : C.mint, borderColor: billed ? C.amber : C.line }}
         className="border rounded-xl px-4 py-3 mb-5 flex items-start gap-2.5">
-        <AlertCircle size={16} color={billed ? C.amber : C.violet700} className="shrink-0 mt-0.5" />
+        <AlertCircle size={16} color={billed ? C.amber : C.green700} className="shrink-0 mt-0.5" />
         <div>
-          <p style={{ color: billed ? C.amber : C.violet700 }} className="text-sm font-semibold">
+          <p style={{ color: billed ? C.amber : C.green700 }} className="text-sm font-semibold">
             Role mapping uses gpt-5 (a few cents per upload).
             {billed ? ` Question generation also uses ${generator} — billed.` : " Question generation is on the free mock provider."}
           </p>
@@ -1801,13 +1846,13 @@ function DocumentsScreen({ team, principal, onDone }) {
         onDragLeave={() => setDragging(false)}
         onDrop={(e) => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files); }}
         onClick={() => fileRef.current?.click()}
-        style={{ borderColor: dragging ? C.violet700 : C.line, background: dragging ? C.lavender : "#fff" }}
+        style={{ borderColor: dragging ? C.green700 : C.line, background: dragging ? C.mint : "#fff" }}
         className="border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition-colors mb-5"
       >
         <input ref={fileRef} type="file" accept=".pdf,.txt,.md" className="hidden"
           onChange={(e) => handleFiles(e.target.files)} />
-        <div style={{ background: C.lavender }} className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-3">
-          {uploading ? <Loader2 size={20} color={C.violet700} className="animate-spin" /> : <Upload size={20} color={C.violet700} />}
+        <div style={{ background: C.mint }} className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-3">
+          {uploading ? <Loader2 size={20} color={C.green700} className="animate-spin" /> : <Upload size={20} color={C.green700} />}
         </div>
         <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">
           {uploading ? "Reading and mapping roles… (~10-30s)" : "Drop a PDF here, or click to choose"}
@@ -1847,7 +1892,7 @@ function DocumentsScreen({ team, principal, onDone }) {
           <div style={{ background: C.line }} className="w-full h-2 rounded-full overflow-hidden mb-2">
             <div style={{
               width: `${job.state === "done" ? 100 : pct}%`,
-              background: job.state === "error" ? C.danger : C.violet700,
+              background: job.state === "error" ? C.danger : C.green700,
             }} className="h-full rounded-full transition-all" />
           </div>
           <p style={{ color: job.state === "error" ? C.danger : C.sub }} className="text-xs">{job.message}</p>
@@ -1859,7 +1904,7 @@ function DocumentsScreen({ team, principal, onDone }) {
 
       <div className="flex items-center justify-between mb-3">
         <h3 style={{ ...display, color: C.ink }} className="font-bold">Documents in the bank</h3>
-        <button onClick={reload} style={{ color: C.violet700 }} className="text-xs font-semibold flex items-center gap-1">
+        <button onClick={reload} style={{ color: C.green700 }} className="text-xs font-semibold flex items-center gap-1">
           <RefreshCw size={12} /> Refresh
         </button>
       </div>
@@ -1888,7 +1933,7 @@ function DocumentsScreen({ team, principal, onDone }) {
 
       <div className="flex items-center justify-between mb-3 mt-8">
         <h3 style={{ ...display, color: C.ink }} className="font-bold">Trusted links</h3>
-        <button onClick={linksQ.reload} style={{ color: C.violet700 }} className="text-xs font-semibold flex items-center gap-1">
+        <button onClick={linksQ.reload} style={{ color: C.green700 }} className="text-xs font-semibold flex items-center gap-1">
           <RefreshCw size={12} /> Refresh
         </button>
       </div>
@@ -1934,7 +1979,7 @@ function ReportsToCard({ manager }) {
   if (!manager) return null;
   return (
     <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white flex items-center gap-3 mb-6">
-      <div style={{ background: C.lavender, color: C.violet700 }}
+      <div style={{ background: C.mint, color: C.green700 }}
         className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold shrink-0">
         {manager.name.split(" ").map((p) => p[0]).join("")}
       </div>
@@ -2059,7 +2104,7 @@ function ReminderCell({ employeeId }) {
     }
   };
 
-  if (state === "sending") return <Loader2 size={14} className="animate-spin" color={C.violet700} />;
+  if (state === "sending") return <Loader2 size={14} className="animate-spin" color={C.green700} />;
   if (state === "done") {
     return (
       <span style={{ color: C.sub }} className="text-xs whitespace-nowrap" title={note.full}>
@@ -2070,7 +2115,7 @@ function ReminderCell({ employeeId }) {
   return (
     <button
       onClick={send}
-      style={{ background: C.violet700, color: "#fff" }}
+      style={{ background: C.green700, color: "#fff" }}
       className="opacity-0 group-hover:opacity-100 transition-opacity text-xs font-semibold px-3 py-1.5 rounded-full inline-flex items-center gap-1.5 whitespace-nowrap"
     >
       <Send size={12} /> Send reminder
@@ -2138,7 +2183,7 @@ function ManagerTeam({ team }) {
                 className="text-sm outline-none w-32 bg-transparent"
               />
             </div>
-            <button onClick={() => downloadTeamCsv(rows, showTeamSize)} style={{ color: C.violet700 }}
+            <button onClick={() => downloadTeamCsv(rows, showTeamSize)} style={{ color: C.green700 }}
               className="text-sm font-semibold flex items-center gap-1.5 whitespace-nowrap">
               <Download size={14} /> CSV file
             </button>
@@ -2147,7 +2192,7 @@ function ManagerTeam({ team }) {
 
         <table className="w-full text-sm">
           <thead>
-            <tr style={{ background: C.lavender, color: C.violet700 }} className="text-left text-xs uppercase tracking-wide">
+            <tr style={{ background: C.mint, color: C.green700 }} className="text-left text-xs uppercase tracking-wide">
               <th className="px-5 py-3 font-semibold whitespace-nowrap">Name</th>
               {showTeamSize && <th className="px-5 py-3 font-semibold whitespace-nowrap">Team size</th>}
               <th className="px-5 py-3 font-semibold whitespace-nowrap">Incomplete</th>
@@ -2192,9 +2237,9 @@ function ManagerTeam({ team }) {
           <div className="flex flex-wrap gap-2">
             {targets.map((t) => (
               <span key={t.roleCode}
-                    style={{ borderColor: t.direct ? C.violet700 : C.line,
-                             color: t.direct ? C.violet700 : C.sub,
-                             background: t.direct ? C.lavender : "#fff" }}
+                    style={{ borderColor: t.direct ? C.green700 : C.line,
+                             color: t.direct ? C.green700 : C.sub,
+                             background: t.direct ? C.mint : "#fff" }}
                     className="border rounded-full px-3 py-1 text-xs font-semibold">
                 {t.title} · {t.headcount}
               </span>
@@ -2222,38 +2267,38 @@ function PetCreature({ stageIdx, size }) {
   return (
     <svg width={s} height={s} viewBox={`0 0 ${s} ${s}`}>
       {stageIdx >= 4 && (
-        <ellipse cx={cx} cy={cy} rx={bodyR * 1.55} ry={bodyR * 0.5} fill="none" stroke={C.violet300} strokeWidth="2" opacity="0.7" />
+        <ellipse cx={cx} cy={cy} rx={bodyR * 1.55} ry={bodyR * 0.5} fill="none" stroke={C.green300} strokeWidth="2" opacity="0.7" />
       )}
 
       {stageIdx >= 3 && (
         <>
           <ellipse cx={cx - bodyR * 1.05} cy={cy} rx={bodyR * 0.5} ry={bodyR * 0.72}
-            fill={C.lavender} stroke={C.violet500} strokeWidth="1.5" transform={`rotate(-18 ${cx - bodyR} ${cy})`} />
+            fill={C.mint} stroke={C.green500} strokeWidth="1.5" transform={`rotate(-18 ${cx - bodyR} ${cy})`} />
           <ellipse cx={cx + bodyR * 1.05} cy={cy} rx={bodyR * 0.5} ry={bodyR * 0.72}
-            fill={C.lavender} stroke={C.violet500} strokeWidth="1.5" transform={`rotate(18 ${cx + bodyR} ${cy})`} />
+            fill={C.mint} stroke={C.green500} strokeWidth="1.5" transform={`rotate(18 ${cx + bodyR} ${cy})`} />
         </>
       )}
 
       {stageIdx >= 2 && [-1, 0, 1].map((i) => (
         <polygon key={i}
           points={`${cx + i * bodyR * 0.42},${cy - bodyR * 0.95} ${cx + i * bodyR * 0.42 - 5},${cy - bodyR * 0.55} ${cx + i * bodyR * 0.42 + 5},${cy - bodyR * 0.55}`}
-          fill={C.violet500} />
+          fill={C.green500} />
       ))}
 
       {stageIdx >= 1 && (
         <>
           <ellipse cx={cx - bodyR * 0.72} cy={cy - bodyR * 0.85} rx={bodyR * 0.24} ry={bodyR * 0.34}
-            fill={C.violet600} transform={`rotate(-25 ${cx - bodyR * 0.72} ${cy - bodyR * 0.85})`} />
+            fill={C.green600} transform={`rotate(-25 ${cx - bodyR * 0.72} ${cy - bodyR * 0.85})`} />
           <ellipse cx={cx + bodyR * 0.72} cy={cy - bodyR * 0.85} rx={bodyR * 0.24} ry={bodyR * 0.34}
-            fill={C.violet600} transform={`rotate(25 ${cx + bodyR * 0.72} ${cy - bodyR * 0.85})`} />
+            fill={C.green600} transform={`rotate(25 ${cx + bodyR * 0.72} ${cy - bodyR * 0.85})`} />
         </>
       )}
 
       <path d={`M ${cx + bodyR * 0.48} ${cy + bodyR * 0.58} L ${cx + bodyR * 1.02} ${cy + bodyR * 1.12}`}
-        stroke={C.violet900} strokeWidth={Math.max(2.5, bodyR * 0.16)} strokeLinecap="round" />
+        stroke={C.green900} strokeWidth={Math.max(2.5, bodyR * 0.16)} strokeLinecap="round" />
 
-      <circle cx={cx} cy={cy} r={bodyR} fill={C.violet600} />
-      <ellipse cx={cx} cy={cy + bodyR * 0.32} rx={bodyR * 0.62} ry={bodyR * 0.42} fill={C.lavender} opacity="0.85" />
+      <circle cx={cx} cy={cy} r={bodyR} fill={C.green600} />
+      <ellipse cx={cx} cy={cy + bodyR * 0.32} rx={bodyR * 0.62} ry={bodyR * 0.42} fill={C.mint} opacity="0.85" />
 
       <circle cx={cx - bodyR * 0.32} cy={cy - bodyR * 0.05} r={bodyR * 0.15} fill="#fff" />
       <circle cx={cx + bodyR * 0.32} cy={cy - bodyR * 0.05} r={bodyR * 0.15} fill="#fff" />
@@ -2263,13 +2308,13 @@ function PetCreature({ stageIdx, size }) {
       <path d={`M ${cx - bodyR * 0.2} ${cy + bodyR * 0.28} Q ${cx} ${cy + bodyR * 0.42} ${cx + bodyR * 0.2} ${cy + bodyR * 0.28}`}
         fill="none" stroke={C.ink} strokeWidth={Math.max(1.5, bodyR * 0.05)} strokeLinecap="round" />
 
-      <circle cx={cx - bodyR * 0.55} cy={cy + bodyR * 0.15} r={bodyR * 0.12} fill={C.violet300} opacity="0.6" />
-      <circle cx={cx + bodyR * 0.55} cy={cy + bodyR * 0.15} r={bodyR * 0.12} fill={C.violet300} opacity="0.6" />
+      <circle cx={cx - bodyR * 0.55} cy={cy + bodyR * 0.15} r={bodyR * 0.12} fill={C.green300} opacity="0.6" />
+      <circle cx={cx + bodyR * 0.55} cy={cy + bodyR * 0.15} r={bodyR * 0.12} fill={C.green300} opacity="0.6" />
 
       {stageIdx >= 5 && (
         <polygon
           points={`${cx - bodyR * 0.5},${cy - bodyR * 0.95} ${cx - bodyR * 0.28},${cy - bodyR * 1.25} ${cx},${cy - bodyR * 0.98} ${cx + bodyR * 0.28},${cy - bodyR * 1.25} ${cx + bodyR * 0.5},${cy - bodyR * 0.95}`}
-          fill={C.violet500} stroke={C.violet900} strokeWidth="1" strokeLinejoin="round" />
+          fill={C.green500} stroke={C.green900} strokeWidth="1" strokeLinejoin="round" />
       )}
     </svg>
   );
@@ -2300,7 +2345,7 @@ function TeamHabitat({ members, highlightName }) {
 
   return (
     <div>
-      <div style={{ borderColor: C.line, background: C.lavender }} className="border rounded-2xl p-3 overflow-hidden">
+      <div style={{ borderColor: C.line, background: C.mint }} className="border rounded-2xl p-3 overflow-hidden">
         <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ display: "block" }}>
           <style>{`
             @keyframes qhub-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 0.95; } }
@@ -2310,17 +2355,17 @@ function TeamHabitat({ members, highlightName }) {
           {n >= 3 && nodes.map((nd, i) => {
             const nxt = nodes[(i + 1) % n];
             return <line key={`edge-${i}`} x1={nd.pos.x} y1={nd.pos.y} x2={nxt.pos.x} y2={nxt.pos.y}
-              stroke={C.violet300} strokeWidth="1.5" strokeDasharray="3 5" opacity="0.5" />;
+              stroke={C.green300} strokeWidth="1.5" strokeDasharray="3 5" opacity="0.5" />;
           })}
 
           {nodes.map((nd, i) => {
             const isSelected = selected === nd.name;
             return <line key={`spoke-${i}`} x1={cx} y1={cy} x2={nd.pos.x} y2={nd.pos.y}
-              stroke={isSelected ? C.violet700 : C.violet300} strokeWidth={isSelected ? 2.5 : 1.5} opacity={isSelected ? 0.9 : 0.45} />;
+              stroke={isSelected ? C.green700 : C.green300} strokeWidth={isSelected ? 2.5 : 1.5} opacity={isSelected ? 0.9 : 0.45} />;
           })}
 
-          <circle cx={cx} cy={cy} r="28" fill={C.violet700} className="qhub-pulse" />
-          <circle cx={cx} cy={cy} r="28" fill="none" stroke={C.violet300} strokeWidth="1.5" />
+          <circle cx={cx} cy={cy} r="28" fill={C.green700} className="qhub-pulse" />
+          <circle cx={cx} cy={cy} r="28" fill="none" stroke={C.green300} strokeWidth="1.5" />
           <text x={cx} y={cy + 6} textAnchor="middle" fill="#fff" fontSize="17" fontWeight="700" fontFamily="Fraunces, serif">Q</text>
 
           {nodes.map((nd) => {
@@ -2329,7 +2374,7 @@ function TeamHabitat({ members, highlightName }) {
             return (
               <g key={nd.name} onClick={() => setSelected(isSelected ? null : nd.name)} style={{ cursor: "pointer" }}>
                 <circle cx={nd.pos.x} cy={nd.pos.y} r={nd.size / 2 + 9}
-                  fill="#fff" stroke={isYou ? C.violet700 : isSelected ? C.violet500 : C.line}
+                  fill="#fff" stroke={isYou ? C.green700 : isSelected ? C.green500 : C.line}
                   strokeWidth={isYou || isSelected ? 2.5 : 1.5} />
                 <svg x={nd.pos.x - nd.size / 2} y={nd.pos.y - nd.size / 2} width={nd.size} height={nd.size} viewBox={`0 0 ${nd.size} ${nd.size}`}>
                   <PetCreature stageIdx={nd.stageIdx} size={nd.size} />
@@ -2337,7 +2382,7 @@ function TeamHabitat({ members, highlightName }) {
                 <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 19} textAnchor="middle" fill={C.ink} fontSize="11" fontWeight="700" fontFamily="'IBM Plex Sans', sans-serif">
                   {nd.name.split(" ")[0]}{isYou ? " (you)" : ""}
                 </text>
-                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 32} textAnchor="middle" fill={C.violet700} fontSize="9" fontWeight="600" fontFamily="'IBM Plex Sans', sans-serif">
+                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 32} textAnchor="middle" fill={C.green700} fontSize="9" fontWeight="600" fontFamily="'IBM Plex Sans', sans-serif">
                   Lv {nd.stage.level} · {nd.stage.name}
                 </text>
               </g>
@@ -2348,7 +2393,7 @@ function TeamHabitat({ members, highlightName }) {
 
       {selectedNode ? (
         <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white mt-4 flex items-center gap-4">
-          <div className="rounded-xl flex items-center justify-center shrink-0" style={{ width: 60, height: 60, background: C.lavender }}>
+          <div className="rounded-xl flex items-center justify-center shrink-0" style={{ width: 60, height: 60, background: C.mint }}>
             <PetCreature stageIdx={selectedNode.stageIdx} size={44} />
           </div>
           <div>
@@ -2446,18 +2491,18 @@ function CompanionCard({ trainingsCompleted, name, qScore }) {
       <div className="flex items-center justify-between mb-4">
         <h3 style={{ ...display, color: C.ink }} className="font-bold">Your Q character</h3>
         <div className="flex items-center gap-2">
-          <button onClick={() => setShowShare(true)} style={{ borderColor: C.line, color: C.violet700 }}
+          <button onClick={() => setShowShare(true)} style={{ borderColor: C.line, color: C.green700 }}
             className="border text-xs font-semibold px-3 py-1.5 rounded-full flex items-center gap-1.5">
             <Share2 size={12} /> Share
           </button>
-          <span style={{ background: C.lavender, color: C.violet700 }} className="text-xs font-semibold px-2.5 py-1 rounded-full">
+          <span style={{ background: C.mint, color: C.green700 }} className="text-xs font-semibold px-2.5 py-1 rounded-full">
             Level {stage.level}
           </span>
         </div>
       </div>
 
       <div className="flex items-center gap-6 mb-5 flex-wrap">
-        <div className="rounded-2xl flex items-center justify-center shrink-0" style={{ width: 160, height: 160, background: C.lavender }}>
+        <div className="rounded-2xl flex items-center justify-center shrink-0" style={{ width: 160, height: 160, background: C.mint }}>
           <PetCreature stageIdx={stageIdx} size={stage.size} />
         </div>
         <div className="flex-1 min-w-[200px]">
@@ -2474,11 +2519,11 @@ function CompanionCard({ trainingsCompleted, name, qScore }) {
                 <span style={{ color: C.sub }} className="text-xs font-semibold">{progressPct}%</span>
               </div>
               <div style={{ background: C.line }} className="w-full h-2.5 rounded-full overflow-hidden">
-                <div style={{ width: `${progressPct}%`, background: C.violet700 }} className="h-full rounded-full transition-all" />
+                <div style={{ width: `${progressPct}%`, background: C.green700 }} className="h-full rounded-full transition-all" />
               </div>
             </>
           ) : (
-            <p style={{ color: C.violet700 }} className="text-xs font-semibold flex items-center gap-1.5">
+            <p style={{ color: C.green700 }} className="text-xs font-semibold flex items-center gap-1.5">
               <Trophy size={13} /> Max level reached — {stage.name} is fully grown
             </p>
           )}
@@ -2492,13 +2537,13 @@ function CompanionCard({ trainingsCompleted, name, qScore }) {
           return (
             <React.Fragment key={st.level}>
               <div className="flex flex-col items-center" style={{ width: 56 }}>
-                <div style={{ background: reached ? C.violet700 : "#F1F0F3", color: reached ? "#fff" : "#9A93A8" }}
+                <div style={{ background: reached ? C.green700 : "#F1F0F3", color: reached ? "#fff" : "#9A93A8" }}
                   className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0">
                   {reached ? (i === stageIdx ? st.level : <CheckCircle2 size={14} />) : <Lock size={11} />}
                 </div>
                 <span style={{ color: reached ? C.ink : C.sub }} className="text-[10px] font-semibold mt-1 text-center leading-tight">{st.name}</span>
               </div>
-              {!isLast && <div style={{ background: i < stageIdx ? C.violet700 : C.line }} className="flex-1 h-0.5 -mt-4" />}
+              {!isLast && <div style={{ background: i < stageIdx ? C.green700 : C.line }} className="flex-1 h-0.5 -mt-4" />}
             </React.Fragment>
           );
         })}
@@ -2531,13 +2576,13 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
       URL.revokeObjectURL(url);
       const a = document.createElement("a");
       a.href = canvas.toDataURL("image/png");
-      a.download = `${stage.name.toLowerCase()}-quizrant-card.png`;
+      a.download = `${stage.name.toLowerCase()}-ascend-card.png`;
       a.click();
     };
     img.src = url;
   };
 
-  const caption = `I just reached Level ${stage.level} with ${stage.name} on Quizrant! ${trainingsCompleted} trainings completed, Q Score ${qScore}.`;
+  const caption = `I just reached Level ${stage.level} with ${stage.name} on Ascend! ${trainingsCompleted} trainings completed, Q Score ${qScore}.`;
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(caption);
@@ -2556,29 +2601,29 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
 
         <div className="flex justify-center mb-4">
           <svg ref={svgRef} width="240" height="340" viewBox="0 0 240 340" xmlns="http://www.w3.org/2000/svg">
-            <rect x="0" y="0" width="240" height="340" rx="20" fill={C.violet900} />
-            <text x="20" y="32" fill="#fff" fontSize="13" fontWeight="700" fontFamily="Fraunces, serif" letterSpacing="1">QUIZRANT</text>
+            <rect x="0" y="0" width="240" height="340" rx="20" fill={C.green900} />
+            <text x="20" y="32" fill="#fff" fontSize="13" fontWeight="700" fontFamily="Fraunces, serif" letterSpacing="1">ASCEND</text>
             <svg x="45" y="52" width="150" height="150" viewBox="0 0 150 150">
               <PetCreature stageIdx={stageIdx} size={150} />
             </svg>
             <text x="120" y="228" textAnchor="middle" fill="#fff" fontSize="20" fontWeight="700" fontFamily="Fraunces, serif">{stage.name}</text>
-            <text x="120" y="250" textAnchor="middle" fill="#E4D7F7" fontSize="12" fontWeight="600" fontFamily="'IBM Plex Sans', sans-serif">Level {stage.level} · {name}</text>
+            <text x="120" y="250" textAnchor="middle" fill="#CFE9D9" fontSize="12" fontWeight="600" fontFamily="'IBM Plex Sans', sans-serif">Level {stage.level} · {name}</text>
             <line x1="30" y1="268" x2="210" y2="268" stroke="rgba(255,255,255,0.2)" />
             <text x="70" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="Fraunces, serif">{qScore}</text>
-            <text x="70" y="308" textAnchor="middle" fill="#C9AEF5" fontSize="9" fontFamily="'IBM Plex Sans', sans-serif">Q SCORE</text>
+            <text x="70" y="308" textAnchor="middle" fill="#A9DFC0" fontSize="9" fontFamily="'IBM Plex Sans', sans-serif">Q SCORE</text>
             <text x="170" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="Fraunces, serif">{trainingsCompleted}</text>
-            <text x="170" y="308" textAnchor="middle" fill="#C9AEF5" fontSize="9" fontFamily="'IBM Plex Sans', sans-serif">TRAININGS</text>
-            <text x="120" y="325" textAnchor="middle" fill="rgba(255,255,255,0.5)" fontSize="9" fontFamily="'IBM Plex Sans', sans-serif">quizrant.app</text>
+            <text x="170" y="308" textAnchor="middle" fill="#A9DFC0" fontSize="9" fontFamily="'IBM Plex Sans', sans-serif">TRAININGS</text>
+            <text x="120" y="325" textAnchor="middle" fill="rgba(255,255,255,0.5)" fontSize="9" fontFamily="'IBM Plex Sans', sans-serif">ascend.app</text>
           </svg>
         </div>
 
         <p style={{ color: C.sub }} className="text-xs text-center mb-4">Download the card, or copy a caption to post alongside a screenshot.</p>
 
         <div className="flex gap-2">
-          <button onClick={handleDownload} style={{ background: C.violet700 }} className="flex-1 flex items-center justify-center gap-1.5 text-white text-sm font-semibold rounded-xl py-2.5">
+          <button onClick={handleDownload} style={{ background: C.green700 }} className="flex-1 flex items-center justify-center gap-1.5 text-white text-sm font-semibold rounded-xl py-2.5">
             <Download size={14} /> Download
           </button>
-          <button onClick={handleCopy} style={{ borderColor: C.line, color: C.violet700 }} className="flex-1 border flex items-center justify-center gap-1.5 text-sm font-semibold rounded-xl py-2.5">
+          <button onClick={handleCopy} style={{ borderColor: C.line, color: C.green700 }} className="flex-1 border flex items-center justify-center gap-1.5 text-sm font-semibold rounded-xl py-2.5">
             <Copy size={14} /> {copied ? "Copied!" : "Copy caption"}
           </button>
         </div>
@@ -2643,7 +2688,7 @@ function Profile({ principal }) {
       {loading && <Loading />}
       {error && <ErrorBox error={error} onRetry={reload} />}
 
-      <div style={{ background: C.violet700 }}
+      <div style={{ background: C.green700 }}
         className="rounded-2xl p-6 mb-6 text-white flex items-center justify-between gap-6 flex-wrap">
         <div className="flex items-center gap-4">
           <div style={{ background: "rgba(255,255,255,0.15)" }} className="w-16 h-16 rounded-2xl flex items-center justify-center text-xl font-bold shrink-0">
@@ -2700,8 +2745,8 @@ function Profile({ principal }) {
 
       <div className="grid grid-cols-3 gap-4 mb-8">
         <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white flex items-center gap-3">
-          <div style={{ background: C.lavender }} className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0">
-            <Flame size={16} color={C.violet700} />
+          <div style={{ background: C.mint }} className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0">
+            <Flame size={16} color={C.green700} />
           </div>
           <div className="min-w-0">
             <p style={{ ...display, color: C.ink }} className="text-lg font-bold leading-tight">{streak}</p>
@@ -2742,7 +2787,7 @@ function Profile({ principal }) {
               </span>
             </div>
             <div style={{ background: C.line }} className="w-full h-2 rounded-full overflow-hidden">
-              <div style={{ width: `${b.accuracyPercent}%`, background: C.violet700 }} className="h-full rounded-full" />
+              <div style={{ width: `${b.accuracyPercent}%`, background: C.green700 }} className="h-full rounded-full" />
             </div>
           </div>
         ))}
@@ -2762,8 +2807,8 @@ function Profile({ principal }) {
                   <Lock size={11} color="#9A93A8" />
                 </div>
               )}
-              <div style={{ background: b.earned ? C.lavender : "#F1F0F3" }} className="w-10 h-10 rounded-xl flex items-center justify-center mb-3">
-                <Icon size={18} color={b.earned ? C.violet700 : "#9A93A8"} />
+              <div style={{ background: b.earned ? C.mint : "#F1F0F3" }} className="w-10 h-10 rounded-xl flex items-center justify-center mb-3">
+                <Icon size={18} color={b.earned ? C.green700 : "#9A93A8"} />
               </div>
               <p style={{ color: C.ink }} className="text-sm font-semibold mb-0.5">{b.title}</p>
               <p style={{ color: C.sub }} className="text-xs mb-2">{b.desc}</p>
@@ -2820,7 +2865,7 @@ export default function App() {
   if (restoring) {
     return (
       <div className="min-h-screen flex items-center justify-center"
-           style={{ ...font, background: "#F5F4F9" }}>
+           style={{ ...font, background: C.paper }}>
         <Logo size={36} />
       </div>
     );
