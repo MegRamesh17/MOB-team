@@ -937,8 +937,14 @@ class Handler(BaseHTTPRequestHandler):
                 for code in (q.role_code or "ALL").split(","):
                     counts[code.strip().upper()] = counts.get(code.strip().upper(), 0) + 1
         return self._send({
+            # team is always null here: there is no org-chart Teams table in the local
+            # SQLite schema to join against (see api/function_app.py's list_roles for
+            # the real lookup deployed uses). The upload screen's role picker already
+            # falls back to an ungrouped list when team is missing, so this is a
+            # shape-compatible no-op locally, not a bug.
             "roles": [
-                {**r, "questionCount": counts.get(r["role_code"], 0) + counts.get("ALL", 0)}
+                {**r, "questionCount": counts.get(r["role_code"], 0) + counts.get("ALL", 0),
+                 "team": None}
                 for r in roles
             ],
         })

@@ -1736,9 +1736,33 @@ def list_roles(req: func.HttpRequest) -> func.HttpResponse:
             for r in cur.fetchall():
                 counts[(r.role_code or "ALL").upper()] = r.n
 
+            # For grouping the upload screen's role picker by org-chart team, so
+            # someone whose reporting subtree spans several teams (a CTO over
+            # Cybersecurity, Software Engineering and DevOps, say) sees three groups
+            # instead of one flat list of every role_code mixed together. Best-effort:
+            # QuizgenRoles.role_code is a training track, not an org-chart foreign key,
+            # so a code with no matching org-chart Roles row (a manually-added role
+            # that was never mapped by role_codes.sql) just gets no team, and the
+            # picker falls back to showing it ungrouped rather than erroring.
+            cur.execute(
+                """SELECT r.role_code, t.name AS team_name
+                     FROM dbo.Roles r
+                     JOIN dbo.Teams t ON t.id = r.team_id
+                     JOIN dbo.Departments d ON d.id = t.department_id
+                    WHERE d.company_id = ? AND r.role_code IS NOT NULL""",
+                identity.company_id,
+            )
+            team_by_code: Dict[str, str] = {}
+            for r in cur.fetchall():
+                team_by_code.setdefault(r.role_code, r.team_name)
+
         return _json({
             "roles": [
-                {**r, "questionCount": counts.get(r["role_code"], 0) + counts.get("ALL", 0)}
+                {
+                    **r,
+                    "questionCount": counts.get(r["role_code"], 0) + counts.get("ALL", 0),
+                    "team": team_by_code.get(r["role_code"]),
+                }
                 for r in roles
             ],
         })
