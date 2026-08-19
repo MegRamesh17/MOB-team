@@ -32,7 +32,7 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import azure.functions as func
@@ -1030,6 +1030,18 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
             )
             certificates_by_doc = {row["doc_title"]: row for row in _rows(cur)}
 
+            # Reuses the same helper /qscore already reads its denominator from, so
+            # "required" here can never drift from what actually counts toward
+            # compliance -- one definition of required, not two that happen to agree
+            # today and quietly diverge later.
+            required_docs = {r["doc_title"] for r in _role_requirements(cur, role, identity.company_id)}
+
+            cur.execute(
+                "SELECT doc_title FROM dbo.EmployeeSkillInterest WHERE employee_id = ? AND company_id = ?",
+                identity.employee_id, identity.company_id,
+            )
+            interested_docs = {r["doc_title"] for r in _rows(cur)}
+
         rolled: Dict[str, Dict[str, int]] = {}
         for topic, row in by_topic.items():
             doc = topic_to_doc.get(topic, topic)
@@ -1063,11 +1075,158 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
                 "modules": modules.get(doc, []),
                 "compliant": bool(certificate),
                 "expiresAt": certificate.get("expires_at") if certificate else None,
-                "required": doc in required_titles,
+                "required": doc in required_docs,
+                # A required training is never ALSO "recommended" -- it's not optional
+                # enrichment for that person, it's already owed. Interest expressed in
+                # something that later became required (a manager made it mandatory
+                # after the fact) should read as Required, not both.
+                "recommended": doc in interested_docs and doc not in required_docs,
             })
         return _json({"trainings": out})
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
+
+
+# How long a "no new options" answer is honored before asking again. Not one-time: the
+# bank grows as managers upload more documents, and something uploaded last month is
+# worth surfacing to someone who declined before it existed. Not constant either --
+# re-asking every session about the same unchanged list is nagging, not recommending.
+# 21 days is a starting guess, easy to change; nothing else depends on this exact number.
+SKILL_PROMPT_COOLDOWN_DAYS = 21
+
+
+@app.route(route="skills/options", methods=["GET"])
+def skill_options(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Whether to show the "anything you'd like to learn" popup, and what it can offer.
+
+    Deliberately offers ONLY trainings that already exist and are already visible to
+    this employee's role -- same role_scope filter list_trainings uses. Nothing here
+    can recommend content the employee couldn't otherwise see, and nothing here can
+    trigger new generation: this is a pointer into the existing bank, not a request for
+    more of it. A document already required for their role, OR already accepted by this
+    employee in an earlier round, is excluded -- the first because owing it isn't a
+    choice, the second because it's already sitting under Recommended and re-offering an
+    already-accepted pick is confusing, not helpful.
+
+    Recurring, not one-time: skills_prompted_at is "last asked", not "ever asked". This
+    re-prompts after SKILL_PROMPT_COOLDOWN_DAYS, but ONLY if there is at least one option
+    left to offer -- a declined or fully-picked list does not nag on a timer with nothing
+    new to say. A newly-uploaded document becoming visible is what actually brings the
+    popup back, the cooldown just rate-limits how often that check happens.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    role = (identity.role_code or "ALL").upper()
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT skills_prompted_at FROM dbo.Employees WHERE id = ? AND company_id = ?",
+                identity.employee_id, identity.company_id,
+            )
+            row = cur.fetchone()
+            last_prompted = row.skills_prompted_at if row else None
+            cooldown_elapsed = (
+                last_prompted is None
+                or (datetime.now(timezone.utc) - last_prompted.replace(tzinfo=timezone.utc))
+                   >= timedelta(days=SKILL_PROMPT_COOLDOWN_DAYS)
+            )
+
+            cur.execute(
+                """SELECT DISTINCT source_doc_title AS doc_title
+                     FROM dbo.GeneratedQuestions q
+                     LEFT JOIN dbo.SourceChunks c ON c.chunk_id = q.source_chunk_id
+                    WHERE q.review_status = 'Approved'
+                      AND q.company_id = ?
+                      AND COALESCE(c.role_scope, 'ALL') IN ('ALL', ?)
+                      AND source_doc_title IS NOT NULL
+                    ORDER BY source_doc_title""",
+                identity.company_id, role,
+            )
+            visible_docs = [r["doc_title"] for r in _rows(cur)]
+
+            required_docs = {r["doc_title"] for r in _role_requirements(cur, role, identity.company_id)}
+
+            cur.execute(
+                "SELECT doc_title FROM dbo.EmployeeSkillInterest WHERE employee_id = ? AND company_id = ?",
+                identity.employee_id, identity.company_id,
+            )
+            already_picked = {r["doc_title"] for r in _rows(cur)}
+
+        options = [d for d in visible_docs if d not in required_docs and d not in already_picked]
+        show_prompt = cooldown_elapsed and len(options) > 0
+        return _json({"prompted": not show_prompt, "options": options if show_prompt else []})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="skills/interest", methods=["POST"])
+def set_skill_interest(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Records the popup's answer -- a chosen list of existing trainings, or an empty one
+    if the employee closed it without picking anything. Either way this is a ONE-TIME
+    answer: skills_prompted_at is set regardless of whether anything was picked, so the
+    popup never asks again. There is deliberately no "ask me later" -- respecting a
+    dismissal means respecting it, not nagging again next session.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+
+    skills = body.get("skills")
+    if not isinstance(skills, list):
+        return _error(400, "Bad request", "skills must be a list (empty if none chosen)")
+    chosen = sorted({str(s).strip() for s in skills if str(s).strip()})
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            role = (identity.role_code or "ALL").upper()
+            # Only ever record interest in something this employee could actually be
+            # shown -- a title submitted from a stale/tampered client request that
+            # isn't in their own visible+non-required set is silently dropped rather
+            # than trusted, same posture as the role-tagging checks elsewhere in this
+            # file that never take a client's word for what it's allowed to touch.
+            cur.execute(
+                """SELECT DISTINCT source_doc_title AS doc_title
+                     FROM dbo.GeneratedQuestions q
+                     LEFT JOIN dbo.SourceChunks c ON c.chunk_id = q.source_chunk_id
+                    WHERE q.review_status = 'Approved'
+                      AND q.company_id = ?
+                      AND COALESCE(c.role_scope, 'ALL') IN ('ALL', ?)
+                      AND source_doc_title IS NOT NULL""",
+                identity.company_id, role,
+            )
+            allowed = {r["doc_title"] for r in _rows(cur)}
+            required_docs = {r["doc_title"] for r in _role_requirements(cur, role, identity.company_id)}
+            valid = [s for s in chosen if s in allowed and s not in required_docs]
+
+            for doc_title in valid:
+                cur.execute(
+                    "IF NOT EXISTS (SELECT 1 FROM dbo.EmployeeSkillInterest "
+                    "               WHERE employee_id = ? AND doc_title = ?) "
+                    "INSERT INTO dbo.EmployeeSkillInterest (employee_id, company_id, doc_title) "
+                    "VALUES (?, ?, ?)",
+                    identity.employee_id, doc_title,
+                    identity.employee_id, identity.company_id, doc_title,
+                )
+
+            cur.execute(
+                "UPDATE dbo.Employees SET skills_prompted_at = SYSUTCDATETIME() "
+                "WHERE id = ? AND company_id = ?",
+                identity.employee_id, identity.company_id,
+            )
+            c.commit()
+        return _json({"recorded": valid})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
 
 
 def _sync_training_modules(cur, company_id: int, training: str) -> None:
@@ -3085,6 +3244,30 @@ def list_documents(req: func.HttpRequest) -> func.HttpResponse:
             )
             q_counts = {(r.source_doc_title or ""): r.n for r in cur.fetchall()}
 
+            # A running job survives here across a page reload or a tab switch, because
+            # it lives in the database, not in the browser tab that started it. Without
+            # this the frontend's job state was plain useState in DocumentsScreen --
+            # real, still-running generation on the server, but the progress bar
+            # vanished the moment that component unmounted, because nothing told a
+            # freshly-remounted one that a job existed to resume polling.
+            cur.execute(
+                """SELECT job_id, doc_title, total, done_count, message, created_at
+                     FROM dbo.GenerationJobs
+                    WHERE company_id = ? AND state = 'running'
+                    ORDER BY created_at DESC""",
+                identity.company_id,
+            )
+            active_jobs: Dict[str, Dict[str, Any]] = {}
+            for r in cur.fetchall():
+                # ORDER BY created_at DESC means the first row seen per doc_title is
+                # the most recent -- later rows for the same title (should not
+                # normally happen; nothing stops two jobs queuing for one document) are
+                # skipped rather than overwriting it.
+                active_jobs.setdefault(r.doc_title, {
+                    "jobId": r.job_id, "total": r.total, "done": r.done_count,
+                    "message": r.message,
+                })
+
         docs = [
             {
                 "title": title,
@@ -3092,6 +3275,7 @@ def list_documents(req: func.HttpRequest) -> func.HttpResponse:
                 "questions": q_counts.get(title, 0),
                 # Read but not yet generated from -- the UI offers to generate for these.
                 "ready": q_counts.get(title, 0) > 0,
+                "activeJob": active_jobs.get(title),
             }
             for title, count in sorted(chunk_counts.items())
         ]
