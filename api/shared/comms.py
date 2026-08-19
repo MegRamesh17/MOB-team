@@ -74,6 +74,37 @@ def send_expiry_email(
     )
 
 
+def send_manager_reminder_email(
+    to_email: str,
+    employee_name: str,
+    missing_titles: list,
+    expired_titles: list,
+    company_name: str,
+) -> None:
+    """
+    One on-demand nudge, sent when a manager clicks "Send reminder" on My Team.
+
+    Distinct from send_expiry_email (sent automatically, one per about-to-lapse
+    certificate, by the daily timer): this is manager-triggered and lists everything
+    currently outstanding -- never completed, and lapsed -- in one email, computed by
+    the caller (function_app.get_team_completion's sibling route) from that person's
+    real standing, never invented here.
+    """
+    items = "".join("<li>{} -- not yet completed</li>".format(t) for t in missing_titles)
+    items += "".join("<li>{} -- expired, needs retaking</li>".format(t) for t in expired_titles)
+    _send(
+        to_email,
+        subject="Reminder: required training outstanding",
+        html=(
+            "<p>Hi {},</p>"
+            "<p>Your manager sent a reminder about training still outstanding:</p>"
+            "<ul>{}</ul>"
+            "<p>Sign in to the training portal to catch up.</p>"
+        ).format(employee_name, items),
+        company_name=company_name,
+    )
+
+
 def send_new_training_email(
     to_email: str,
     employee_name: str,

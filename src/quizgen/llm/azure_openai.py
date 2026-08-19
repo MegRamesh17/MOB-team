@@ -84,7 +84,9 @@ _SCHEMA_HINT = """Return ONLY a JSON object of this exact shape:
         "options": [{"text": "...", "is_correct": true}]
       },
       "explanation": "why the answer is right, citing the passage",
-      "source_quote": "the exact sentence from the passage that supports the answer"
+      "source_quote": "the exact sentence from the passage that supports the answer",
+      "learning_point_id": "the supplied lp_ id this assesses",
+      "lesson_page_id": "the supplied page_ id that teaches that learning point"
     }
   ]
 }
@@ -101,7 +103,10 @@ Rules:
 - Keep at least half of each batch choice-based. Use PythonCode or PromptResponse only
   when that format genuinely fits the section; do not force it into policy recall.
 - source_quote: in grounded mode it MUST appear verbatim in the passage. In augmented
-  mode leave it empty when the answer comes from your own knowledge of the subject."""
+  mode leave it empty when the answer comes from your own knowledge of the subject.
+- When the passage contains tagged LEARNING_POINT and LESSON_PAGE ids, every question
+  must include one supplied learning_point_id and its matching lesson_page_id. Spread
+  the batch across the supplied learning points."""
 
 
 def _client():
@@ -160,7 +165,10 @@ class AzureOpenAIGenerator:
         difficulty: Optional[Difficulty] = None,
     ) -> List[Question]:
         want = "" if difficulty is None else " Target difficulty: {}.".format(difficulty.value)
-        augmented = CONFIG.generation_mode == "augmented"
+        augmented = (
+            CONFIG.generation_mode == "augmented"
+            and chunk.container != "generated-lessons"
+        )
         system = _SYSTEM_AUGMENTED if augmented else _SYSTEM_GROUNDED
         multiple_choice_minimum = max(1, count - 2)
         instruction = (
@@ -224,7 +232,10 @@ class AzureOpenAIGenerator:
         # the row between questions, leaving one with no correct answer at all.
         question_id = stable_id("q", chunk.chunk_id, prompt)
 
-        augmented = CONFIG.generation_mode == "augmented"
+        augmented = (
+            CONFIG.generation_mode == "augmented"
+            and chunk.container != "generated-lessons"
+        )
 
         # In grounded mode a quote that is not in the passage means the model drifted,
         # and the question is dropped. In augmented mode the model is expected to go
@@ -324,9 +335,22 @@ class AzureOpenAIGenerator:
         # servers" from the outline. The quote was real; the answer was not from it.
         from ..models import ProvenanceClass
 
-        provenance = (
-            ProvenanceClass.ROLE_KNOWLEDGE if augmented else ProvenanceClass.DOCUMENTED
-        )
+        if augmented:
+            provenance = ProvenanceClass.ROLE_KNOWLEDGE
+        elif chunk.source_type == "web":
+            provenance = ProvenanceClass.EXTERNAL
+        else:
+            provenance = ProvenanceClass.DOCUMENTED
+
+        learning_point_id = str(item.get("learning_point_id") or "").strip()
+        valid_point_ids = set(getattr(chunk, "learning_point_ids", []) or [])
+        if valid_point_ids and learning_point_id not in valid_point_ids:
+            return None
+        page_by_point = getattr(chunk, "lesson_page_by_learning_point", {}) or {}
+        lesson_page_id = str(item.get("lesson_page_id") or "").strip()
+        expected_page_id = page_by_point.get(learning_point_id, "")
+        if expected_page_id and lesson_page_id != expected_page_id:
+            lesson_page_id = expected_page_id
 
         return Question(
             provenance_class=provenance,
@@ -346,7 +370,12 @@ class AzureOpenAIGenerator:
             source_doc_title=chunk.doc_title,
             source_page=chunk.page_start,
             source_quote=quote,
+            source_url=chunk.source_url,
+            source_fetched_at=chunk.fetched_at,
             generator=self.name,
+            module_id=str(getattr(chunk, "module_id", "") or ""),
+            lesson_page_id=lesson_page_id,
+            learning_point_id=learning_point_id,
         )
 
 

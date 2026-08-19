@@ -121,10 +121,17 @@ export const lesson = (training, moduleId) => {
   const module = moduleId ? `&moduleId=${encodeURIComponent(moduleId)}` : "";
   return call(`/lesson?training=${encodeURIComponent(training)}${module}`);
 };
+export const completeLessonPage = ({ moduleId, pageId }) =>
+  call("/lesson/page/complete", { method: "POST", body: { moduleId, pageId } });
 export const certificates = () => call("/certificates");
 export const skillOptions = () => call("/skills/options");
 export const setSkillInterest = (skills) =>
   call("/skills/interest", { method: "POST", body: { skills } });
+
+/** This learner's own preferences. Real, persisted server-side -- not a local toggle. */
+export const getSettings = () => call("/settings");
+export const updateSettings = (notificationsEnabled) =>
+  call("/settings", { method: "POST", body: { notificationsEnabled } });
 
 export async function downloadCertificate(certificateUrl) {
   const url = certificateUrl.startsWith("http") ? certificateUrl : BASE + certificateUrl;
@@ -156,6 +163,22 @@ export const completePathwayAssessment = (attemptId) =>
 export const team = () => call("/team");
 
 /**
+ * Real coverage numbers (required/current/coverage/missing/expired/renewalDueCount) for
+ * everyone in your reporting subtree, keyed by employeeId. Join with team().people for
+ * name/email/reporting line -- this endpoint only knows completion, not identity.
+ */
+export const teamCompletion = () => call("/team/completion");
+
+/**
+ * Nudge one person in your reporting subtree about their outstanding training. Real
+ * endpoint, real computed missing/expired list -- whether it actually sends an email
+ * depends on RESEND_API_KEY being configured for this environment, reflected honestly
+ * in the response's `sent` flag rather than always claiming success.
+ */
+export const sendReminder = (employeeId) =>
+  call("/team/remind", { method: "POST", body: { employeeId } });
+
+/**
  * Q Score. Pass an email to read a report's — permitted only inside your reporting
  * subtree, and a 404 otherwise, so this cannot be used to discover who exists.
  */
@@ -180,6 +203,8 @@ export const submitQuiz = ({ attemptId, answers }) =>
 
 export const documents = () => call("/documents");
 export const jobStatus = (jobId) => call(`/jobs/${encodeURIComponent(jobId)}`);
+export const coursePreview = (training) =>
+  call(`/courses/preview?training=${encodeURIComponent(training)}`);
 
 /**
  * Upload a document. The server extracts it inline and returns straight away with the
@@ -223,8 +248,11 @@ export const trustedLinks = () => call("/links");
  * extraction/grounding/confirm-before-generate pipeline, so the same MappingReview
  * component that handles an upload's response handles this one unchanged.
  */
-export const addTrustedLink = ({ url, scope, roleCode }) =>
-  call("/links/add", { method: "POST", body: { url, scope, roleCode } });
+export const addTrustedLink = ({ url, scope, roleCode, crawl, maxPages }) =>
+  call("/links/add", {
+    method: "POST",
+    body: { url, scope, roleCode, crawl: crawl !== false, maxPages: maxPages || 25 },
+  });
 
 /**
  * The manager's decision on an upload: the confirmed section->role mapping, any

@@ -361,18 +361,23 @@ def ingest_document(path: Path) -> List[Chunk]:
     return _chunk_pages(pages, source_name=path.name, doc_title=_title_from(path, pages))
 
 
-def chunks_from_text(text: str, source_name: str) -> List[Chunk]:
+def chunks_from_text(text: str, source_name: str,
+                     doc_title: Optional[str] = None) -> List[Chunk]:
     """
     Chunk raw text that came from somewhere other than a local file — in practice, the
     output of src/pdf_extractor.py reading a PDF out of blob storage.
 
-    `source_name` is the blob name and becomes the document identity, so citations
-    ("Security Policy p.3") survive the trip through blob storage.
+    `source_name` becomes the stable source identity. `doc_title` can group several
+    independently sourced pages into one course while each page keeps its own identity.
     """
     pages = [clean_text(p) for p in (text.split("\f") if "\f" in text else [text])]
     if not any(p.strip() for p in pages):
         return []
-    return _chunk_pages(pages, source_name=source_name, doc_title=_title_from(Path(source_name), pages))
+    return _chunk_pages(
+        pages,
+        source_name=source_name,
+        doc_title=doc_title or _title_from(Path(source_name), pages),
+    )
 
 
 def _chunk_pages(pages: List[str], source_name: str, doc_title: str) -> List[Chunk]:

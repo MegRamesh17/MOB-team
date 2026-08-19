@@ -49,6 +49,9 @@ CREATE TABLE IF NOT EXISTS chunks (
     text        TEXT NOT NULL,
     container   TEXT NOT NULL DEFAULT '',
     role_scope  TEXT NOT NULL DEFAULT 'ALL',
+    source_type TEXT NOT NULL DEFAULT 'document',
+    source_url  TEXT,
+    fetched_at  TEXT,
     company_id  TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_chunks_scope ON chunks(role_scope);
@@ -65,6 +68,8 @@ CREATE TABLE IF NOT EXISTS questions (
     source_doc_title TEXT,
     source_page      INTEGER,
     source_quote     TEXT,
+    source_url       TEXT,
+    source_fetched_at TEXT,
     generator        TEXT,
     review_status    TEXT NOT NULL DEFAULT 'PendingReview',
     provenance_class TEXT NOT NULL DEFAULT 'Documented',
@@ -244,12 +249,19 @@ class Bank:
         # opened at all; rows still have to be re-tagged before they mean anything.
         tenant_column = ("company_id", "TEXT NOT NULL DEFAULT ''")
         additions = {
-            "chunks": [tenant_column],
+            "chunks": [
+                tenant_column,
+                ("source_type", "TEXT NOT NULL DEFAULT 'document'"),
+                ("source_url", "TEXT"),
+                ("fetched_at", "TEXT"),
+            ],
             "questions": [
                 tenant_column,
                 ("rubric_json", "TEXT"),
                 ("fallback_json", "TEXT"),
                 ("grading_version", "TEXT"),
+                ("source_url", "TEXT"),
+                ("source_fetched_at", "TEXT"),
             ],
             "attempts": [tenant_column],
             "responses": [tenant_column],
@@ -328,7 +340,8 @@ class Bank:
     def save_chunks(self, chunks: Iterable[Chunk]) -> int:
         rows = [
             (c.chunk_id, c.doc_id, c.doc_title, c.topic, c.section, c.page_start,
-             c.page_end, c.text, c.container, c.role_scope,
+             c.page_end, c.text, c.container, c.role_scope, c.source_type,
+             c.source_url or None, c.fetched_at or None,
              # The BANK's tenant, not the chunk's. A chunk carrying a
              # different company_id than the bank it is being written to is a
              # bug; taking the bank's value means it cannot silently land in
@@ -343,8 +356,8 @@ class Bank:
         self.conn.executemany(
             "INSERT OR REPLACE INTO chunks "
             "(chunk_id, doc_id, doc_title, topic, section, page_start, page_end, "
-            " text, container, role_scope, company_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows
+            " text, container, role_scope, source_type, source_url, fetched_at, company_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows
         )
         self.conn.commit()
         return len(rows)
@@ -357,6 +370,9 @@ class Bank:
                 page_end=r["page_end"], text=r["text"],
                 container=r["container"], role_scope=r["role_scope"],
                 company_id=r["company_id"],
+                source_type=r["source_type"] or "document",
+                source_url=r["source_url"] or "",
+                fetched_at=r["fetched_at"] or "",
             )
             for r in self.conn.execute(
                 "SELECT * FROM chunks WHERE 1=1" + self._where()
@@ -392,12 +408,13 @@ class Bank:
                 """INSERT INTO questions (question_id, topic, question_type, difficulty, prompt,
                                           explanation, points, source_chunk_id, source_doc_title,
                                           source_page, source_quote, generator, review_status,
+                                          source_url, source_fetched_at,
                                           provenance_class, role_code, role_requirement,
                                           rubric_json, fallback_json, grading_version,
                                           contradiction_notes,
                                           times_served, times_correct, created_at,
                                           company_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?)""",
                 (
                     q.question_id, q.topic, q.question_type.value, q.difficulty.value, q.prompt,
                     q.explanation, q.points, q.source_chunk_id, q.source_doc_title,
@@ -405,6 +422,7 @@ class Bank:
                     # Auto-approved when no reviewer is available; the mechanical
                     # checks in validators.py are then the only gate.
                     ReviewStatus.APPROVED.value if auto else q.review_status.value,
+                    q.source_url or None, q.source_fetched_at or None,
                     q.provenance_class.value, q.role_code, q.role_requirement,
                     q.rubric_json or None, q.fallback_json or None,
                     q.grading_version or None,
@@ -456,6 +474,8 @@ class Bank:
             source_doc_title=row["source_doc_title"] or "",
             source_page=row["source_page"] or 0,
             source_quote=row["source_quote"] or "",
+            source_url=row["source_url"] or "",
+            source_fetched_at=row["source_fetched_at"] or "",
             generator=row["generator"] or "",
             review_status=ReviewStatus(row["review_status"]),
             provenance_class=ProvenanceClass(row["provenance_class"] or "Documented"),

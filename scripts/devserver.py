@@ -400,6 +400,10 @@ class Handler(BaseHTTPRequestHandler):
 
             if route == "/api/team":
                 return self._team()
+            if route == "/api/team/completion":
+                return self._team_completion()
+            if route == "/api/settings":
+                return self._settings_get()
             if route == "/api/qscore":
                 return self._qscore(query)
             if route == "/api/requirements":
@@ -464,6 +468,10 @@ class Handler(BaseHTTPRequestHandler):
 
             if route == "/api/requirements":
                 return self._set_requirements()
+            if route == "/api/team/remind":
+                return self._team_remind()
+            if route == "/api/settings":
+                return self._settings_set()
             if route == "/api/quiz/start":
                 return self._start()
             if route == "/api/quiz/answer":
@@ -573,6 +581,116 @@ class Handler(BaseHTTPRequestHandler):
             "uploadTargets": sorted(
                 targets.values(), key=lambda t: (not t["direct"], t["title"])),
         })
+
+    def _team_completion(self):
+        """
+        Real coverage numbers for everyone in the caller's reporting subtree, batched.
+
+        Same qscore.standing call GET /qscore uses for one person, just looped over the
+        whole subtree so the My Team roster is one request instead of one per row. No
+        invented numbers: a person with nothing required counts as fully covered, same
+        as everywhere else Standing is used.
+        """
+        from quizgen import qscore
+
+        identity = self._require()
+        if identity is None:
+            return None
+
+        subtree = devauth.reports_of(identity.employee_id)
+
+        with Bank(DB, self._company()) as bank:
+            self._seed_requirements_if_empty(bank)
+            req_cache = {}
+            rows = []
+            for person in subtree:
+                role = (person.get("role_code") or "ALL").upper()
+                if role not in req_cache:
+                    req_cache[role] = bank.role_requirements(role)
+                held = bank.certificates(person["email"])
+                overall = qscore.standing(req_cache[role], held)["overall"]
+                renewal_due = [r for r in qscore.renewal_candidates(held) if not r["expired"]]
+                rows.append({
+                    "employeeId": person["employee_id"],
+                    **overall.to_dict(),
+                    "renewalDueCount": len(renewal_due),
+                })
+
+        return self._send({"people": rows})
+
+    def _team_remind(self):
+        """
+        Manager-triggered nudge for one person in the caller's reporting subtree.
+
+        What would be sent is computed here from that person's real missing/expired
+        requirements, same as the deployed route -- but this dev server does not send
+        email (no Resend key, no such dependency in requirements.txt; see devauth.py's
+        note on why a dev shim does not gain a production dependency). It reports
+        honestly what WOULD go out rather than pretending delivery happened, which is
+        enough to demo the button and wire the real send in api/function_app.py.
+        """
+        from quizgen import qscore
+
+        identity = self._require()
+        if identity is None:
+            return None
+
+        body = self._body()
+        target_id = body.get("employeeId")
+        if not isinstance(target_id, int):
+            return self._error(400, "Bad request", "employeeId is required.")
+
+        subtree = {p["employee_id"]: p for p in devauth.reports_of(identity.employee_id)}
+        person = subtree.get(target_id)
+        if person is None:
+            return self._error(404, "Not found", "No such employee in your team.")
+
+        role = (person.get("role_code") or "ALL").upper()
+        with Bank(DB, self._company()) as bank:
+            self._seed_requirements_if_empty(bank)
+            requirements = bank.role_requirements(role)
+            held = bank.certificates(person["email"])
+
+        overall = qscore.standing(requirements, held)["overall"]
+        if not overall.missing and not overall.expired:
+            return self._send({
+                "sent": False, "reason": "Already compliant -- nothing outstanding.",
+                "missing": [], "expired": [],
+            })
+
+        if not devauth.get_notifications_enabled(target_id):
+            return self._send({
+                "sent": False,
+                "reason": "This person has email notifications turned off in Settings.",
+                "missing": overall.missing, "expired": overall.expired,
+            })
+
+        return self._send({
+            "sent": False,
+            "reason": "The local dev server does not send email. In Azure this calls "
+                       "shared.comms.send_manager_reminder_email once RESEND_API_KEY is set.",
+            "missing": overall.missing, "expired": overall.expired,
+        })
+
+    def _settings_get(self):
+        identity = self._require()
+        if identity is None:
+            return None
+        return self._send({
+            "notificationsEnabled": devauth.get_notifications_enabled(identity.employee_id),
+        })
+
+    def _settings_set(self):
+        identity = self._require()
+        if identity is None:
+            return None
+        body = self._body()
+        enabled = body.get("notificationsEnabled")
+        if not isinstance(enabled, bool):
+            return self._error(400, "Bad request", "notificationsEnabled (boolean) is required.")
+        if not devauth.set_notifications_enabled(identity.employee_id, enabled):
+            return self._error(404, "Not found", "No credential record for this account.")
+        return self._send({"notificationsEnabled": enabled})
 
     def _static(self, relative: str):
         target = (WEB / relative).resolve()
@@ -1145,10 +1263,15 @@ class Handler(BaseHTTPRequestHandler):
         learner = self._learner()
         role = self._learner_role()
         with Bank(DB, self._company()) as bank:
+            self._seed_requirements_if_empty(bank)
             approved = bank.questions(status=ReviewStatus.APPROVED)
             mastery = bank.mastery(learner)
             chunks = bank.all_chunks()
             passes = _latest_passes(bank, learner)
+            # Same table Q Score reads (bank.role_requirements), so "Mandatory" here
+            # can never disagree with "missing" there. Visible-but-not-required is real
+            # optional material -- a document confirmed with makeRequired unchecked.
+            required_titles = {r["doc_title"] for r in bank.role_requirements(role or "ALL")}
 
         # Role isolation happens HERE, on the serving side. A Sales Manager must not
         # even see that Cloud DevOps modules exist, let alone take them. A document
@@ -1203,6 +1326,7 @@ class Handler(BaseHTTPRequestHandler):
                 "answered": answered,
                 "questionCount": n,
                 "modules": modules_by_doc.get(doc, []),
+                "required": doc in required_titles,
             })
         return self._send({"trainings": out})
 
