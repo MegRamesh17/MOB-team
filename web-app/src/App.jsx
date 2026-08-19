@@ -4,7 +4,7 @@ import {
   ChevronRight, X, AlertCircle, Clock, ArrowLeft, User, Star,
   Trophy, Flame, Target, Mail, Briefcase, Share2, Download, Copy,
   Loader2, RefreshCw, Upload, FileText, Link2, Search, Send,
-  Map as MapIcon, Settings as SettingsIcon, Box, Calendar, ShieldCheck,
+  Settings as SettingsIcon, Box, Calendar, ShieldCheck, LayoutGrid,
 } from "lucide-react";
 import * as api from "./api";
 import { Logo } from "./logo.jsx";
@@ -418,7 +418,7 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
   // as a page with nothing behind it.
   const nav = [
     { id: "dashboard", label: "Dashboard", icon: BookOpen },
-    { id: "path", label: "Learning Paths", icon: MapIcon },
+    { id: "path", label: "My Courses", icon: LayoutGrid },
     { id: "teammates", label: "Team", icon: Users },
     ...(manages ? [{ id: "team", label: "Reports", icon: Target }] : []),
     { id: "certificates", label: "Certificates", icon: Award },
@@ -739,9 +739,9 @@ function Dashboard({ name, team, onOpenPath, onOpenTraining, onOpenCertificates 
         <div className={manages ? "grid grid-cols-3 gap-6 items-stretch mb-8" : "mb-8"}>
           <div className={manages ? "col-span-2" : ""}>
             <div className="flex items-center justify-between mb-3">
-              <h3 style={{ ...display, color: C.ink }} className="font-bold">Your learning path</h3>
+              <h3 style={{ ...display, color: C.ink }} className="font-bold">Your courses</h3>
               <button onClick={onOpenPath} style={{ color: C.green700 }} className="text-sm font-semibold flex items-center gap-1">
-                View full path <ChevronRight size={14} />
+                View all courses <ChevronRight size={14} />
               </button>
             </div>
             <div className="space-y-2">
@@ -812,12 +812,12 @@ function Dashboard({ name, team, onOpenPath, onOpenTraining, onOpenCertificates 
           <div>
             <h3 style={{ ...display }} className="text-lg font-bold mb-1">Keep growing, keep leading.</h3>
             <p className="text-sm opacity-90">
-              The full roadmap shows every module ahead, in order, with what's already done.
+              My Courses shows everything assigned to you, what's optional, and what's done.
             </p>
           </div>
           <button onClick={onOpenPath} style={{ color: C.green700 }}
             className="bg-white px-4 py-2 rounded-xl text-sm font-semibold hover:opacity-90 shrink-0">
-            View full path
+            View all courses
           </button>
         </div>
       )}
@@ -827,127 +827,128 @@ function Dashboard({ name, team, onOpenPath, onOpenTraining, onOpenCertificates 
   );
 }
 
-// ---------- Learning path ----------
-// Real course titles from db/seed/seed_data.sql, not invented ones -- shown only when
-// a role's real path is still empty (the question bank hasn't been generated for it
-// yet), so the roadmap has something to preview without pretending to be someone's
-// actual progress.
-const EXAMPLE_TRAININGS = [
-  { id: "ex-1", title: "Workplace Safety", modules: ["Emergency procedures", "Hazard reporting"], questionCount: 6, status: "completed" },
-  { id: "ex-2", title: "Data Privacy Basics", modules: ["PII handling", "Reporting a breach"], questionCount: 8, status: "in-progress" },
-  { id: "ex-3", title: "Cybersecurity Fundamentals", modules: ["Threat basics", "Safe practices"], questionCount: 10, status: "not-started" },
-  { id: "ex-4", title: "Advanced Secure Coding", modules: ["Prerequisite: Cybersecurity Fundamentals"], questionCount: 12, status: "locked" },
+// ---------- My Courses ----------
+// Four tabs, all computed from data /api/trainings already returns -- "required"
+// reflects the same dbo.RoleRequirements table Q Score reads (added there so the two
+// can never disagree), so "Mandatory" vs "Recommended" is a real, current fact, not a
+// guess. Today "Recommended" will usually be empty: it's every course visible to this
+// role that a manager confirmed WITHOUT making it required (POST /documents/confirm,
+// makeRequired unchecked) -- open-to-anyone material, not yet a feature with its own
+// upload flow, but the split it needs already exists.
+const COURSE_TABS = [
+  { id: "all", label: "All" },
+  { id: "mandatory", label: "Mandatory" },
+  { id: "completed", label: "Completed" },
+  { id: "recommended", label: "Recommended" },
 ];
 
-const ROADMAP_STATUS_STYLE = {
-  completed: { fg: C.success, bg: C.successBg, ring: C.success, Icon: CheckCircle2 },
-  "in-progress": { fg: C.amber, bg: C.amberBg, ring: C.amber, Icon: BookOpen },
-  "not-started": { fg: C.green700, bg: C.mint, ring: C.green500, Icon: Circle },
-  locked: { fg: "#9A93A8", bg: "#F1F0F3", ring: "#C7C2D6", Icon: Lock },
+const COURSE_EMPTY_COPY = {
+  all: "Nothing has been assigned to your role yet. Check back soon, or ask your manager if you think this is unexpected.",
+  mandatory: "Nothing required right now.",
+  completed: "Nothing completed yet -- pass a quiz and it'll show up here.",
+  recommended: "No open courses yet. A document a manager confirms without requiring it shows up here, for anyone to take.",
 };
 
-// A smooth S-curve through each waypoint, control points offset only in x (so the
-// tangent is flat exactly at every point) -- that is what lets a pin's stem meet the
-// road straight-on instead of at an angle.
-function roadPathD(points) {
-  if (points.length < 2) return "";
-  let d = `M ${points[0][0]} ${points[0][1]}`;
-  for (let i = 1; i < points.length; i++) {
-    const [x0, y0] = points[i - 1];
-    const [x1, y1] = points[i];
-    const midX = (x0 + x1) / 2;
-    d += ` C ${midX} ${y0}, ${midX} ${y1}, ${x1} ${y1}`;
+function CourseBadge({ t }) {
+  if (t.expired) {
+    return (
+      <span style={{ background: "rgba(216,68,60,0.22)", color: "#F3A9A4" }}
+        className="text-[11px] font-semibold px-2 py-1 rounded-lg flex items-center gap-1">
+        <AlertCircle size={11} /> Expired — retake
+      </span>
+    );
   }
-  return d;
-}
-
-function TrainingRoadmap({ trainings, onOpenTraining }) {
-  const stepX = 190, ampY = 60, stemLen = 36, cardW = 172, cardH = 126;
-  const midY = ampY + stemLen + cardH;
-  const padX = cardW / 2 + 20;
-
-  const points = trainings.map((_, i) => [
-    padX + i * stepX,
-    midY + (i % 2 === 0 ? -ampY : ampY),
-  ]);
-  const width = padX * 2 + Math.max(0, trainings.length - 1) * stepX;
-  const height = midY + ampY + stemLen + cardH + 20;
-  const d = roadPathD(points);
-
+  if (t.compliant && t.expiresAt) {
+    return (
+      <span style={{ background: "rgba(20,184,166,0.2)", color: "#7FE0D2" }}
+        className="text-[11px] font-semibold px-2 py-1 rounded-lg flex items-center gap-1">
+        <Clock size={11} /> Renews {String(t.expiresAt).slice(0, 10)}
+      </span>
+    );
+  }
+  if (t.required) {
+    return (
+      <span style={{ background: "rgba(255,158,74,0.22)", color: "#FFC48A" }}
+        className="text-[11px] font-semibold px-2 py-1 rounded-lg">Required</span>
+    );
+  }
   return (
-    <div className="overflow-x-auto pb-2">
-      <svg width={width} height={height} style={{ minWidth: "100%", display: "block" }}>
-        <path d={d} fill="none" stroke={C.line} strokeWidth={10} strokeLinecap="round" />
-        <path d={d} fill="none" stroke="#fff" strokeWidth={2} strokeDasharray="9 9" strokeLinecap="round" />
-        {points.map(([x, y], i) => {
-          const t = trainings[i];
-          const style = ROADMAP_STATUS_STYLE[t.status] || ROADMAP_STATUS_STYLE["not-started"];
-          const above = i % 2 === 0;
-          const Icon = style.Icon;
-          const cardY = above ? y - stemLen - cardH : y + stemLen;
-          const clickable = t.status !== "locked" && onOpenTraining;
-          return (
-            <g key={t.id}>
-              <line x1={x} y1={y} x2={x} y2={above ? y - stemLen : y + stemLen}
-                stroke={style.ring} strokeWidth={3} />
-              <circle cx={x} cy={y} r={9} fill={style.ring} stroke="#fff" strokeWidth={3} />
-              <foreignObject x={x - cardW / 2} y={cardY} width={cardW} height={cardH}>
-                <button
-                  onClick={clickable ? () => onOpenTraining(t) : undefined}
-                  disabled={!clickable}
-                  style={{ borderColor: C.line, cursor: clickable ? "pointer" : "default" }}
-                  className="w-full h-full border rounded-xl bg-white p-3 text-left flex flex-col gap-1 shadow-sm hover:shadow-md transition-shadow disabled:hover:shadow-sm"
-                >
-                  <div style={{ background: style.bg }} className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0">
-                    <Icon size={14} color={style.fg} />
-                  </div>
-                  <p style={{
-                    color: C.ink,
-                    display: "-webkit-box",
-                    WebkitLineClamp: 2,
-                    WebkitBoxOrient: "vertical",
-                    overflow: "hidden",
-                  }} className="text-xs font-semibold leading-tight">{t.title}</p>
-                  <StatusPill status={t.status} />
-                </button>
-              </foreignObject>
-            </g>
-          );
-        })}
-      </svg>
-    </div>
+    <span style={{ background: "rgba(240,234,216,0.16)", color: "rgba(240,234,216,0.8)" }}
+      className="text-[11px] font-semibold px-2 py-1 rounded-lg">Optional</span>
   );
 }
 
-function LearningPath({ onBack, onOpenTraining }) {
+function CourseCard({ t, onOpenTraining }) {
+  return (
+    <button onClick={() => onOpenTraining(t)} style={{ background: C.rail }}
+      className="text-left rounded-2xl overflow-hidden flex flex-col hover:opacity-90 transition-opacity">
+      <div style={{ background: C.green900 }} className="h-28 flex items-center justify-center relative shrink-0">
+        <BookOpen size={30} color="rgba(240,234,216,0.35)" />
+        <div className="absolute bottom-2 left-2"><CourseBadge t={t} /></div>
+      </div>
+      <div className="p-4 flex-1 flex flex-col">
+        <div className="flex items-center gap-2 mb-3">
+          <div style={{ background: "rgba(240,234,216,0.16)" }} className="flex-1 h-1.5 rounded-full overflow-hidden">
+            <div style={{ width: `${t.mastery}%`, background: C.green500 }} className="h-full rounded-full" />
+          </div>
+          <span style={{ color: "rgba(240,234,216,0.75)" }} className="text-xs font-semibold shrink-0">{t.mastery}%</span>
+        </div>
+        <p style={{ color: "#F0EAD8" }} className="text-sm font-semibold leading-snug mb-1">{t.title}</p>
+        <p style={{ color: "rgba(240,234,216,0.55)" }} className="text-xs">
+          {t.modules.length} module{t.modules.length === 1 ? "" : "s"} · {t.questionCount} questions
+        </p>
+      </div>
+    </button>
+  );
+}
+
+function MyCourses({ onBack, onOpenTraining }) {
   const { data, loading, error, reload } = useAsync(() => api.trainings(), []);
-  const real = data?.trainings || [];
-  const showExample = !loading && !error && real.length === 0;
+  const all = data?.trainings || [];
+  const [tab, setTab] = useState("all");
+
+  const byTab = {
+    all,
+    mandatory: all.filter((t) => t.required),
+    completed: all.filter((t) => t.status === "completed"),
+    recommended: all.filter((t) => !t.required),
+  };
+  const shown = byTab[tab];
 
   return (
-    <div className="p-8 max-w-4xl">
+    <div className="p-8 max-w-5xl">
       <button onClick={onBack} style={{ color: C.sub }} className="flex items-center gap-1 text-sm font-semibold mb-4">
         <ArrowLeft size={14} /> Back to dashboard
       </button>
-      <div className="flex items-center gap-2 mb-6">
-        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold">Learning paths</h1>
-        {showExample && <MockNote>example path</MockNote>}
-      </div>
+      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-6">My Courses</h1>
 
       {loading && <Loading />}
       {error && <ErrorBox error={error} onRetry={reload} />}
 
-      {!loading && !error && real.length > 0 && (
-        <TrainingRoadmap trainings={real} onOpenTraining={onOpenTraining} />
-      )}
-
-      {showExample && (
+      {!loading && !error && (
         <>
-          <p style={{ color: C.sub }} className="text-sm mb-4">
-            Nothing has been assigned to your role yet, so here's what your path will look
-            like once it has — these four are not your real trainings.
-          </p>
-          <TrainingRoadmap trainings={EXAMPLE_TRAININGS} />
+          <div style={{ background: C.mint }} className="inline-flex flex-wrap rounded-xl p-1 mb-6 gap-1">
+            {COURSE_TABS.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                style={{ background: tab === t.id ? C.green700 : "transparent", color: tab === t.id ? "#fff" : C.ink }}
+                className="px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
+              >
+                {t.label} <span style={{ opacity: 0.75 }}>({byTab[t.id].length})</span>
+              </button>
+            ))}
+          </div>
+
+          {shown.length === 0 ? (
+            <div style={{ borderColor: C.line }} className="border rounded-xl p-6 bg-white text-center">
+              <p style={{ color: C.sub }} className="text-sm">{COURSE_EMPTY_COPY[tab]}</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+              {shown.map((t) => <CourseCard key={t.id} t={t} onOpenTraining={onOpenTraining} />)}
+            </div>
+          )}
         </>
       )}
     </div>
@@ -3088,7 +3089,7 @@ export default function App() {
   } else if (view === "dashboard") {
     content = <Dashboard name={auth.name || auth.email} team={team} onOpenPath={() => goto("path")} onOpenTraining={openTraining} onOpenCertificates={() => goto("certificates")} />;
   } else if (view === "path") {
-    content = <LearningPath onBack={() => goto("dashboard")} onOpenTraining={openTraining} />;
+    content = <MyCourses onBack={() => goto("dashboard")} onOpenTraining={openTraining} />;
   } else if (view === "trainingDetail") {
     content = <TrainingDetail
       training={training}

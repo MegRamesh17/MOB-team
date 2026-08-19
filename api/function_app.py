@@ -949,6 +949,13 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
         with _conn() as c:
             cur = c.cursor()
 
+            # Which of the visible documents this role is actually required to pass --
+            # same table Q Score is computed against, so "Mandatory" here and "missing"
+            # on the Q Score page can never disagree. Anything visible but NOT in this
+            # set is real, un-fabricated "optional" material: a document a manager
+            # confirmed with makeRequired unchecked, scoped to this role or company-wide.
+            required_titles = {r["doc_title"] for r in _role_requirements(cur, role, identity.company_id)}
+
             # Approved questions in scope, grouped by the document they came from.
             # role_scope 'ALL' is company-wide material everyone takes.
             cur.execute(
@@ -1046,6 +1053,7 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
                 "modules": modules.get(doc, []),
                 "compliant": bool(certificate),
                 "expiresAt": certificate.get("expires_at") if certificate else None,
+                "required": doc in required_titles,
             })
         return _json({"trainings": out})
     except Exception as exc:  # noqa: BLE001

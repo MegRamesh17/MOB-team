@@ -1263,10 +1263,15 @@ class Handler(BaseHTTPRequestHandler):
         learner = self._learner()
         role = self._learner_role()
         with Bank(DB, self._company()) as bank:
+            self._seed_requirements_if_empty(bank)
             approved = bank.questions(status=ReviewStatus.APPROVED)
             mastery = bank.mastery(learner)
             chunks = bank.all_chunks()
             passes = _latest_passes(bank, learner)
+            # Same table Q Score reads (bank.role_requirements), so "Mandatory" here
+            # can never disagree with "missing" there. Visible-but-not-required is real
+            # optional material -- a document confirmed with makeRequired unchecked.
+            required_titles = {r["doc_title"] for r in bank.role_requirements(role or "ALL")}
 
         # Role isolation happens HERE, on the serving side. A Sales Manager must not
         # even see that Cloud DevOps modules exist, let alone take them. A document
@@ -1321,6 +1326,7 @@ class Handler(BaseHTTPRequestHandler):
                 "answered": answered,
                 "questionCount": n,
                 "modules": modules_by_doc.get(doc, []),
+                "required": doc in required_titles,
             })
         return self._send({"trainings": out})
 
