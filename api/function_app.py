@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import azure.functions as func
@@ -1041,6 +1041,14 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
         return _error(500, "Internal error", type(exc).__name__)
 
 
+# How long a "no new options" answer is honored before asking again. Not one-time: the
+# bank grows as managers upload more documents, and something uploaded last month is
+# worth surfacing to someone who declined before it existed. Not constant either --
+# re-asking every session about the same unchanged list is nagging, not recommending.
+# 21 days is a starting guess, easy to change; nothing else depends on this exact number.
+SKILL_PROMPT_COOLDOWN_DAYS = 21
+
+
 @app.route(route="skills/options", methods=["GET"])
 def skill_options(req: func.HttpRequest) -> func.HttpResponse:
     """
@@ -1050,9 +1058,16 @@ def skill_options(req: func.HttpRequest) -> func.HttpResponse:
     this employee's role -- same role_scope filter list_trainings uses. Nothing here
     can recommend content the employee couldn't otherwise see, and nothing here can
     trigger new generation: this is a pointer into the existing bank, not a request for
-    more of it. A document already required for their role is excluded from the
-    options -- asking "want to learn X" about something they already owe is confusing,
-    not helpful.
+    more of it. A document already required for their role, OR already accepted by this
+    employee in an earlier round, is excluded -- the first because owing it isn't a
+    choice, the second because it's already sitting under Recommended and re-offering an
+    already-accepted pick is confusing, not helpful.
+
+    Recurring, not one-time: skills_prompted_at is "last asked", not "ever asked". This
+    re-prompts after SKILL_PROMPT_COOLDOWN_DAYS, but ONLY if there is at least one option
+    left to offer -- a declined or fully-picked list does not nag on a timer with nothing
+    new to say. A newly-uploaded document becoming visible is what actually brings the
+    popup back, the cooldown just rate-limits how often that check happens.
     """
     identity = get_current_employee(req)
     if identity is None:
@@ -1067,7 +1082,12 @@ def skill_options(req: func.HttpRequest) -> func.HttpResponse:
                 identity.employee_id, identity.company_id,
             )
             row = cur.fetchone()
-            already_prompted = bool(row and row.skills_prompted_at is not None)
+            last_prompted = row.skills_prompted_at if row else None
+            cooldown_elapsed = (
+                last_prompted is None
+                or (datetime.now(timezone.utc) - last_prompted.replace(tzinfo=timezone.utc))
+                   >= timedelta(days=SKILL_PROMPT_COOLDOWN_DAYS)
+            )
 
             cur.execute(
                 """SELECT DISTINCT source_doc_title AS doc_title
@@ -1084,8 +1104,15 @@ def skill_options(req: func.HttpRequest) -> func.HttpResponse:
 
             required_docs = {r["doc_title"] for r in _role_requirements(cur, role, identity.company_id)}
 
-        options = [d for d in visible_docs if d not in required_docs]
-        return _json({"prompted": already_prompted, "options": options})
+            cur.execute(
+                "SELECT doc_title FROM dbo.EmployeeSkillInterest WHERE employee_id = ? AND company_id = ?",
+                identity.employee_id, identity.company_id,
+            )
+            already_picked = {r["doc_title"] for r in _rows(cur)}
+
+        options = [d for d in visible_docs if d not in required_docs and d not in already_picked]
+        show_prompt = cooldown_elapsed and len(options) > 0
+        return _json({"prompted": not show_prompt, "options": options if show_prompt else []})
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
 
