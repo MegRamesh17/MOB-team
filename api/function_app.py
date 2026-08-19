@@ -2365,18 +2365,10 @@ def set_requirements(req: func.HttpRequest) -> func.HttpResponse:
 # scripts/devserver.py's local equivalents -- the UI hides these controls too, but a
 # hidden button is not a permission check.
 #
-# Generation runs INLINE, in the same request that confirms the upload, rather than on
-# a background thread the way the local dev server does it. A thread survives for the
-# life of one Python process; an Azure Functions instance can recycle or scale to a
-# second one between the request that starts generation and the next /jobs/{id} poll,
-# and an in-memory job record on the first instance is invisible to the second. Running
-# a few dozen chunks against gpt-5 inline is a matter of minutes, and mob-functions-dev
-# is provisioned on a Basic (B1) Dedicated plan (infra/modules/functions/main.tf), which
-# has no Consumption-plan-style 5/10 minute HTTP timeout -- see host.json's
-# functionTimeout for the explicit ceiling this relies on. The job row this writes to
-# dbo.GenerationJobs is what actually makes /jobs/{id} correct across instances; running
-# inline just means it is written as "done" already by the time confirm() returns,
-# rather than updated incrementally by a worker only that request's instance can see.
+# Generation is handed to an Azure Storage Queue trigger. A Python background thread is
+# not durable across Function instance recycling, while doing the model calls inline can
+# exceed Azure's HTTP front-end timeout even on a Dedicated plan. GenerationJobs remains
+# the durable status record the browser polls; the queue is only the work handoff.
 
 
 def _permitted_upload_roles(cur, identity) -> set:
@@ -2577,7 +2569,10 @@ def upload_document(req: func.HttpRequest) -> func.HttpResponse:
 
 
 @app.route(route="documents/confirm", methods=["POST"])
-def confirm_document(req: func.HttpRequest) -> func.HttpResponse:
+@app.queue_output(
+    arg_name="generation_message", queue_name="generation-jobs",
+    connection="AzureWebJobsStorage")
+def confirm_document(req: func.HttpRequest, generation_message) -> func.HttpResponse:
     """
     The manager's confirmed section->role mapping. Tags chunks, creates any new roles
     they chose to add, retires a superseded document if named, then generates.
@@ -2607,7 +2602,7 @@ def confirm_document(req: func.HttpRequest) -> func.HttpResponse:
     if not doc_title or not isinstance(assignments, dict):
         return _error(400, "Bad request", "title and assignments are required")
 
-    from shared.sqlbank import SqlBank, create_job, new_job_id, update_job
+    from shared.sqlbank import SqlBank, create_job, new_job_id
 
     try:
         with _conn() as c:
@@ -2653,47 +2648,90 @@ def confirm_document(req: func.HttpRequest) -> func.HttpResponse:
             job_id = new_job_id()
             create_job(c, job_id, identity.company_id, doc_title)
 
-        from quizgen.pipeline import select_chunks, generate_questions
-        with _conn() as c2:
-            bank2 = SqlBank(c2, identity.company_id)
-            # Confirmation is also the explicit top-up action for an older upload.
-            # Before pathways existed a chunk stopped after two questions, which can
-            # never supply a three-level diagnostic plus ten-question checkpoint.
-            # Re-reading a confirmed document is intentional and billed; merely listing
-            # or opening the document never invokes the model.
-            to_generate, skipped = select_chunks(
-                bank2, doc_title=doc_title, regenerate=True)
-            update_job(c2, job_id, identity.company_id, total=len(to_generate),
-                       message="Reading {} section(s)…".format(len(to_generate))
-                       if to_generate else "Already generated for this document.")
-
-            if not to_generate:
-                update_job(c2, job_id, identity.company_id, state="done",
-                           message="Already generated.")
-            else:
-                try:
-                    # Six candidates at each difficulty gives every module a real
-                    # diagnostic ladder and enough inventory for a ten-question
-                    # adaptive checkpoint. The manager confirmation remains the cost
-                    # boundary: no billed generation happens merely from viewing a PDF.
-                    result = generate_questions(
-                        bank2, to_generate, per_chunk=6, difficulty_ladder=True)
-                    update_job(
-                        c2, job_id, identity.company_id, state="done",
-                        done_count=len(to_generate), kept=len(result.kept),
-                        written=result.written, rejected=len(result.rejected),
-                        message="Generated {} question(s).".format(result.written),
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    update_job(c2, job_id, identity.company_id, state="error",
-                               message="{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        generation_message.set(json.dumps({
+            "jobId": job_id,
+            "companyId": identity.company_id,
+            "docTitle": doc_title,
+        }))
 
         return _json({
             "title": doc_title, "taggedChunks": tagged, "retired": retired,
             "requiredFor": sorted(required_for), "jobId": job_id,
-        }, 201)
+        }, 202)
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
+
+
+def _run_generation_job(job_id: str, company_id: int, doc_title: str) -> None:
+    """Generate a document's question bank outside the request that queued it."""
+    from shared.sqlbank import SqlBank, get_job, update_job
+    from quizgen.pipeline import generate_questions, select_chunks
+
+    try:
+        with _conn() as c:
+            existing = get_job(c, job_id, company_id)
+            if existing is None or existing["state"] == "done":
+                return
+
+            bank = SqlBank(c, company_id)
+            # Confirmation is the explicit billed top-up action for older uploads.
+            to_generate, _ = select_chunks(
+                bank, doc_title=doc_title, regenerate=True)
+            update_job(
+                c, job_id, company_id, total=len(to_generate),
+                message="Reading {} section(s)...".format(len(to_generate))
+                if to_generate else "Already generated for this document.",
+            )
+            if not to_generate:
+                update_job(c, job_id, company_id, state="done",
+                           message="Already generated.")
+                return
+
+            def report(progress):
+                update_job(
+                    c, job_id, company_id, done_count=progress.index,
+                    message="Generating {} ({}/{})".format(
+                        progress.chunk.topic[:80], progress.index, progress.total),
+                )
+
+            # Six candidates at each difficulty supplies the diagnostic ladder and
+            # enough inventory for a ten-question adaptive checkpoint.
+            result = generate_questions(
+                bank, to_generate, per_chunk=6, difficulty_ladder=True,
+                on_progress=report,
+            )
+            update_job(
+                c, job_id, company_id, state="done",
+                done_count=len(to_generate), kept=len(result.kept),
+                written=result.written, rejected=len(result.rejected),
+                message="Generated {} question(s).".format(result.written),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logging.exception("Generation job %s failed", job_id)
+        try:
+            with _conn() as failed:
+                update_job(
+                    failed, job_id, company_id, state="error",
+                    message="{}: {}".format(type(exc).__name__, str(exc)[:200]),
+                )
+        except Exception:  # noqa: BLE001
+            logging.exception("Could not record failure for generation job %s", job_id)
+
+
+@app.queue_trigger(
+    arg_name="message", queue_name="generation-jobs",
+    connection="AzureWebJobsStorage")
+def generate_document_questions(message: func.QueueMessage) -> None:
+    """Durable worker for the generation message emitted by /documents/confirm."""
+    try:
+        payload = json.loads(message.get_body().decode("utf-8"))
+        job_id = str(payload["jobId"])
+        company_id = int(payload["companyId"])
+        doc_title = str(payload["docTitle"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        logging.exception("Discarding malformed generation queue message")
+        return
+    _run_generation_job(job_id, company_id, doc_title)
 
 
 @app.route(route="links/add", methods=["POST"])
