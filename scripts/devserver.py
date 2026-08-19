@@ -402,6 +402,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._team()
             if route == "/api/team/completion":
                 return self._team_completion()
+            if route == "/api/settings":
+                return self._settings_get()
             if route == "/api/qscore":
                 return self._qscore(query)
             if route == "/api/requirements":
@@ -468,6 +470,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._set_requirements()
             if route == "/api/team/remind":
                 return self._team_remind()
+            if route == "/api/settings":
+                return self._settings_set()
             if route == "/api/quiz/start":
                 return self._start()
             if route == "/api/quiz/answer":
@@ -654,12 +658,39 @@ class Handler(BaseHTTPRequestHandler):
                 "missing": [], "expired": [],
             })
 
+        if not devauth.get_notifications_enabled(target_id):
+            return self._send({
+                "sent": False,
+                "reason": "This person has email notifications turned off in Settings.",
+                "missing": overall.missing, "expired": overall.expired,
+            })
+
         return self._send({
             "sent": False,
             "reason": "The local dev server does not send email. In Azure this calls "
                        "shared.comms.send_manager_reminder_email once RESEND_API_KEY is set.",
             "missing": overall.missing, "expired": overall.expired,
         })
+
+    def _settings_get(self):
+        identity = self._require()
+        if identity is None:
+            return None
+        return self._send({
+            "notificationsEnabled": devauth.get_notifications_enabled(identity.employee_id),
+        })
+
+    def _settings_set(self):
+        identity = self._require()
+        if identity is None:
+            return None
+        body = self._body()
+        enabled = body.get("notificationsEnabled")
+        if not isinstance(enabled, bool):
+            return self._error(400, "Bad request", "notificationsEnabled (boolean) is required.")
+        if not devauth.set_notifications_enabled(identity.employee_id, enabled):
+            return self._error(404, "Not found", "No credential record for this account.")
+        return self._send({"notificationsEnabled": enabled})
 
     def _static(self, relative: str):
         target = (WEB / relative).resolve()

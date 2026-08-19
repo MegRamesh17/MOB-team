@@ -123,6 +123,11 @@ export const lesson = (training, moduleId) => {
 };
 export const certificates = () => call("/certificates");
 
+/** This learner's own preferences. Real, persisted server-side -- not a local toggle. */
+export const getSettings = () => call("/settings");
+export const updateSettings = (notificationsEnabled) =>
+  call("/settings", { method: "POST", body: { notificationsEnabled } });
+
 export async function downloadCertificate(certificateUrl) {
   const url = certificateUrl.startsWith("http") ? certificateUrl : BASE + certificateUrl;
   const res = await fetch(url, { headers: authHeaders() });

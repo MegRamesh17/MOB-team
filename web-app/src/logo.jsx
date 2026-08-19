@@ -1,30 +1,55 @@
 /**
  * Ascend wordmark.
  *
- * The mark is a two-leaf sprout with a bud above it -- concept #8 from the brand board
- * -- rendered inline so the repo carries no binary asset and it stays crisp at any size.
- * `light` swaps the wordmark text for the dark sidebar; the leaf badge itself has enough
- * internal contrast (white leaf on green) to read the same on either background.
- *
- * This is a stand-in. To swap in real artwork later, drop the file at
- * web-app/public/logo.png and replace the return below with:
- *
- *     return <img src="/logo.png" alt="Ascend" style={{ height: size }} />;
+ * Two curved leaf blades (dark forest -> fresh green gradient, left to right) with a
+ * small sage bud above -- concept #8 from the brand board, hand-traced from the
+ * reference image rather than a real vector import (see the note at the bottom of this
+ * file). No enclosing badge/box: the brief is explicit that the mark must sit directly
+ * on the near-black sidebar with nothing behind it, and the gradient reads fine on both
+ * that and the cream page background, so `light` only needs to switch the wordmark text.
  */
+const VIEWBOX_W = 340;
+const VIEWBOX_H = 150;
+
 export function Logo({ size = 28, light = false }) {
   return (
-    <svg height={size} viewBox="0 0 130 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <rect x="0" y="3" width="26" height="26" rx="8" fill="#147A4D" />
-      <ellipse cx="9.5" cy="17" rx="2.6" ry="6.6" fill="#fff" transform="rotate(-38 9.5 17)" />
-      <ellipse cx="16.5" cy="17" rx="2.6" ry="6.6" fill="#fff" transform="rotate(38 16.5 17)" />
-      <circle cx="13" cy="6.8" r="2" fill="#fff" />
+    <svg height={size} width={size * (VIEWBOX_W / VIEWBOX_H)} viewBox={`0 0 ${VIEWBOX_W} ${VIEWBOX_H}`} fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="ascend-leaf-l" x1="0.1" y1="1" x2="0.9" y2="0.1">
+          <stop offset="0%" stopColor="#0D4A30" />
+          <stop offset="100%" stopColor="#2F9E5C" />
+        </linearGradient>
+        <linearGradient id="ascend-leaf-r" x1="0.1" y1="1" x2="0.9" y2="0.1">
+          <stop offset="0%" stopColor="#3FA85E" />
+          <stop offset="100%" stopColor="#A6DE93" />
+        </linearGradient>
+      </defs>
+      <path d="M54,140 C22,126 -1,90 9,50 C14,32 28,20 42,18 C33,26 27,44 30,64 C34,90 43,116 54,140 Z" fill="url(#ascend-leaf-l)" />
+      <path d="M28,66 C31,88 41,114 54,140" stroke="rgba(255,255,255,0.32)" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M60,140 C90,124 111,86 100,47 C95,30 82,19 68,18 C76,27 81,45 78,64 C74,90 66,116 60,140 Z" fill="url(#ascend-leaf-r)" />
+      <path d="M79,66 C76,88 66,114 60,140" stroke="rgba(255,255,255,0.32)" strokeWidth="1.8" strokeLinecap="round" />
+      <circle cx="77" cy="17" r="12" fill="#9AD4C2" />
       <text
-        x="32" y="22"
-        fontFamily="Fraunces, Georgia, serif" fontSize="18" fontWeight="600"
-        fill={light ? "#F0EAD8" : "#12201A"} letterSpacing="-0.3"
+        x="128" y="100"
+        fontFamily="'Playfair Display', Georgia, serif" fontSize="62" fontWeight="700"
+        fill={light ? "#F0EAD8" : "#0F1214"} letterSpacing="-1"
       >
         ascend
       </text>
     </svg>
   );
 }
+
+/**
+ * This is a stand-in, hand-drawn to match the reference closely rather than pixel-
+ * identical to it -- the brief names `ascend_logo_concept_8.svg` /
+ * `ascend_logo_concept_8_transparent.png` as the source files, but neither ever
+ * reached this repo (only the brief markdown and one inline chat image did). Drop the
+ * real file at web-app/public/logo.svg (or .png) once you have it, and replace the
+ * <svg> above with:
+ *
+ *     return <img src="/logo.svg" alt="Ascend" style={{ height: size }} />;
+ *
+ * An SVG is preferable to a PNG here -- it scales cleanly at every sidebar/favicon size
+ * this component is used at, where a raster source needs multiple exports.
+ */

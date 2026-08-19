@@ -4,6 +4,7 @@ import {
   ChevronRight, X, AlertCircle, Clock, ArrowLeft, User, Star,
   Trophy, Flame, Target, Mail, Briefcase, Share2, Download, Copy,
   Loader2, RefreshCw, Upload, FileText, Link2, Search, Send,
+  Map as MapIcon, Settings as SettingsIcon,
 } from "lucide-react";
 import * as api from "./api";
 import { Logo } from "./logo.jsx";
@@ -29,36 +30,36 @@ import { Logo } from "./logo.jsx";
  */
 
 // ---------- design tokens ----------
-// "Ascend" palette: warm cream ground, forest green as the one primary color, teal and
-// orange doing semantic work (compliant / needs-attention) rather than competing with
-// green for attention, purple kept as a single deliberate accent rather than spread
-// everywhere. Token KEYS keep their old violet-era names (green900/700/600/500/300,
-// "mint" for the pale tint) so the ~100 call sites that reference them did not need to
-// change one at a time -- only the values did.
+// Exact values from the brand brief: forest green primary, fresh green + sage as
+// lighter green steps, teal/coral doing semantic work (compliant / needs-attention),
+// lavender reserved for learning-path accents. Token KEYS keep their older names
+// (green900/700/600/500/300, "mint" for the pale tint) so the ~100 call sites that
+// reference them did not need to change one at a time -- only the values did.
 const C = {
-  ink: "#12201A",
+  ink: "#0F1214",       // brief's "Charcoal"
   sub: "#5C6B62",
-  green900: "#0D4A30",
-  green700: "#147A4D",
-  green600: "#1E8F5A",
-  green500: "#47B37A",
-  green300: "#A9DFC0",
-  mint: "#E7F3EC",
-  paper: "#F6F3EC",
-  line: "#E3DECF",
-  amber: "#E07A1F",
-  amberBg: "#FDECD9",
-  success: "#0E9C89",
+  green900: "#0E5536",  // derived deep shade, no brief value for this step
+  green700: "#147A4D",  // brief: Forest green
+  green600: "#1AA05C",  // derived mid step
+  green500: "#22C55E",  // brief: Fresh green
+  green300: "#88C7B7",  // brief: Sage
+  mint: "#E3F1EB",       // derived pale tint of sage/forest
+  paper: "#F6F3EC",      // brief: Warm cream
+  sand: "#F3EDE1",       // brief: Soft sand -- subtle section backgrounds
+  line: "#E5DFD2",
+  amber: "#FF9E4A",      // brief: Coral/orange
+  amberBg: "#FFEFDD",
+  success: "#14B8A6",    // brief: Teal
   successBg: "#DFF7F3",
   danger: "#D8443C",
   dangerBg: "#FCEBEA",
-  purple: "#6D5CE7",
+  purple: "#6D5CE7",     // brief: Lavender
   purpleBg: "#EAE7FC",
-  rail: "#0F1B15",
+  rail: "#0F1214",       // brief: Charcoal/sidebar
 };
 
-const font = { fontFamily: "'IBM Plex Sans', system-ui, sans-serif" };
-const display = { fontFamily: "'Fraunces', Georgia, serif" };
+const font = { fontFamily: "'Inter', system-ui, sans-serif" };
+const display = { fontFamily: "'Playfair Display', Georgia, serif" };
 
 // ---------- static (design-only) data ----------
 const FOCUS_PRIORITIES = [
@@ -398,14 +399,24 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
   // manager got Team, Documents and Profile and had no way to reach their own training
   // at all. A manager is also an employee with training of their own, and the old split
   // made that unreachable.
+  //
+  // Labels follow the brand brief's sidebar list, mapped onto the pages that actually
+  // exist rather than adding dead links for the ones that don't: "Learning Paths" is
+  // the existing roadmap, "Team" is the always-visible peer gallery, "Reports" is the
+  // manager-only completion roster (still gated the same as it always was), "Resources"
+  // is Documents. The brief's "Compliance" isn't a separate item -- Certificates already
+  // shows exactly that (compliant / expired / renewing) per document, so a second nav
+  // entry pointing at the same page would just be the same link twice under two names.
+  // "Messages" has no backend anywhere in the app and is left out rather than shipped
+  // as a page with nothing behind it.
   const nav = [
     { id: "dashboard", label: "Dashboard", icon: BookOpen },
-    { id: "path", label: "My Training", icon: CheckCircle2 },
-    ...(manages ? [{ id: "team", label: "My Team", icon: Users }] : []),
-    { id: "documents", label: "Documents", icon: FileText },
+    { id: "path", label: "Learning Paths", icon: MapIcon },
+    { id: "teammates", label: "Team", icon: Users },
+    ...(manages ? [{ id: "team", label: "Reports", icon: Target }] : []),
     { id: "certificates", label: "Certificates", icon: Award },
-    { id: "teammates", label: "Teammates", icon: Users },
-    { id: "profile", label: "Profile", icon: User },
+    { id: "documents", label: "Resources", icon: FileText },
+    { id: "settings", label: "Settings", icon: SettingsIcon },
   ];
 
   return (
@@ -415,8 +426,8 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
           -- stays put while a long page like Profile scrolls inside <main> only.
           min-height let the whole row grow with the page's content instead, which
           dragged the sidebar along with it and buried sign-out below the fold. */}
-      <aside style={{ background: C.rail }} className="w-60 flex flex-col shrink-0 h-full overflow-y-auto">
-        <div className="px-5 py-5 flex items-center"><Logo size={26} light /></div>
+      <aside style={{ background: C.rail, width: 196 }} className="flex flex-col shrink-0 h-full overflow-y-auto">
+        <div className="px-5 py-5 flex items-center"><Logo size={22} light /></div>
         <nav className="flex-1 px-3 py-4 space-y-1">
           {nav.map((n) => {
             const Icon = n.icon;
@@ -426,7 +437,7 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
                 key={n.id}
                 onClick={() => setActive(n.id)}
                 style={{
-                  background: isActive ? C.green700 : "transparent",
+                  background: isActive ? "rgba(34,197,94,0.18)" : "transparent",
                   color: isActive ? "#fff" : "rgba(240,234,216,0.68)",
                 }}
                 className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-colors hover:text-white"
@@ -437,16 +448,20 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
           })}
         </nav>
         <div style={{ borderColor: "rgba(240,234,216,0.14)" }} className="border-t px-5 py-4">
-          <div className="flex items-center gap-2 mb-3">
-            <div style={{ background: "rgba(240,234,216,0.14)", color: "#F0EAD8" }} className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold">
+          <button
+            onClick={() => setActive("profile")}
+            style={{ background: active === "profile" ? "rgba(34,197,94,0.18)" : "transparent" }}
+            className="w-full flex items-center gap-2 mb-3 p-1.5 -m-1.5 rounded-xl text-left hover:bg-white/5"
+          >
+            <div style={{ background: "rgba(240,234,216,0.14)", color: "#F0EAD8" }} className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0">
               {name.split(" ").map((p) => p[0]).join("")}
             </div>
-            <div>
-              <div style={{ color: "#F0EAD8" }} className="text-sm font-semibold leading-tight">{name}</div>
-              <div style={{ color: "rgba(240,234,216,0.6)" }} className="text-xs">{department || "—"}</div>
-              {title && <div style={{ color: "rgba(240,234,216,0.5)" }} className="text-[11px]">{title}</div>}
+            <div className="min-w-0">
+              <div style={{ color: "#F0EAD8" }} className="text-sm font-semibold leading-tight truncate">{name}</div>
+              <div style={{ color: "rgba(240,234,216,0.6)" }} className="text-xs truncate">{department || "—"}</div>
+              {title && <div style={{ color: "rgba(240,234,216,0.5)" }} className="text-[11px] truncate">{title}</div>}
             </div>
-          </div>
+          </button>
           <button onClick={onLogout} style={{ color: "rgba(240,234,216,0.6)" }} className="flex items-center gap-2 text-xs font-semibold hover:text-white">
             <LogOut size={13} /> Sign out
           </button>
@@ -555,25 +570,23 @@ function FocusSession() {
 }
 
 // ---------- Dashboard ----------
-// A flat row of real numbers, not another card -- the roadmap one level down
-// (LearningPath) already renders per-course progress, so this only needs to answer
-// "how am I doing overall," aggregated from the same /trainings response Dashboard
-// already fetches.
-// Three cards, deliberately not four: the reference this was modeled on also had a
-// "Due soon" card, but nothing in the schema tracks an assignment deadline (only
-// certificate expiry, which is a different fact), and a card with an invented number
-// is worse than one fewer card.
-function DashboardStats({ trainings }) {
+// Four cards. The brief's "Due soon" turned out to be real, not invented: /certificates
+// already returns renewalsDue (qscore.renewal_candidates -- certificates valid today but
+// expiring within 30 days), the same data the Certificates page uses. Counting the
+// not-yet-expired ones is exactly "due soon"; the already-expired ones are counted
+// separately below, since "expired" and "about to expire" are different facts.
+function DashboardStats({ trainings, renewalsDue }) {
   if (trainings.length === 0) return null;
   const total = trainings.length;
   const completed = trainings.filter((t) => t.status === "completed").length;
   const compliant = trainings.filter((t) => t.compliant && !t.expired).length;
+  const dueSoon = renewalsDue.filter((r) => !r.expired).length;
   const pct = Math.round((completed / total) * 100);
 
   return (
-    <div className="grid grid-cols-3 gap-4 mb-8">
+    <div className="grid grid-cols-4 gap-4 mb-8">
       <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 flex items-center gap-4">
-        <MasteryRing value={pct} size={52} stroke={5} />
+        <MasteryRing value={pct} size={48} stroke={5} />
         <div>
           <div style={{ color: C.sub }} className="text-xs font-semibold uppercase tracking-wide mb-0.5">Overall progress</div>
           <div style={{ color: C.sub }} className="text-xs">across {total} training{total === 1 ? "" : "s"}</div>
@@ -585,7 +598,16 @@ function DashboardStats({ trainings }) {
         </div>
         <div>
           <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-0.5">{completed}/{total}</div>
-          <div style={{ color: C.sub }} className="text-xs font-semibold uppercase tracking-wide">Trainings completed</div>
+          <div style={{ color: C.sub }} className="text-xs font-semibold uppercase tracking-wide">Completed</div>
+        </div>
+      </div>
+      <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 flex items-center gap-4">
+        <div style={{ background: C.amberBg }} className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0">
+          <Clock size={20} color={C.amber} />
+        </div>
+        <div>
+          <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-0.5">{dueSoon}</div>
+          <div style={{ color: C.sub }} className="text-xs font-semibold uppercase tracking-wide">Due soon</div>
         </div>
       </div>
       <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 flex items-center gap-4">
@@ -594,30 +616,76 @@ function DashboardStats({ trainings }) {
         </div>
         <div>
           <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-0.5">{compliant}/{total}</div>
-          <div style={{ color: C.sub }} className="text-xs font-semibold uppercase tracking-wide">Compliant now</div>
+          <div style={{ color: C.sub }} className="text-xs font-semibold uppercase tracking-wide">Compliant</div>
         </div>
       </div>
     </div>
   );
 }
 
-function Dashboard({ name, onOpenPath, onOpenTraining }) {
+// Manager-only, real: the same qscore coverage numbers My Team's roster uses, just the
+// worst-off few direct reports at a glance rather than the full table. Nobody here is
+// asked to trust an invented percentage next to a real name.
+function TeamProgressCard({ team }) {
+  const { data } = useAsync(() => api.teamCompletion(), []);
+  const direct = (team?.people || []).filter((p) => p.direct);
+  if (!direct.length) return null;
+
+  const byId = new Map((data?.people || []).map((p) => [p.employeeId, p]));
+  const rows = direct
+    .map((p) => ({ ...p, stat: byId.get(p.employeeId) }))
+    .filter((p) => p.stat)
+    .sort((a, b) => a.stat.coverage - b.stat.coverage)
+    .slice(0, 5);
+
+  return (
+    <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5">
+      <h3 style={{ ...display, color: C.ink }} className="font-bold mb-4">Team progress</h3>
+      {!rows.length ? (
+        <p style={{ color: C.sub }} className="text-xs">Completion numbers are still loading.</p>
+      ) : (
+        <div className="space-y-3.5">
+          {rows.map((p) => (
+            <div key={p.employeeId}>
+              <div className="flex items-center gap-2 mb-1">
+                <div style={{ background: C.mint, color: C.green700 }} className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0">
+                  {p.name.split(" ").map((x) => x[0]).join("")}
+                </div>
+                <p style={{ color: C.ink }} className="text-xs font-semibold truncate flex-1">{p.name}</p>
+                <span style={{ color: C.sub }} className="text-xs font-semibold shrink-0">{Math.round(p.stat.coverage)}%</span>
+              </div>
+              <div style={{ background: C.line }} className="w-full h-1.5 rounded-full overflow-hidden">
+                <div style={{ width: `${p.stat.coverage}%`, background: C.green500 }} className="h-full rounded-full" />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Dashboard({ name, team, onOpenPath, onOpenTraining }) {
   const { data, loading, error, reload } = useAsync(() => api.trainings(), []);
+  const { data: certData } = useAsync(() => api.certificates(), []);
   const trainings = data?.trainings || [];
+  const renewalsDue = certData?.renewalsDue || [];
+  const upcoming = renewalsDue.filter((r) => !r.expired);
+  const manages = Boolean(team?.manages);
   // Resume the one in progress; failing that, whatever hasn't been started.
   const focus = trainings.find((t) => t.status === "in-progress")
     || trainings.find((t) => t.status === "not-started")
     || trainings[0];
 
   return (
-    <div className="p-8 max-w-4xl">
-      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Welcome back, {name.split(" ")[0]}</h1>
-      <p style={{ color: C.sub }} className="text-sm mb-8">Here's where your compliance training stands.</p>
+    <div className="p-8 max-w-6xl">
+      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Good morning, {name.split(" ")[0]}</h1>
+      <p style={{ color: C.sub }} className="text-sm mb-8">Here's where your training stands.</p>
 
       {loading && <Loading label="Loading your trainings…" />}
       {error && <ErrorBox error={error} onRetry={reload} />}
 
-      {!loading && !error && <DashboardStats trainings={trainings} />}
+      {!loading && !error && <DashboardStats trainings={trainings} renewalsDue={renewalsDue} />}
 
       {focus && (
         <div style={{ borderColor: C.line }}
@@ -643,46 +711,49 @@ function Dashboard({ name, onOpenPath, onOpenTraining }) {
       )}
 
       {!loading && !error && trainings.length > 0 && (
-        <>
-          <div className="flex items-center justify-between mb-3">
-            <h3 style={{ ...display, color: C.ink }} className="font-bold">Your trainings</h3>
-            <button onClick={onOpenPath} style={{ color: C.green700 }} className="text-sm font-semibold flex items-center gap-1">
-              View full path <ChevronRight size={14} />
-            </button>
-          </div>
-          <div className="space-y-2">
-            {trainings.map((t) => (
-              <button key={t.id} onClick={() => onOpenTraining(t)} style={{ borderColor: C.line }}
-                className="w-full text-left border rounded-xl p-4 flex items-center justify-between gap-3 bg-white hover:shadow-sm transition-shadow">
-                <div className="flex items-center gap-3 min-w-0">
-                  {t.status === "completed"
-                    ? <CheckCircle2 size={16} color={C.success} className="shrink-0" />
-                    : <Circle size={16} color={C.green500} className="shrink-0" />}
-                  <div className="min-w-0">
-                    <p style={{ color: C.ink }} className="text-sm font-semibold truncate">{t.title}</p>
-                    <p style={{ color: C.sub }} className="text-xs">
-                      {t.modules.length} modules · {t.questionCount} questions
-                      {t.compliant && t.expiresAt ? ` · renews ${String(t.expiresAt).slice(0, 10)}` : ""}
-                    </p>
-                  </div>
-                </div>
-                {t.expired ? (
-                  <span style={{ background: C.dangerBg, color: C.danger, fontWeight: 600 }}
-                    className="text-xs px-2.5 py-1 rounded-full whitespace-nowrap">Expired — retake</span>
-                ) : t.compliant ? (
-                  <span style={{ background: C.successBg, color: C.success, fontWeight: 600 }}
-                    className="text-xs px-2.5 py-1 rounded-full whitespace-nowrap">Compliant</span>
-                ) : (
-                  <StatusPill status={t.status} />
-                )}
+        <div className={manages ? "grid grid-cols-3 gap-6 items-start mb-8" : "mb-8"}>
+          <div className={manages ? "col-span-2" : ""}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 style={{ ...display, color: C.ink }} className="font-bold">Your learning path</h3>
+              <button onClick={onOpenPath} style={{ color: C.green700 }} className="text-sm font-semibold flex items-center gap-1">
+                View full path <ChevronRight size={14} />
               </button>
-            ))}
+            </div>
+            <div className="space-y-2">
+              {trainings.map((t) => (
+                <button key={t.id} onClick={() => onOpenTraining(t)} style={{ borderColor: C.line }}
+                  className="w-full text-left border rounded-xl p-4 flex items-center justify-between gap-3 bg-white hover:shadow-sm transition-shadow">
+                  <div className="flex items-center gap-3 min-w-0">
+                    {t.status === "completed"
+                      ? <CheckCircle2 size={16} color={C.success} className="shrink-0" />
+                      : <Circle size={16} color={C.green500} className="shrink-0" />}
+                    <div className="min-w-0">
+                      <p style={{ color: C.ink }} className="text-sm font-semibold truncate">{t.title}</p>
+                      <p style={{ color: C.sub }} className="text-xs">
+                        {t.modules.length} modules · {t.questionCount} questions
+                        {t.compliant && t.expiresAt ? ` · renews ${String(t.expiresAt).slice(0, 10)}` : ""}
+                      </p>
+                    </div>
+                  </div>
+                  {t.expired ? (
+                    <span style={{ background: C.dangerBg, color: C.danger, fontWeight: 600 }}
+                      className="text-xs px-2.5 py-1 rounded-full whitespace-nowrap">Expired — retake</span>
+                  ) : t.compliant ? (
+                    <span style={{ background: C.successBg, color: C.success, fontWeight: 600 }}
+                      className="text-xs px-2.5 py-1 rounded-full whitespace-nowrap">Compliant</span>
+                  ) : (
+                    <StatusPill status={t.status} />
+                  )}
+                </button>
+              ))}
+            </div>
           </div>
-        </>
+          {manages && <TeamProgressCard team={team} />}
+        </div>
       )}
 
       {!loading && !error && trainings.length === 0 && (
-        <div style={{ borderColor: C.line }} className="border rounded-xl p-6 bg-white text-center">
+        <div style={{ borderColor: C.line }} className="border rounded-xl p-6 bg-white text-center mb-8">
           <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">No trainings yet</p>
           <p style={{ color: C.sub }} className="text-xs">
             Nothing has been assigned to your role yet. Check back soon, or ask your manager if you think this is unexpected.
@@ -690,11 +761,31 @@ function Dashboard({ name, onOpenPath, onOpenTraining }) {
         </div>
       )}
 
+      {upcoming.length > 0 && (
+        <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 mb-8">
+          <h3 style={{ ...display, color: C.ink }} className="font-bold mb-4">Upcoming deadlines</h3>
+          <div className="space-y-2">
+            {upcoming.map((r) => (
+              <div key={r.doc_title} style={{ borderColor: C.line }}
+                className="flex items-center justify-between gap-3 border-t pt-2.5 first:border-t-0 first:pt-0">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Clock size={14} color={C.amber} className="shrink-0" />
+                  <p style={{ color: C.ink }} className="text-sm font-medium truncate">{r.doc_title}</p>
+                </div>
+                <span style={{ color: C.amber }} className="text-xs font-semibold shrink-0">
+                  {r.daysUntilExpiry === 0 ? "expires today" : `expires in ${r.daysUntilExpiry} day${r.daysUntilExpiry === 1 ? "" : "s"}`}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {!loading && !error && trainings.length > 0 && (
         <div style={{ background: C.green700 }}
-          className="rounded-2xl p-6 mt-8 flex items-center justify-between gap-6 text-white">
+          className="rounded-2xl p-6 flex items-center justify-between gap-6 text-white">
           <div>
-            <h3 style={{ ...display }} className="text-lg font-bold mb-1">Keep going</h3>
+            <h3 style={{ ...display }} className="text-lg font-bold mb-1">Keep growing, keep leading.</h3>
             <p className="text-sm opacity-90">
               The full roadmap shows every module ahead, in order, with what's already done.
             </p>
@@ -814,7 +905,7 @@ function LearningPath({ onBack, onOpenTraining }) {
         <ArrowLeft size={14} /> Back to dashboard
       </button>
       <div className="flex items-center gap-2 mb-6">
-        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold">My training path</h1>
+        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold">Learning paths</h1>
         {showExample && <MockNote>example path</MockNote>}
       </div>
 
@@ -1822,7 +1913,7 @@ function DocumentsScreen({ team, principal, onDone }) {
 
   return (
     <div className="p-8 max-w-3xl">
-      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Documents</h1>
+      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Resources</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">
         Upload a training document. The AI maps each section to the role it trains,
         you confirm, and employees in those roles owe the module — renewed yearly.
@@ -2133,7 +2224,7 @@ function ManagerTeam({ team }) {
   if (!people.length) {
     return (
       <div className="p-8 max-w-4xl">
-        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">My team</h1>
+        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Reports</h1>
         <ReportsToCard manager={team?.manager} />
         <p style={{ color: C.sub }} className="text-sm">Nobody reports to you yet.</p>
       </div>
@@ -2159,7 +2250,7 @@ function ManagerTeam({ team }) {
 
   return (
     <div className="p-8 max-w-5xl">
-      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">My team</h1>
+      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Reports</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">
         Everyone who reports to you, and how their training is going.
       </p>
@@ -2366,7 +2457,7 @@ function TeamHabitat({ members, highlightName }) {
 
           <circle cx={cx} cy={cy} r="28" fill={C.green700} className="qhub-pulse" />
           <circle cx={cx} cy={cy} r="28" fill="none" stroke={C.green300} strokeWidth="1.5" />
-          <text x={cx} y={cy + 6} textAnchor="middle" fill="#fff" fontSize="17" fontWeight="700" fontFamily="Fraunces, serif">Q</text>
+          <text x={cx} y={cy + 6} textAnchor="middle" fill="#fff" fontSize="17" fontWeight="700" fontFamily="'Playfair Display', serif">Q</text>
 
           {nodes.map((nd) => {
             const isYou = nd.name === highlightName;
@@ -2379,10 +2470,10 @@ function TeamHabitat({ members, highlightName }) {
                 <svg x={nd.pos.x - nd.size / 2} y={nd.pos.y - nd.size / 2} width={nd.size} height={nd.size} viewBox={`0 0 ${nd.size} ${nd.size}`}>
                   <PetCreature stageIdx={nd.stageIdx} size={nd.size} />
                 </svg>
-                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 19} textAnchor="middle" fill={C.ink} fontSize="11" fontWeight="700" fontFamily="'IBM Plex Sans', sans-serif">
+                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 19} textAnchor="middle" fill={C.ink} fontSize="11" fontWeight="700" fontFamily="'Inter', sans-serif">
                   {nd.name.split(" ")[0]}{isYou ? " (you)" : ""}
                 </text>
-                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 32} textAnchor="middle" fill={C.green700} fontSize="9" fontWeight="600" fontFamily="'IBM Plex Sans', sans-serif">
+                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 32} textAnchor="middle" fill={C.green700} fontSize="9" fontWeight="600" fontFamily="'Inter', sans-serif">
                   Lv {nd.stage.level} · {nd.stage.name}
                 </text>
               </g>
@@ -2426,7 +2517,7 @@ function TeammatesGallery({ team, name }) {
   if (!team) {
     return (
       <div className="p-8 max-w-4xl">
-        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Teammates</h1>
+        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Team</h1>
         <p style={{ color: C.sub }} className="text-sm">Loading your team…</p>
       </div>
     );
@@ -2446,7 +2537,7 @@ function TeammatesGallery({ team, name }) {
   if (peers.length === 0) {
     return (
       <div className="p-8 max-w-4xl">
-        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Teammates</h1>
+        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Team</h1>
         <p style={{ color: C.sub }} className="text-sm">
           Nobody else shares your manager, so there is no team to show. If that looks
           wrong, it means reporting lines have not been set for your organisation yet.
@@ -2468,7 +2559,7 @@ function TeammatesGallery({ team, name }) {
 
   return (
     <div className="p-8 max-w-4xl">
-      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Teammates</h1>
+      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Team</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">
         People who share your manager — {peers.length} {peers.length === 1 ? "person" : "people"}.
       </p>
@@ -2602,18 +2693,18 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
         <div className="flex justify-center mb-4">
           <svg ref={svgRef} width="240" height="340" viewBox="0 0 240 340" xmlns="http://www.w3.org/2000/svg">
             <rect x="0" y="0" width="240" height="340" rx="20" fill={C.green900} />
-            <text x="20" y="32" fill="#fff" fontSize="13" fontWeight="700" fontFamily="Fraunces, serif" letterSpacing="1">ASCEND</text>
+            <text x="20" y="32" fill="#fff" fontSize="13" fontWeight="700" fontFamily="'Playfair Display', serif" letterSpacing="1">ASCEND</text>
             <svg x="45" y="52" width="150" height="150" viewBox="0 0 150 150">
               <PetCreature stageIdx={stageIdx} size={150} />
             </svg>
-            <text x="120" y="228" textAnchor="middle" fill="#fff" fontSize="20" fontWeight="700" fontFamily="Fraunces, serif">{stage.name}</text>
-            <text x="120" y="250" textAnchor="middle" fill="#CFE9D9" fontSize="12" fontWeight="600" fontFamily="'IBM Plex Sans', sans-serif">Level {stage.level} · {name}</text>
+            <text x="120" y="228" textAnchor="middle" fill="#fff" fontSize="20" fontWeight="700" fontFamily="'Playfair Display', serif">{stage.name}</text>
+            <text x="120" y="250" textAnchor="middle" fill="#CFE9D9" fontSize="12" fontWeight="600" fontFamily="'Inter', sans-serif">Level {stage.level} · {name}</text>
             <line x1="30" y1="268" x2="210" y2="268" stroke="rgba(255,255,255,0.2)" />
-            <text x="70" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="Fraunces, serif">{qScore}</text>
-            <text x="70" y="308" textAnchor="middle" fill="#A9DFC0" fontSize="9" fontFamily="'IBM Plex Sans', sans-serif">Q SCORE</text>
-            <text x="170" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="Fraunces, serif">{trainingsCompleted}</text>
-            <text x="170" y="308" textAnchor="middle" fill="#A9DFC0" fontSize="9" fontFamily="'IBM Plex Sans', sans-serif">TRAININGS</text>
-            <text x="120" y="325" textAnchor="middle" fill="rgba(255,255,255,0.5)" fontSize="9" fontFamily="'IBM Plex Sans', sans-serif">ascend.app</text>
+            <text x="70" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="'Playfair Display', serif">{qScore}</text>
+            <text x="70" y="308" textAnchor="middle" fill="#A9DFC0" fontSize="9" fontFamily="'Inter', sans-serif">Q SCORE</text>
+            <text x="170" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="'Playfair Display', serif">{trainingsCompleted}</text>
+            <text x="170" y="308" textAnchor="middle" fill="#A9DFC0" fontSize="9" fontFamily="'Inter', sans-serif">TRAININGS</text>
+            <text x="120" y="325" textAnchor="middle" fill="rgba(255,255,255,0.5)" fontSize="9" fontFamily="'Inter', sans-serif">ascend.app</text>
           </svg>
         </div>
 
@@ -2633,6 +2724,57 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
 }
 
 // ---------- Profile ----------
+function Settings() {
+  const { data, loading, error, reload } = useAsync(() => api.getSettings(), []);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
+
+  const toggle = async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await api.updateSettings(!data.notificationsEnabled);
+      await reload();
+    } catch (err) {
+      setSaveError(err.message || "Could not save.");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="p-8 max-w-2xl">
+      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Settings</h1>
+      <p style={{ color: C.sub }} className="text-sm mb-8">Your account preferences.</p>
+
+      {loading && <Loading />}
+      {error && <ErrorBox error={error} onRetry={reload} />}
+
+      {data && (
+        <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 flex items-center justify-between gap-6">
+          <div className="min-w-0">
+            <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">Email notifications</p>
+            <p style={{ color: C.sub }} className="text-xs">
+              Reminders about training that's due soon, and a notice when something new is
+              assigned to your role.
+            </p>
+          </div>
+          <button
+            onClick={toggle} disabled={saving} aria-pressed={data.notificationsEnabled}
+            style={{ background: data.notificationsEnabled ? C.green700 : C.line }}
+            className="w-11 h-6 rounded-full relative shrink-0 transition-colors disabled:opacity-60"
+          >
+            <span
+              style={{ background: "#fff", left: data.notificationsEnabled ? 22 : 2 }}
+              className="w-5 h-5 rounded-full absolute top-0.5 transition-all"
+            />
+          </button>
+        </div>
+      )}
+      {saveError && <p style={{ color: C.danger }} className="text-xs font-semibold mt-3">{saveError}</p>}
+    </div>
+  );
+}
+
 function Profile({ principal }) {
   // Identity from the signed-in principal. PROFILES is a fallback ONLY for the fields
   // that still have no backend (joined date) — using it for name or email would show
@@ -2919,7 +3061,7 @@ export default function App() {
   } else if (view === "team") {
     content = <ManagerTeam team={team} />;
   } else if (view === "dashboard") {
-    content = <Dashboard name={auth.name || auth.email} onOpenPath={() => goto("path")} onOpenTraining={openTraining} />;
+    content = <Dashboard name={auth.name || auth.email} team={team} onOpenPath={() => goto("path")} onOpenTraining={openTraining} />;
   } else if (view === "path") {
     content = <LearningPath onBack={() => goto("dashboard")} onOpenTraining={openTraining} />;
   } else if (view === "trainingDetail") {
@@ -2966,6 +3108,8 @@ export default function App() {
     content = <Certificates />;
   } else if (view === "teammates") {
     content = <TeammatesGallery team={team} name={auth.name || auth.email} />;
+  } else if (view === "settings") {
+    content = <Settings />;
   }
 
   const quizViews = ["trainingDetail", "lesson", "quizPre", "quizRunner", "quizResults"];

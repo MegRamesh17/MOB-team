@@ -83,9 +83,10 @@ class FakeConn:
 
 def _row(id=1, doc_title="Workplace Safety", expires_at="2026-09-01",
          email="ethan.brooks@demo.com", employee_name="Ethan Brooks",
-         company_name="Quizrant"):
+         company_name="Quizrant", notifications_enabled=True):
     return dict(id=id, doc_title=doc_title, expires_at=expires_at, email=email,
-                employee_name=employee_name, company_name=company_name)
+                employee_name=employee_name, company_name=company_name,
+                notifications_enabled=notifications_enabled)
 
 
 class TestSendExpiryReminders(unittest.TestCase):
@@ -136,6 +137,21 @@ class TestSendExpiryReminders(unittest.TestCase):
             function_app.send_expiry_reminders(None)
         # Only the row whose send succeeded gets stamped -- a failed send must not be
         # marked reminded, or that certificate silently never gets another chance.
+        self.assertEqual(conn.cursor_obj.updated_ids, [2])
+
+    def test_opted_out_recipient_is_skipped_and_left_unstamped(self):
+        conn = self._patch_conn([
+            _row(id=1, notifications_enabled=False),
+            _row(id=2, email="maya.osei@demo.com"),
+        ])
+        with patch("shared.comms.send_expiry_email") as send:
+            function_app.send_expiry_reminders(None)
+        # The opted-out row is neither emailed nor stamped -- reminder_sent_at staying
+        # NULL is what lets them get the reminder later if they turn notifications
+        # back on, rather than this certificate being silently skipped forever.
+        send.assert_called_once_with(
+            "maya.osei@demo.com", "Ethan Brooks", "Workplace Safety",
+            "2026-09-01", "Quizrant")
         self.assertEqual(conn.cursor_obj.updated_ids, [2])
 
     def test_unconfigured_resend_stops_cleanly_without_marking_anything_sent(self):
