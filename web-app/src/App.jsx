@@ -1554,6 +1554,22 @@ function DocumentsScreen({ team, onDone }) {
     return () => clearInterval(pollRef.current);
   }, [job, reload]);
 
+  // Rediscovers a job this component didn't start -- generation runs on the server
+  // regardless of whether anyone's tab is open to watch it, so a job already `job`
+  // knows about here is real state to resume, not something to invent. Runs whenever
+  // the document list reloads (including the mount after navigating back to this
+  // screen), which is exactly when a job started before navigating away needs to be
+  // found again. Guarded on `!job` so it never clobbers a job this tab already knows
+  // about with a slightly-stale copy of the same job from the list response.
+  useEffect(() => {
+    if (job || !data?.documents) return;
+    const active = data.documents.find((d) => d.activeJob)?.activeJob;
+    if (active) {
+      setJob({ jobId: active.jobId, state: "running", total: active.total,
+                done: active.done, kept: 0, message: active.message });
+    }
+  }, [data, job]);
+
   const handleFiles = async (files) => {
     const file = files?.[0];
     if (!file) return;

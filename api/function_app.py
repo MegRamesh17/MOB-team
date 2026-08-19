@@ -2537,6 +2537,30 @@ def list_documents(req: func.HttpRequest) -> func.HttpResponse:
             )
             q_counts = {(r.source_doc_title or ""): r.n for r in cur.fetchall()}
 
+            # A running job survives here across a page reload or a tab switch, because
+            # it lives in the database, not in the browser tab that started it. Without
+            # this the frontend's job state was plain useState in DocumentsScreen --
+            # real, still-running generation on the server, but the progress bar
+            # vanished the moment that component unmounted, because nothing told a
+            # freshly-remounted one that a job existed to resume polling.
+            cur.execute(
+                """SELECT job_id, doc_title, total, done_count, message, created_at
+                     FROM dbo.GenerationJobs
+                    WHERE company_id = ? AND state = 'running'
+                    ORDER BY created_at DESC""",
+                identity.company_id,
+            )
+            active_jobs: Dict[str, Dict[str, Any]] = {}
+            for r in cur.fetchall():
+                # ORDER BY created_at DESC means the first row seen per doc_title is
+                # the most recent -- later rows for the same title (should not
+                # normally happen; nothing stops two jobs queuing for one document) are
+                # skipped rather than overwriting it.
+                active_jobs.setdefault(r.doc_title, {
+                    "jobId": r.job_id, "total": r.total, "done": r.done_count,
+                    "message": r.message,
+                })
+
         docs = [
             {
                 "title": title,
@@ -2544,6 +2568,7 @@ def list_documents(req: func.HttpRequest) -> func.HttpResponse:
                 "questions": q_counts.get(title, 0),
                 # Read but not yet generated from -- the UI offers to generate for these.
                 "ready": q_counts.get(title, 0) > 0,
+                "activeJob": active_jobs.get(title),
             }
             for title, count in sorted(chunk_counts.items())
         ]
