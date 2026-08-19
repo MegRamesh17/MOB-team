@@ -205,7 +205,7 @@ def render_certificate(
     _letterspaced(pdf, "PRESENTED TO :", center_x, y, "Helvetica-Bold", 10, 1.8)
 
     y -= 58
-    pdf.setFillColor(deep)
+    pdf.setFillColor(amber)
     name = employee_name or "Employee"
     name_size = 54 if script_font == _SCRIPT_FONT else 40
     # Shrink to fit rather than truncate -- unlike the training title below, cutting
