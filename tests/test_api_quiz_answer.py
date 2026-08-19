@@ -61,6 +61,12 @@ def _install_azure_stubs():
                 return f
             return deco
 
+        def queue_output(self, **kw):
+            return self.route(**kw)
+
+        def queue_trigger(self, **kw):
+            return self.route(**kw)
+
     class FunctionApp(Blueprint):
         def __init__(self, **kw):
             pass
@@ -95,6 +101,7 @@ def _install_azure_stubs():
     fn.AuthLevel = AuthLevel
     fn.HttpRequest = HttpRequest
     fn.HttpResponse = HttpResponse
+    fn.QueueMessage = object
     # Both, so `import azure.functions` and `azure.functions` attribute access work.
     sys.modules["azure.functions"] = fn
     az.functions = fn
