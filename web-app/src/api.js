@@ -115,8 +115,39 @@ async function call(path, { method = "GET", body } = {}) {
 export const health = () => call("/health");
 export const me = () => call("/me");
 export const trainings = () => call("/trainings");
-export const lesson = (training) => call(`/lesson?training=${encodeURIComponent(training)}`);
+export const pathway = (training) =>
+  call(`/pathway?training=${encodeURIComponent(training)}`);
+export const lesson = (training, moduleId) => {
+  const module = moduleId ? `&moduleId=${encodeURIComponent(moduleId)}` : "";
+  return call(`/lesson?training=${encodeURIComponent(training)}${module}`);
+};
 export const certificates = () => call("/certificates");
+
+export async function downloadCertificate(certificateUrl) {
+  const url = certificateUrl.startsWith("http") ? certificateUrl : BASE + certificateUrl;
+  const res = await fetch(url, { headers: authHeaders() });
+  if (!res.ok) {
+    let payload = {};
+    try { payload = await res.json(); } catch { /* PDF endpoint may return plain text */ }
+    throw new Error(payload.detail || payload.title || "Certificate download failed");
+  }
+  return res.blob();
+}
+
+export const startPathwayAssessment = ({ training, kind, moduleId }) =>
+  call("/pathway/start", {
+    method: "POST",
+    body: { training, kind, moduleId: moduleId || undefined },
+  });
+
+export const answerPathwayQuestion = ({ attemptId, questionId, selectedOptionIds, textAnswer }) =>
+  call("/pathway/answer", {
+    method: "POST",
+    body: { attemptId, questionId, selectedOptionIds, textAnswer },
+  });
+
+export const completePathwayAssessment = (attemptId) =>
+  call("/pathway/complete", { method: "POST", body: { attemptId } });
 
 /** The team you manage, and the roles you may upload for. Empty for most people. */
 export const team = () => call("/team");

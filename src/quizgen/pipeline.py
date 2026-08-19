@@ -20,7 +20,7 @@ from typing import Callable, Dict, List, Optional, Sequence
 from .bank import Bank
 from .config import CONFIG
 from .llm.base import get_generator
-from .models import Chunk, Question
+from .models import Chunk, Difficulty, Question
 from .retrieval import BM25
 from .validators import validate
 
@@ -82,6 +82,7 @@ def generate_questions(
     bank: Bank,
     chunks: Sequence[Chunk],
     per_chunk: int = 2,
+    difficulty_ladder: bool = False,
     on_progress: Optional[Callable[[Progress], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> GenerationResult:
@@ -110,7 +111,14 @@ def generate_questions(
         # One flaky call must not abort the whole run. Failures are collected and
         # reported; re-running picks them up because nothing was saved for them.
         try:
-            produced = generator.generate(chunk, count=per_chunk)
+            if difficulty_ladder:
+                produced = []
+                for difficulty in (Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD):
+                    produced.extend(
+                        generator.generate(chunk, count=per_chunk, difficulty=difficulty)
+                    )
+            else:
+                produced = generator.generate(chunk, count=per_chunk)
         except Exception as exc:  # noqa: BLE001
             label = "{}: {}".format(chunk.topic[:34], type(exc).__name__)
             result.failed.append(label)

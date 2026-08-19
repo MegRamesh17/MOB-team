@@ -168,14 +168,17 @@ class SqlBank:
                         explanation, points, source_chunk_id, source_doc_title,
                         source_page, source_quote, generator, review_status,
                         provenance_class, role_code, role_requirement,
+                        rubric_json, fallback_json, grading_version,
                         contradiction_notes, times_served, times_correct, company_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?)""",
                 q.question_id, q.topic, q.question_type.value, q.difficulty.value,
                 q.prompt, q.explanation, q.points, q.source_chunk_id or None,
                 q.source_doc_title or None, q.source_page or None,
                 q.source_quote or None, q.generator or None, status,
                 q.provenance_class.value, q.role_code or None,
                 q.role_requirement or None,
+                q.rubric_json or None, q.fallback_json or None,
+                q.grading_version or None,
                 "; ".join(notes.get(q.question_id, [])) or None,
                 self.company_id,
             )

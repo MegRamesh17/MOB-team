@@ -53,6 +53,12 @@ FROM (VALUES
     ('Certificates',                   '014'),
     ('GeneratedQuizAttemptQuestions',  '017'),
     ('RoleRequirements',               '019'),
+    ('QuizgenRoles',                   '025'),
+    ('GenerationJobs',                 '025'),
+    ('TrainingModules',                '026'),
+    ('EmployeeTrainingProgress',       '026'),
+    ('EmployeeModuleProgress',         '026'),
+    ('GeneratedGradingEvents',         '027'),
     ('SchemaMigrations',               'migrate-database.yml')
 ) AS v(name, added_by)
 WHERE OBJECT_ID('dbo.' + v.name, 'U') IS NULL;
@@ -79,7 +85,20 @@ FROM (VALUES
     ('GeneratedQuestions',     'company_id',     '020'),
     ('GeneratedQuizAttempts',  'company_id',     '020'),
     ('GeneratedQuizResponses', 'company_id',     '020'),
-    ('Certificates',           'company_id',     '020')
+    ('Certificates',           'company_id',     '020'),
+    ('GeneratedQuizAttempts',  'training_doc_id','026'),
+    ('GeneratedQuizAttempts',  'training_title', '026'),
+    ('GeneratedQuizAttempts',  'module_id',      '026'),
+    ('GeneratedQuizAttempts',  'attempt_kind',   '026'),
+    ('GeneratedQuizAttempts',  'question_target','026'),
+    ('GeneratedQuizAttempts',  'passing_score',  '026'),
+    ('GeneratedQuizAttemptQuestions', 'purpose',    '026'),
+    ('GeneratedQuizAttemptQuestions', 'is_correct', '026'),
+    ('GeneratedQuizAttemptQuestions', 'answered_at','026'),
+    ('GeneratedQuestions',     'rubric_json',      '027'),
+    ('GeneratedQuestions',     'fallback_json',    '027'),
+    ('GeneratedQuestions',     'grading_version',  '027'),
+    ('GeneratedQuizAttemptQuestions', 'fallback_active', '027')
 ) AS v(tbl, col, added_by)
 WHERE OBJECT_ID('dbo.' + v.tbl, 'U') IS NOT NULL     -- the table itself is reported above
   AND COL_LENGTH('dbo.' + v.tbl, v.col) IS NULL;
