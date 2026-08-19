@@ -243,6 +243,21 @@ def reports_of(employee_id: int, *, direct_only: bool = False) -> List[Dict]:
     return out
 
 
+def employees_with_role_code(role_code: str) -> List[Dict]:
+    """
+    Everyone holding role_code -- or everyone, when role_code is 'ALL' (a company-wide
+    requirement). Mirrors api/function_app.py's _employees_for_role, which does the
+    same lookup against dbo.Employees/dbo.Roles for the deployed app; there is only one
+    company locally, so nothing here needs a company_id filter the way that query does.
+
+    Used by devserver.py's _confirm_document to find who to notify when a document
+    becomes newly required for a role.
+    """
+    if role_code == "ALL":
+        return list(directory())
+    return [p for p in directory() if (p.get("role_code") or "ALL").upper() == role_code]
+
+
 # ---------------------------------------------------------------------------
 # tokens — claim-for-claim identical to api/shared/auth.py
 # ---------------------------------------------------------------------------

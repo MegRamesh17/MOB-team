@@ -772,7 +772,7 @@ class Bank:
         self.conn.commit()
         return len(rows)
 
-    def add_role_requirement(self, role_code: str, doc_title: str, category: str = "technical") -> None:
+    def add_role_requirement(self, role_code: str, doc_title: str, category: str = "technical") -> bool:
         """
         Add ONE role/doc pair to the required list, without touching whatever else
         that role already requires.
@@ -785,14 +785,20 @@ class Bank:
         Idempotent (INSERT OR IGNORE against the role_code+doc_title primary key):
         re-assigning the same document to the same role a second time is a no-op,
         not a duplicate-row error.
+
+        Returns True only when this call actually inserted the row -- devserver.py's
+        _confirm_document uses this to send a "new training assigned" email once, on
+        the pair's first assignment, not on every re-confirm.
         """
         role = (role_code or "ALL").strip().upper()
-        self.conn.execute(
+        cur = self.conn.execute(
             "INSERT OR IGNORE INTO role_requirements (role_code, doc_title, category, created_at) "
             "VALUES (?,?,?,?)",
             (role, str(doc_title), (category or "technical").strip().lower(), utcnow()),
         )
+        inserted = cur.rowcount > 0
         self.conn.commit()
+        return inserted
 
     def role_requirements(self, role_code: str) -> List[dict]:
         """

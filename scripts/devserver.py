@@ -1001,10 +1001,18 @@ class Handler(BaseHTTPRequestHandler):
             # manager can only make required the exact thing they were already
             # trusted to assign.
             required_for = []
+            # (email, name) pairs to notify, collected here but sent after the `with`
+            # block closes -- same reasoning as function_app.py's confirm_document:
+            # a slow or failing Resend call must not hold the Bank connection open.
+            to_notify = []
             if make_required:
                 for role_code in set(normalized.values()):
-                    bank.add_role_requirement(role_code, doc_title)
+                    newly_required = bank.add_role_requirement(role_code, doc_title)
                     required_for.append(role_code)
+                    if newly_required:
+                        to_notify.extend(
+                            (p["email"], p["name"])
+                            for p in devauth.employees_with_role_code(role_code))
 
             # Update-vs-add was decided by gpt-5 and shown to the manager before
             # this call; supersede arrives here already reviewed. Old questions stop
@@ -1013,6 +1021,20 @@ class Handler(BaseHTTPRequestHandler):
             supersede = str(body.get("supersede", "")).strip()
             if supersede and supersede != doc_title:
                 retired = bank.retire_document_questions(supersede)
+
+        if to_notify:
+            sys.path.insert(0, str(REPO / "api"))
+            from shared.comms import send_new_training_email
+            for email, name in dict.fromkeys(to_notify):
+                try:
+                    send_new_training_email(email, name, doc_title, "Your company")
+                except Exception as exc:  # noqa: BLE001
+                    # A notification failure must never fail the confirm itself -- the
+                    # document is already saved and generating either way. print, not
+                    # logging -- this file never imports logging, only print, for
+                    # exactly this kind of "surface it, don't crash" diagnostic.
+                    print("    ! failed to notify {} of new training {!r}: {}".format(
+                        email, doc_title, exc))
 
         job_id = _start_generation_job(doc_title)
         return self._send({
