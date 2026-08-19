@@ -949,16 +949,22 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
         with _conn() as c:
             cur = c.cursor()
 
-            # Approved questions in scope, grouped by the document they came from.
-            # role_scope 'ALL' is company-wide material everyone takes.
+            # TrainingModuleRoles is authoritative for new multi-role courses. The
+            # migration backfills one row for every legacy module as well.
             cur.execute(
                 """SELECT COALESCE(q.source_doc_title, q.topic) AS doc,
-                          MAX(c.doc_id) AS doc_id, COUNT(*) AS question_count
+                          MAX(m.doc_id) AS doc_id, COUNT(*) AS question_count
                      FROM dbo.GeneratedQuestions q
-                     LEFT JOIN dbo.SourceChunks c ON c.chunk_id = q.source_chunk_id
+                     JOIN dbo.TrainingModules m
+                       ON m.company_id = q.company_id AND m.module_id = q.module_id
                     WHERE q.review_status = 'Approved'
                       AND q.company_id = ?
-                      AND (COALESCE(c.role_scope, 'ALL') IN ('ALL', ?))
+                      AND m.status = 'ready'
+                      AND EXISTS (
+                          SELECT 1 FROM dbo.TrainingModuleRoles audience
+                           WHERE audience.company_id = m.company_id
+                             AND audience.module_id = m.module_id
+                             AND audience.role_code IN ('ALL', ?))
                     GROUP BY COALESCE(q.source_doc_title, q.topic)
                     ORDER BY doc""",
                 identity.company_id, role,
@@ -970,10 +976,15 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
             visible = {d["doc"] for d in docs}
 
             cur.execute(
-                """SELECT DISTINCT doc_title, topic FROM dbo.SourceChunks
-                    WHERE company_id = ?
-                      AND COALESCE(role_scope, 'ALL') IN ('ALL', ?)
-                    ORDER BY doc_title, topic""",
+                """SELECT m.doc_title, m.heading AS topic, m.source_order
+                     FROM dbo.TrainingModules m
+                    WHERE m.company_id = ? AND m.status = 'ready'
+                      AND EXISTS (
+                          SELECT 1 FROM dbo.TrainingModuleRoles audience
+                           WHERE audience.company_id = m.company_id
+                             AND audience.module_id = m.module_id
+                             AND audience.role_code IN ('ALL', ?))
+                    ORDER BY m.doc_title, m.source_order""",
                 identity.company_id, role,
             )
             modules: Dict[str, List[str]] = {}
@@ -991,8 +1002,8 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
             by_topic = {r["topic"]: r for r in _rows(cur)}
 
             cur.execute(
-                """SELECT DISTINCT doc_title, topic FROM dbo.SourceChunks
-                    WHERE company_id = ?""", identity.company_id)
+                """SELECT DISTINCT doc_title, topic FROM dbo.TrainingModules
+                    WHERE company_id = ? AND status = 'ready'""", identity.company_id)
             topic_to_doc = {r["topic"]: r["doc_title"] for r in _rows(cur)}
 
             cur.execute(
@@ -1057,6 +1068,15 @@ def _sync_training_modules(cur, company_id: int, training: str) -> None:
     from shared.pathway import stable_module_id
 
     cur.execute(
+        "SELECT COUNT(*) AS n FROM dbo.TrainingModules WHERE company_id = ? "
+        "AND doc_title = ? AND generation_version = 'instructional-v1' "
+        "AND status <> 'retired'",
+        company_id, training,
+    )
+    if int(_rows(cur)[0]["n"] or 0):
+        return
+
+    cur.execute(
         """SELECT doc_id, doc_title, topic, MIN(section) AS heading,
                   MIN(page_start) AS source_order, MIN(role_scope) AS role_scope
              FROM dbo.SourceChunks
@@ -1083,6 +1103,14 @@ def _sync_training_modules(cur, company_id: int, training: str) -> None:
             source["topic"], source["heading"], source["source_order"],
             source["role_scope"] or "ALL",
         )
+        cur.execute(
+            """IF NOT EXISTS (SELECT 1 FROM dbo.TrainingModuleRoles
+                               WHERE company_id = ? AND module_id = ?)
+                   INSERT INTO dbo.TrainingModuleRoles (company_id, module_id, role_code)
+                   VALUES (?, ?, ?)""",
+            company_id, module_id, company_id, module_id,
+            source["role_scope"] or "ALL",
+        )
 
 
 def _pathway_state(cur, identity, learner: str, training: str) -> Optional[Dict[str, Any]]:
@@ -1092,12 +1120,23 @@ def _pathway_state(cur, identity, learner: str, training: str) -> Optional[Dict[
     _sync_training_modules(cur, identity.company_id, training)
     role = (identity.role_code or "ALL").upper()
     cur.execute(
-        """SELECT module_id, doc_id, doc_title, topic, heading, source_order
-             FROM dbo.TrainingModules
-            WHERE company_id = ? AND doc_title = ?
-              AND role_scope IN ('ALL', ?)
-            ORDER BY source_order, module_id""",
-        identity.company_id, training, role,
+        """SELECT m.module_id, m.doc_id, m.doc_title, m.topic, m.heading,
+                  m.source_order, m.summary, m.lesson_word_count,
+                  m.learning_point_count, m.active_generation_id
+             FROM dbo.TrainingModules m
+            WHERE m.company_id = ? AND m.doc_title = ? AND m.status = 'ready'
+              AND (
+                  EXISTS (SELECT 1 FROM dbo.TrainingModuleRoles audience
+                           WHERE audience.company_id = m.company_id
+                             AND audience.module_id = m.module_id
+                             AND audience.role_code IN ('ALL', ?))
+                  OR (NOT EXISTS (SELECT 1 FROM dbo.TrainingModuleRoles audience
+                                  WHERE audience.company_id = m.company_id
+                                    AND audience.module_id = m.module_id)
+                      AND m.role_scope IN ('ALL', ?))
+              )
+            ORDER BY m.source_order, m.module_id""",
+        identity.company_id, training, role, role,
     )
     modules = _rows(cur)
     if not modules:
@@ -1144,10 +1183,8 @@ def _pathway_state(cur, identity, learner: str, training: str) -> Optional[Dict[
                       WHEN q.question_type = 'MultipleChoice'
                       THEN q.question_id END) AS choice_n
              FROM dbo.TrainingModules m
-             JOIN dbo.SourceChunks c
-               ON c.company_id = m.company_id AND c.doc_id = m.doc_id AND c.topic = m.topic
              JOIN dbo.GeneratedQuestions q
-               ON q.company_id = m.company_id AND q.source_chunk_id = c.chunk_id
+               ON q.company_id = m.company_id AND q.module_id = m.module_id
             WHERE m.company_id = ? AND m.doc_id = ? AND q.review_status = 'Approved'
             GROUP BY m.module_id, q.difficulty""",
         identity.company_id, doc_id,
@@ -1158,6 +1195,22 @@ def _pathway_state(cur, identity, learner: str, training: str) -> Optional[Dict[
         counts.setdefault(row["module_id"], {})[row["difficulty"]] = int(row["n"] or 0)
         choice_counts.setdefault(row["module_id"], {})[row["difficulty"]] = int(
             row["choice_n"] or 0)
+
+    cur.execute(
+        """SELECT m.module_id, COUNT(p.page_id) AS page_count,
+                  COUNT(done.page_id) AS completed_pages
+             FROM dbo.TrainingModules m
+             LEFT JOIN dbo.LessonPages p
+               ON p.company_id = m.company_id AND p.module_id = m.module_id
+              AND p.generation_id = m.active_generation_id
+             LEFT JOIN dbo.EmployeeLessonPageProgress done
+               ON done.company_id = p.company_id AND done.page_id = p.page_id
+              AND done.learner_id = ?
+            WHERE m.company_id = ? AND m.doc_id = ?
+            GROUP BY m.module_id""",
+        learner, identity.company_id, doc_id,
+    )
+    page_progress = {row["module_id"]: row for row in _rows(cur)}
 
     first_incomplete = next(
         (module["module_id"] for module in modules
@@ -1179,6 +1232,9 @@ def _pathway_state(cur, identity, learner: str, training: str) -> Optional[Dict[
             weak_sections = []
         difficulty_counts = counts.get(module["module_id"], {})
         choice_difficulty_counts = choice_counts.get(module["module_id"], {})
+        pages = page_progress.get(module["module_id"], {})
+        page_count = int(pages.get("page_count") or 0)
+        completed_pages = int(pages.get("completed_pages") or 0)
         output_modules.append({
             "moduleId": module["module_id"],
             "title": module["heading"] or module["topic"],
@@ -1199,6 +1255,12 @@ def _pathway_state(cur, identity, learner: str, training: str) -> Optional[Dict[
                 for difficulty in DIFFICULTIES
             },
             "diagnosticScore": scores.get(module["module_id"]),
+            "summary": module.get("summary") or "",
+            "lessonWordCount": int(module.get("lesson_word_count") or 0),
+            "learningPointCount": int(module.get("learning_point_count") or 0),
+            "pageCount": page_count,
+            "completedPages": completed_pages,
+            "lessonCompleted": page_count == 0 or completed_pages >= page_count,
         })
 
     all_passed = diagnostic_done and all(module["status"] == "passed" for module in output_modules)
@@ -1249,14 +1311,19 @@ def _pathway_question_pool(cur, identity, doc_id: str, topic: str = "") -> List[
     role = (identity.role_code or "ALL").upper()
     sql = """SELECT DISTINCT q.question_id, q.topic, q.question_type, q.difficulty,
                     q.prompt, q.points, q.provenance_class, q.times_served,
-                    q.times_correct
+                    q.times_correct, q.module_id
                FROM dbo.GeneratedQuestions q
-               JOIN dbo.SourceChunks c ON c.chunk_id = q.source_chunk_id
+               JOIN dbo.TrainingModules m
+                 ON m.company_id = q.company_id AND m.module_id = q.module_id
               WHERE q.review_status = 'Approved' AND q.company_id = ?
-                AND c.doc_id = ? AND c.role_scope IN ('ALL', ?)"""
+                AND m.doc_id = ? AND m.status = 'ready'
+                AND EXISTS (SELECT 1 FROM dbo.TrainingModuleRoles audience
+                             WHERE audience.company_id = m.company_id
+                               AND audience.module_id = m.module_id
+                               AND audience.role_code IN ('ALL', ?))"""
     params: List[Any] = [identity.company_id, doc_id, role]
     if topic:
-        sql += " AND c.topic = ?"
+        sql += " AND m.topic = ?"
         params.append(topic)
     cur.execute(sql, *params)
     return _rows(cur)
@@ -1350,9 +1417,14 @@ def start_pathway_assessment(req: func.HttpRequest) -> func.HttpResponse:
                     return _error(404, "Unknown module", module_id)
                 if module["status"] not in ("available", "needs-review", "in-progress"):
                     return _error(409, "Module is locked", "Complete the previous module first.")
+                if module.get("pageCount", 0) and not module.get("lessonCompleted"):
+                    return _error(
+                        409, "Finish the lesson first",
+                        "Complete every lesson page before starting the checkpoint.",
+                    )
                 module_pool = [
                     q for q in pool
-                    if q["topic"] == module["topic"]
+                    if q.get("module_id") == module_id
                     and q["question_type"] in pathway.FAST_MODULE_TYPES
                 ]
                 if len(module_pool) < 10:
@@ -1774,10 +1846,11 @@ def complete_pathway_assessment(req: func.HttpRequest) -> func.HttpResponse:
                           aq.purpose, q.topic, q.prompt, q.points, q.difficulty,
                           q.explanation, q.source_doc_title, q.source_page,
                           q.source_quote, q.source_url, q.provenance_class,
-                          c.section
+                          COALESCE(p.title, c.section) AS section
                      FROM dbo.GeneratedQuizAttemptQuestions aq
                      JOIN dbo.GeneratedQuestions q ON q.question_id = aq.question_id
                      LEFT JOIN dbo.SourceChunks c ON c.chunk_id = q.source_chunk_id
+                     LEFT JOIN dbo.LessonPages p ON p.page_id = q.lesson_page_id
                     WHERE aq.attempt_id = ? AND aq.answered_at IS NOT NULL
                     ORDER BY aq.sort_order""",
                 attempt_id,
@@ -1832,7 +1905,7 @@ def complete_pathway_assessment(req: func.HttpRequest) -> func.HttpResponse:
                 cur.execute(
                     """SELECT module_id, topic, source_order
                          FROM dbo.TrainingModules
-                        WHERE company_id = ? AND doc_id = ?
+                        WHERE company_id = ? AND doc_id = ? AND status = 'ready'
                         ORDER BY source_order""",
                     identity.company_id, attempt["training_doc_id"],
                 )
@@ -1936,16 +2009,7 @@ def complete_pathway_assessment(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="lesson", methods=["GET"])
 def get_lesson(req: func.HttpRequest) -> func.HttpResponse:
-    """
-    The reading material for one training, before its quiz.
-
-    Source passages, in document order — not model-generated prose. The whole provenance
-    model rests on a learner being tested against text somebody approved, so the lesson
-    is that same text rather than a summary of it.
-
-    Scoped to the caller's role for the same reason the training list is: a document out
-    of scope should not be readable by guessing its title.
-    """
+    """Ordered finalized lesson pages, with a source-chunk fallback for old courses."""
     identity = get_current_employee(req)
     if identity is None:
         return _unauthorized()
@@ -1959,8 +2023,78 @@ def get_lesson(req: func.HttpRequest) -> func.HttpResponse:
     try:
         with _conn() as c:
             cur = c.cursor()
+            learner = _learner_key(identity)
+            if module_id:
+                cur.execute(
+                    """SELECT m.module_id, m.heading, m.summary, m.active_generation_id
+                         FROM dbo.TrainingModules m
+                        WHERE m.company_id = ? AND m.doc_title = ? AND m.module_id = ?
+                          AND m.status = 'ready'
+                          AND EXISTS (
+                              SELECT 1 FROM dbo.TrainingModuleRoles audience
+                               WHERE audience.company_id = m.company_id
+                                 AND audience.module_id = m.module_id
+                                 AND audience.role_code IN ('ALL', ?))""",
+                    identity.company_id, training, module_id, role,
+                )
+                module_rows = _rows(cur)
+                if not module_rows:
+                    return _error(404, "No lesson available",
+                                  "No readable sections for this training.")
+                selected_module = module_rows[0]
+                if selected_module.get("active_generation_id"):
+                    cur.execute(
+                        """SELECT p.page_id, p.page_order, p.title, p.page_type, p.body,
+                                  p.word_count, p.learning_point_ids_json,
+                                  p.citations_json, done.completed_at
+                             FROM dbo.LessonPages p
+                             LEFT JOIN dbo.EmployeeLessonPageProgress done
+                               ON done.company_id = p.company_id
+                              AND done.learner_id = ? AND done.page_id = p.page_id
+                            WHERE p.company_id = ? AND p.module_id = ?
+                              AND p.generation_id = ?
+                            ORDER BY p.page_order""",
+                        learner, identity.company_id, module_id,
+                        selected_module["active_generation_id"],
+                    )
+                    pages = _rows(cur)
+                    if pages:
+                        def decode(value, fallback):
+                            try:
+                                return json.loads(value or "")
+                            except (TypeError, ValueError):
+                                return fallback
+
+                        total_words = sum(int(page["word_count"] or 0) for page in pages)
+                        payload_pages = [{
+                            "id": page["page_id"],
+                            "order": int(page["page_order"]),
+                            "title": page["title"],
+                            "heading": page["title"],
+                            "type": page["page_type"],
+                            "body": page["body"],
+                            "learningPointIds": decode(
+                                page.get("learning_point_ids_json"), []),
+                            "citations": decode(page.get("citations_json"), []),
+                            "completed": page.get("completed_at") is not None,
+                        } for page in pages]
+                        return _json({
+                            "training": training,
+                            "moduleId": module_id,
+                            "title": selected_module["heading"],
+                            "summary": selected_module.get("summary") or "",
+                            "readTime": "{} min read".format(
+                                max(1, round(total_words / 200))),
+                            "pageCount": len(payload_pages),
+                            "completedPages": sum(
+                                1 for page in payload_pages if page["completed"]),
+                            "pages": payload_pages,
+                            # Temporary compatibility for older deployed frontends.
+                            "sections": payload_pages,
+                        })
+
             sql = """SELECT c.chunk_id, c.topic, c.section, c.page_start,
-                            c.page_end, c.chunk_text
+                            c.page_end, c.chunk_text, c.source_url
                        FROM dbo.SourceChunks c"""
             params: List[Any] = []
             if module_id:
@@ -1998,12 +2132,138 @@ def get_lesson(req: func.HttpRequest) -> func.HttpResponse:
                     "pageStart": s["page_start"],
                     "pageEnd": s["page_end"],
                     "body": s["chunk_text"],
+                    "sourceUrl": s.get("source_url") or "",
+                    "completed": True,
                 }
                 for s in sections
             ],
+            "pages": [],
         })
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="lesson/page/complete", methods=["POST"])
+def complete_lesson_page(req: func.HttpRequest) -> func.HttpResponse:
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+    module_id = str(body.get("moduleId") or "").strip()
+    page_id = str(body.get("pageId") or "").strip()
+    if not module_id or not page_id:
+        return _error(400, "Bad request", "moduleId and pageId are required")
+    role = (identity.role_code or "ALL").upper()
+    learner = _learner_key(identity)
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """SELECT p.page_id
+                     FROM dbo.LessonPages p
+                     JOIN dbo.TrainingModules m
+                       ON m.company_id = p.company_id AND m.module_id = p.module_id
+                      AND m.active_generation_id = p.generation_id
+                    WHERE p.company_id = ? AND p.module_id = ? AND p.page_id = ?
+                      AND m.status = 'ready'
+                      AND EXISTS (
+                          SELECT 1 FROM dbo.TrainingModuleRoles audience
+                           WHERE audience.company_id = m.company_id
+                             AND audience.module_id = m.module_id
+                             AND audience.role_code IN ('ALL', ?))""",
+                identity.company_id, module_id, page_id, role,
+            )
+            if not _rows(cur):
+                return _error(404, "Page unavailable", "This lesson page is not available.")
+            cur.execute(
+                """IF NOT EXISTS (
+                       SELECT 1 FROM dbo.EmployeeLessonPageProgress
+                        WHERE company_id = ? AND learner_id = ? AND page_id = ?)
+                       INSERT INTO dbo.EmployeeLessonPageProgress
+                           (company_id, learner_id, page_id)
+                       VALUES (?, ?, ?)""",
+                identity.company_id, learner, page_id,
+                identity.company_id, learner, page_id,
+            )
+            cur.execute(
+                """SELECT COUNT(*) AS total,
+                          SUM(CASE WHEN done.page_id IS NOT NULL THEN 1 ELSE 0 END) AS completed
+                     FROM dbo.LessonPages p
+                     JOIN dbo.TrainingModules m
+                       ON m.module_id = p.module_id AND m.company_id = p.company_id
+                      AND m.active_generation_id = p.generation_id
+                     LEFT JOIN dbo.EmployeeLessonPageProgress done
+                       ON done.company_id = p.company_id AND done.learner_id = ?
+                      AND done.page_id = p.page_id
+                    WHERE p.company_id = ? AND p.module_id = ?""",
+                learner, identity.company_id, module_id,
+            )
+            progress = _rows(cur)[0]
+            c.commit()
+        total = int(progress["total"] or 0)
+        completed = int(progress["completed"] or 0)
+        return _json({"moduleId": module_id, "completedPages": completed,
+                      "pageCount": total, "lessonCompleted": total > 0 and completed >= total})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:240]))
+
+
+@app.route(route="courses/preview", methods=["GET"])
+def preview_course(req: func.HttpRequest) -> func.HttpResponse:
+    identity = get_current_employee(req)
+    forbidden = require_manager(identity)
+    if forbidden:
+        return forbidden
+    training = (req.params.get("training") or "").strip()
+    if not training:
+        return _error(400, "Bad request", "training is required")
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """SELECT module_id, heading, summary, status, source_order,
+                          lesson_word_count, learning_point_count,
+                          active_generation_id, quality_notes_json
+                     FROM dbo.TrainingModules
+                    WHERE company_id = ? AND doc_title = ?
+                      AND generation_version = 'instructional-v1'
+                      AND status <> 'retired'
+                    ORDER BY source_order""",
+                identity.company_id, training,
+            )
+            modules = _rows(cur)
+            output = []
+            for module in modules:
+                cur.execute(
+                    """SELECT page_id, page_order, title, page_type, body, citations_json
+                         FROM dbo.LessonPages
+                        WHERE company_id = ? AND module_id = ? AND generation_id = ?
+                        ORDER BY page_order""",
+                    identity.company_id, module["module_id"],
+                    module.get("active_generation_id"),
+                )
+                pages = _rows(cur)
+                output.append({
+                    "moduleId": module["module_id"],
+                    "title": module["heading"],
+                    "summary": module.get("summary") or "",
+                    "status": module["status"],
+                    "wordCount": int(module.get("lesson_word_count") or 0),
+                    "learningPointCount": int(module.get("learning_point_count") or 0),
+                    "qualityNotes": json.loads(module.get("quality_notes_json") or "[]"),
+                    "pages": [{
+                        "id": page["page_id"], "order": int(page["page_order"]),
+                        "title": page["title"], "type": page["page_type"],
+                        "body": page["body"],
+                        "citations": json.loads(page.get("citations_json") or "[]"),
+                    } for page in pages],
+                })
+        return _json({"training": training, "modules": output})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:240]))
 
 
 @app.route(route="team", methods=["GET"])
@@ -2421,7 +2681,8 @@ def _permitted_upload_roles(cur, identity) -> set:
     return allowed
 
 
-def _ingest_and_propose(chunks, identity, label: str, retitle_suffix: str) -> func.HttpResponse:
+def _ingest_and_propose(chunks, identity, label: str, retitle_suffix: str,
+                        extra_fields: Optional[dict] = None) -> func.HttpResponse:
     """
     Save already-extracted chunks, seed the role catalog if empty, and ask the model to
     propose a section->role mapping -- the part upload_document and add_trusted_link
@@ -2441,22 +2702,9 @@ def _ingest_and_propose(chunks, identity, label: str, retitle_suffix: str) -> fu
     try:
         with _conn() as c:
             cur = c.cursor()
-            # Two different documents must never share a title -- they would merge
-            # into one training, mixing roles and letting set_chunk_roles tag the
-            # wrong sections.
-            cur.execute(
-                "SELECT DISTINCT doc_id FROM dbo.SourceChunks WHERE doc_title = ? AND company_id = ?",
-                doc_title, identity.company_id,
-            )
-            existing_ids = {r.doc_id for r in cur.fetchall()}
-            if existing_ids and chunks[0].doc_id not in existing_ids:
-                doc_title = "{} ({})".format(doc_title, retitle_suffix)
-                for ch in chunks:
-                    ch.doc_title = doc_title
 
             from shared.sqlbank import SqlBank
             bank = SqlBank(c, identity.company_id)
-            bank.save_chunks(chunks)
 
             from quizgen.rolemap import seed_roles
             seed_roles(bank)
@@ -2469,20 +2717,49 @@ def _ingest_and_propose(chunks, identity, label: str, retitle_suffix: str) -> fu
             for ch in chunks:
                 sections.setdefault(ch.topic, ch.text)
 
+            # Asked for BEFORE anything is written, so a corrected title lands in the
+            # same save_chunks call below rather than needing a second UPDATE pass over
+            # rows already on disk. doc_title here is still whatever the mechanical
+            # extractor guessed (first line of a PDF page, a page's <title> tag) --
+            # exactly the guess analyze_document is being asked to correct.
             from quizgen.rolemap import analyze_document
             try:
                 mapping = analyze_document(doc_title, sections, known_roles)
             except RuntimeError as exc:
-                # No model credentials. The chunks are already saved (committed by
-                # save_chunks/seed_roles above), so nothing is lost -- confirm can
-                # still be called once credentials exist.
+                # No model credentials. Nothing was written yet, so nothing is lost --
+                # confirm still can't be called until this succeeds, unchanged from
+                # before this reorder.
                 return _error(503, "Role mapping needs the real model", str(exc)[:300])
             except Exception as exc:  # noqa: BLE001
                 return _error(502, "Role analysis failed",
                               "{}: {}".format(type(exc).__name__, str(exc)[:250]))
 
+            # Only overrides the mechanical guess when the model actually proposed
+            # something -- an empty suggested_title (the model declining) must fall
+            # back to the heuristic, never to an empty doc_title.
+            if mapping.suggested_title:
+                doc_title = mapping.suggested_title
+                for ch in chunks:
+                    ch.doc_title = doc_title
+
+            # Two different documents must never share a title -- they would merge
+            # into one training, mixing roles and letting set_chunk_roles tag the
+            # wrong sections. Checked against the FINAL title (post AI-correction),
+            # since that is what would actually collide.
+            cur.execute(
+                "SELECT DISTINCT doc_id FROM dbo.SourceChunks WHERE doc_title = ? AND company_id = ?",
+                doc_title, identity.company_id,
+            )
+            existing_ids = {r.doc_id for r in cur.fetchall()}
+            if existing_ids and chunks[0].doc_id not in existing_ids:
+                doc_title = "{} ({})".format(doc_title, retitle_suffix)
+                for ch in chunks:
+                    ch.doc_title = doc_title
+
+            bank.save_chunks(chunks)
+
         from quizgen.pipeline import generator_name
-        return _json({
+        payload = {
             "file": label, "title": doc_title, "chunks": len(chunks), "topics": topics,
             "summary": mapping.summary,
             "proposedRoles": mapping.assignments,
@@ -2492,7 +2769,9 @@ def _ingest_and_propose(chunks, identity, label: str, retitle_suffix: str) -> fu
             "knownRoles": known_roles,
             "generator": generator_name(),
             "needsConfirmation": True,
-        }, 201)
+        }
+        payload.update(extra_fields or {})
+        return _json(payload, 201)
     except Exception as exc:  # noqa: BLE001
         logging.exception("ingest/propose failed for %s", label)
         return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
@@ -2510,7 +2789,8 @@ def list_documents(req: func.HttpRequest) -> func.HttpResponse:
             cur = c.cursor()
             cur.execute(
                 "SELECT doc_title, COUNT(*) AS chunks FROM dbo.SourceChunks "
-                "WHERE company_id = ? GROUP BY doc_title",
+                "WHERE company_id = ? AND COALESCE(container, '') <> 'generated-lessons' "
+                "GROUP BY doc_title",
                 identity.company_id,
             )
             chunk_counts = {r.doc_title: r.chunks for r in cur.fetchall()}
@@ -2607,7 +2887,7 @@ def confirm_document(req: func.HttpRequest, generation_message) -> func.HttpResp
         return _error(400, "Bad request", "Body must be JSON")
 
     doc_title = str(body.get("title", "")).strip()
-    assignments = body.get("assignments") or {}
+    raw_assignments = body.get("assignments") or {}
     new_roles = body.get("newRoles") or []
     supersede = str(body.get("supersede", "")).strip()
     # Default true: assigning a document to a role and having it count toward that
@@ -2619,8 +2899,19 @@ def confirm_document(req: func.HttpRequest, generation_message) -> func.HttpResp
     # that moves because a document was uploaded or retired, not because anyone did
     # any training.
     make_required = bool(body.get("makeRequired", True))
-    if not doc_title or not isinstance(assignments, dict):
+    if not doc_title or not isinstance(raw_assignments, dict):
         return _error(400, "Bad request", "title and assignments are required")
+
+    assignments: Dict[str, List[str]] = {}
+    for topic, raw_roles in raw_assignments.items():
+        values = raw_roles if isinstance(raw_roles, list) else [raw_roles]
+        roles = list(dict.fromkeys(
+            str(code or "ALL").strip().upper() for code in values
+            if str(code or "").strip()
+        ))
+        if not roles:
+            return _error(400, "Bad request", "Every section needs at least one role.")
+        assignments[str(topic)] = ["ALL"] if "ALL" in roles else roles
 
     from shared.sqlbank import SqlBank, create_job, new_job_id
 
@@ -2630,7 +2921,7 @@ def confirm_document(req: func.HttpRequest, generation_message) -> func.HttpResp
             bank = SqlBank(c, identity.company_id)
 
             permitted = _permitted_upload_roles(cur, identity)
-            for code in set(assignments.values()):
+            for code in {role for roles in assignments.values() for role in roles}:
                 up = (code or "ALL").upper()
                 if up != "ALL" and up not in permitted:
                     return _error(
@@ -2643,8 +2934,11 @@ def confirm_document(req: func.HttpRequest, generation_message) -> func.HttpResp
                 if code and title:
                     bank.add_role(code, title, str(role.get("description", "")))
 
+            # SourceChunks keeps one legacy role for compatibility. The generated
+            # module audience is normalized in TrainingModuleRoles by the worker.
             tagged = bank.set_chunk_roles(doc_title, {
-                topic: str(code) for topic, code in assignments.items()
+                topic: ("ALL" if "ALL" in roles else roles[0])
+                for topic, roles in assignments.items()
             })
 
             # Deliberately gated by the same require_manager(...) check at the top of
@@ -2657,7 +2951,7 @@ def confirm_document(req: func.HttpRequest, generation_message) -> func.HttpResp
             # requirements for any role outside their own chain.
             required_for: List[str] = []
             if make_required:
-                for code in {(c or "ALL").upper() for c in assignments.values()}:
+                for code in {role for roles in assignments.values() for role in roles}:
                     bank.add_role_requirement(code, doc_title)
                     required_for.append(code)
 
@@ -2672,6 +2966,7 @@ def confirm_document(req: func.HttpRequest, generation_message) -> func.HttpResp
             "jobId": job_id,
             "companyId": identity.company_id,
             "docTitle": doc_title,
+            "assignments": assignments,
         }))
 
         return _json({
@@ -2682,10 +2977,14 @@ def confirm_document(req: func.HttpRequest, generation_message) -> func.HttpResp
         return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
 
 
-def _run_generation_job(job_id: str, company_id: int, doc_title: str) -> None:
-    """Generate a document's question bank outside the request that queued it."""
+def _run_generation_job(
+    job_id: str, company_id: int, doc_title: str,
+    assignments: Optional[Dict[str, List[str]]] = None,
+) -> None:
+    """Author, validate and assess a course outside the request that queued it."""
     from shared.sqlbank import SqlBank, get_job, update_job
-    from quizgen.pipeline import generate_questions, select_chunks
+    from quizgen.coursegen import assessment_chunks, build_instructional_course
+    from quizgen.pipeline import generate_questions
 
     try:
         with _conn() as c:
@@ -2694,37 +2993,80 @@ def _run_generation_job(job_id: str, company_id: int, doc_title: str) -> None:
                 return
 
             bank = SqlBank(c, company_id)
-            # Confirmation is the explicit billed top-up action for older uploads.
-            to_generate, _ = select_chunks(
-                bank, doc_title=doc_title, regenerate=True)
+            source_chunks = [
+                chunk for chunk in bank.all_chunks()
+                if chunk.doc_title == doc_title and chunk.container != "generated-lessons"
+            ]
             update_job(
-                c, job_id, company_id, total=len(to_generate),
-                message="Reading {} section(s)...".format(len(to_generate))
-                if to_generate else "Already generated for this document.",
+                c, job_id, company_id, total=max(1, len(source_chunks)),
+                message="Building lessons from {} source section(s)...".format(len(source_chunks))
+                if source_chunks else "No source sections were found.",
             )
-            if not to_generate:
-                update_job(c, job_id, company_id, state="done",
-                           message="Already generated.")
+            if not source_chunks:
+                update_job(c, job_id, company_id, state="error",
+                           message="No source sections were found for this course.")
                 return
 
-            def report(progress):
+            normalized = assignments or {}
+            if not normalized:
+                for chunk in source_chunks:
+                    normalized.setdefault(chunk.topic, [chunk.role_scope or "ALL"])
+            course = build_instructional_course(source_chunks, company_id)
+            bank.save_instructional_course(course, normalized)
+            lesson_chunks = assessment_chunks(course, normalized)
+            if not lesson_chunks:
+                notes = "; ".join(
+                    "{}: {}".format(module.heading, ", ".join(module.quality_notes[:2]))
+                    for module in course.modules
+                )
                 update_job(
-                    c, job_id, company_id, done_count=progress.index,
-                    message="Generating {} ({}/{})".format(
-                        progress.chunk.topic[:80], progress.index, progress.total),
+                    c, job_id, company_id, state="done", total=len(course.modules),
+                    done_count=len(course.modules), rejected=len(course.modules),
+                    message="No course was published. {}".format(notes[:500]),
+                )
+                return
+
+            bank.save_chunks(lesson_chunks)
+            total_written = 0
+            total_kept = 0
+            total_rejected = 0
+            completed = 0
+            update_job(
+                c, job_id, company_id, total=len(lesson_chunks), done_count=0,
+                message="Writing assessments for {} module(s)...".format(len(lesson_chunks)),
+            )
+            for chunk in lesson_chunks:
+                module = next(item for item in course.ready_modules
+                              if item.module_id == getattr(chunk, "module_id", ""))
+                target = max(20, min(30, len(module.learning_points) * 3))
+                per_difficulty = int((target + 2) // 3)
+                result = generate_questions(
+                    bank, [chunk], per_chunk=per_difficulty,
+                    difficulty_ladder=True,
+                )
+                completed += 1
+                total_written += result.written
+                total_kept += len(result.kept)
+                total_rejected += len(result.rejected)
+                update_job(
+                    c, job_id, company_id, done_count=completed,
+                    kept=total_kept, written=total_written,
+                    rejected=total_rejected,
+                    message="Generated {} ({}/{})".format(
+                        module.heading[:80], completed, len(lesson_chunks)),
                 )
 
-            # Six candidates at each difficulty supplies the diagnostic ladder and
-            # enough inventory for a ten-question adaptive checkpoint.
-            result = generate_questions(
-                bank, to_generate, per_chunk=6, difficulty_ladder=True,
-                on_progress=report,
-            )
+            published = bank.finalize_instructional_course(course, lesson_chunks)
+            if published:
+                bank.retire_stale_course_questions(
+                    doc_title, [chunk.chunk_id for chunk in lesson_chunks])
             update_job(
                 c, job_id, company_id, state="done",
-                done_count=len(to_generate), kept=len(result.kept),
-                written=result.written, rejected=len(result.rejected),
-                message="Generated {} question(s).".format(result.written),
+                total=len(lesson_chunks), done_count=len(lesson_chunks),
+                kept=total_kept, written=total_written, rejected=total_rejected,
+                message=("Published {} module(s) and {} question(s).".format(
+                    published, total_written) if published else
+                    "Lessons were withheld because the assessment bank was incomplete."),
             )
     except Exception as exc:  # noqa: BLE001
         logging.exception("Generation job %s failed", job_id)
@@ -2748,10 +3090,11 @@ def generate_document_questions(message: func.QueueMessage) -> None:
         job_id = str(payload["jobId"])
         company_id = int(payload["companyId"])
         doc_title = str(payload["docTitle"])
+        assignments = payload.get("assignments") or {}
     except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
         logging.exception("Discarding malformed generation queue message")
         return
-    _run_generation_job(job_id, company_id, doc_title)
+    _run_generation_job(job_id, company_id, doc_title, assignments)
 
 
 @app.route(route="links/add", methods=["POST"])
@@ -2776,11 +3119,21 @@ def add_trusted_link(req: func.HttpRequest) -> func.HttpResponse:
     url = str(body.get("url", "")).strip()
     scope = str(body.get("scope", "")).strip().lower()
     role_code = str(body.get("roleCode", "")).strip().upper()
+    crawl_value = body.get("crawl", True)
+    if not isinstance(crawl_value, bool):
+        return _error(400, "Bad request", "crawl must be true or false.")
+    crawl_subpages = crawl_value
+    try:
+        max_pages = int(body.get("maxPages", 25))
+    except (TypeError, ValueError):
+        return _error(400, "Bad request", "maxPages must be 10, 25, or 50.")
 
     if not url or not (url.startswith("http://") or url.startswith("https://")):
         return _error(400, "Bad request", "A valid http(s) url is required.")
     if scope not in ("team", "company_wide"):
         return _error(400, "Bad request", "scope must be 'team' or 'company_wide'.")
+    if max_pages not in (10, 25, 50):
+        return _error(400, "Bad request", "maxPages must be 10, 25, or 50.")
 
     if scope == "company_wide":
         # Same tier _permitted_upload_roles grants "ALL" to for uploads -- a company-wide
@@ -2798,31 +3151,57 @@ def add_trusted_link(req: func.HttpRequest) -> func.HttpResponse:
             return _error(403, "Forbidden",
                           "You may only target roles within your own reporting chain.")
 
-    from quizgen.web import fetch
-    try:
-        title, text, fetched_at = fetch(url)
-    except Exception as exc:  # noqa: BLE001
-        return _error(422, "Could not fetch this URL",
-                      "{}: {}".format(type(exc).__name__, str(exc)[:200]))
-
-    if not text or not text.strip():
-        return _error(422, "No teachable content found",
-                      "The page was reachable but had no readable text.")
-
     from urllib.parse import urlparse
     host = urlparse(url).netloc or url[:40]
+    crawl_info = None
 
-    from quizgen.ingest import chunks_from_text
-    display_title = title or host
-    chunks = chunks_from_text(text, source_name=display_title)
-    for ch in chunks:
-        # Matches the ProvenanceClass.EXTERNAL contract validators.py already enforces:
-        # a web-sourced chunk carries a URL and a retrieval date, and any question drawn
-        # from it may not speak with the company's own authority.
-        ch.source_type = "web"
-        ch.source_url = url
-        ch.fetched_at = fetched_at
-        ch.role_scope = role_code
+    try:
+        if crawl_subpages:
+            from quizgen.web import chunks_from_crawl, crawl_site
+            crawl = crawl_site(url, max_pages=max_pages)
+            chunks = chunks_from_crawl(crawl, role_code)
+            crawl_info = {
+                "enabled": True,
+                "pageLimit": max_pages,
+                "pageCount": len(crawl.pages),
+                "totalChars": crawl.total_chars,
+                "skipped": crawl.skipped,
+                "truncated": crawl.truncated,
+                "pages": [{"url": page.url, "title": page.title} for page in crawl.pages],
+            }
+        else:
+            from quizgen.web import fetch
+            title, text, fetched_at = fetch(url)
+            if not text or not text.strip():
+                return _error(422, "No teachable content found",
+                              "The page was reachable but had no readable text.")
+
+            from quizgen.ingest import chunks_from_text
+            display_title = title or host
+            chunks = chunks_from_text(
+                text, source_name=url, doc_title=display_title)
+            for ch in chunks:
+                ch.source_type = "web"
+                ch.source_url = url
+                ch.fetched_at = fetched_at
+                ch.role_scope = role_code
+            crawl_info = {
+                "enabled": False,
+                "pageLimit": 1,
+                "pageCount": 1,
+                "totalChars": len(text),
+                "skipped": 0,
+                "truncated": False,
+                "pages": [{"url": url, "title": display_title}],
+            }
+    except Exception as exc:  # noqa: BLE001
+        return _error(422, "Could not crawl this website" if crawl_subpages
+                      else "Could not fetch this URL",
+                      "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+
+    if not chunks:
+        return _error(422, "No teachable content found",
+                      "The website was reachable but had no readable training content.")
 
     # Recorded once the page has actually yielded something teachable, same point
     # upload_document's chunks are considered "saved" -- before the AI role-mapping step,
@@ -2837,7 +3216,10 @@ def add_trusted_link(req: func.HttpRequest) -> func.HttpResponse:
         logging.exception("Failed to record trusted link row for %s", url)
         return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
 
-    return _ingest_and_propose(chunks, identity, label=url, retitle_suffix=host)
+    return _ingest_and_propose(
+        chunks, identity, label=url, retitle_suffix=host,
+        extra_fields={"crawl": crawl_info},
+    )
 
 
 @app.route(route="links", methods=["GET"])

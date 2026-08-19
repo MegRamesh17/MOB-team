@@ -30,6 +30,7 @@ isolation the rest of api/function_app.py already enforces.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Sequence
@@ -54,6 +55,37 @@ def _parse_dt(value: str) -> Optional[datetime]:
         return datetime.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _module_roles(module, assignments: Dict[str, List[str]]) -> List[str]:
+    roles: List[str] = []
+    for topic in module.source_topics:
+        value = assignments.get(topic) or ["ALL"]
+        if isinstance(value, str):
+            value = [value]
+        roles.extend(str(role).strip().upper() for role in value if str(role).strip())
+    roles = list(dict.fromkeys(roles)) or ["ALL"]
+    return ["ALL"] if "ALL" in roles else roles
+
+
+def _legacy_role(module, assignments: Dict[str, List[str]]) -> str:
+    """Keep the old single column populated while normalized roles are authoritative."""
+    return _module_roles(module, assignments)[0]
+
+
+def _expanded_citations(citations, evidence: Dict[str, object]) -> List[Dict[str, object]]:
+    out = []
+    for citation in citations:
+        item = evidence.get(citation.evidence_id)
+        out.append({
+            "evidenceId": citation.evidence_id,
+            "quote": citation.quote,
+            "title": getattr(item, "title", ""),
+            "url": getattr(item, "url", ""),
+            "sourceType": getattr(item, "source_type", ""),
+            "fetchedAt": getattr(item, "fetched_at", ""),
+        })
+    return out
 
 
 class SqlBank:
@@ -154,6 +186,155 @@ class SqlBank:
         self.conn.commit()
         return n
 
+    def save_instructional_course(
+        self, course, role_assignments: Dict[str, List[str]]
+    ) -> Dict[str, int]:
+        """Persist one versioned course and its normalized multi-role audience."""
+        cur = self.conn.cursor()
+        ready = 0
+        for module in course.modules:
+            # Valid lessons stay draft while their question bank is generated. Existing
+            # ready modules are retired only in finalize_instructional_course, after the
+            # replacement has passed both publication gates.
+            staged_status = "draft" if module.status == "ready" else module.status
+            cur.execute(
+                """MERGE dbo.TrainingModules AS target
+                   USING (SELECT ? AS module_id) AS source
+                      ON target.module_id = source.module_id
+                   WHEN MATCHED THEN UPDATE SET
+                       doc_id = ?, doc_title = ?, topic = ?, heading = ?, source_order = ?,
+                       role_scope = ?, status = ?, summary = ?, lesson_word_count = ?,
+                       learning_point_count = ?, generation_version = 'instructional-v1',
+                       active_generation_id = ?, quality_notes_json = ?,
+                       updated_at = SYSUTCDATETIME()
+                   WHEN NOT MATCHED THEN INSERT
+                       (module_id, company_id, doc_id, doc_title, topic, heading,
+                        source_order, role_scope, status, summary, lesson_word_count,
+                        learning_point_count, generation_version, active_generation_id,
+                        quality_notes_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'instructional-v1', ?, ?);""",
+                module.module_id,
+                module.doc_id, module.doc_title, module.topic, module.heading,
+                module.source_order, _legacy_role(module, role_assignments),
+                staged_status, module.summary or None, module.word_count,
+                len(module.learning_points), module.generation_id,
+                json.dumps(module.quality_notes),
+                module.module_id, self.company_id, module.doc_id, module.doc_title,
+                module.topic, module.heading, module.source_order,
+                _legacy_role(module, role_assignments), staged_status,
+                module.summary or None, module.word_count, len(module.learning_points),
+                module.generation_id, json.dumps(module.quality_notes),
+            )
+
+            cur.execute(
+                "DELETE FROM dbo.TrainingModuleRoles WHERE company_id = ? AND module_id = ?",
+                self.company_id, module.module_id,
+            )
+            roles = _module_roles(module, role_assignments)
+            cur.executemany(
+                "INSERT INTO dbo.TrainingModuleRoles (company_id, module_id, role_code) "
+                "VALUES (?, ?, ?)",
+                [(self.company_id, module.module_id, role) for role in roles],
+            )
+
+            evidence = {item.evidence_id: item for item in module.evidence}
+            for point in module.learning_points:
+                cur.execute(
+                    """IF NOT EXISTS (SELECT 1 FROM dbo.ModuleLearningPoints
+                                       WHERE learning_point_id = ?)
+                           INSERT INTO dbo.ModuleLearningPoints
+                               (learning_point_id, company_id, module_id, generation_id,
+                                point_order, statement, evidence_json)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    point.learning_point_id,
+                    point.learning_point_id, self.company_id, module.module_id,
+                    module.generation_id, point.order, point.statement,
+                    json.dumps(_expanded_citations(point.citations, evidence)),
+                )
+            for page in module.pages:
+                cur.execute(
+                    """IF NOT EXISTS (SELECT 1 FROM dbo.LessonPages WHERE page_id = ?)
+                           INSERT INTO dbo.LessonPages
+                               (page_id, company_id, module_id, generation_id, page_order,
+                                title, page_type, body, word_count,
+                                learning_point_ids_json, citations_json)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    page.page_id,
+                    page.page_id, self.company_id, module.module_id,
+                    module.generation_id, page.order, page.title, page.page_type,
+                    page.body, page.word_count, json.dumps(page.learning_point_ids),
+                    json.dumps(_expanded_citations(page.citations, evidence)),
+                )
+            ready += 1 if module.status == "ready" else 0
+        self.conn.commit()
+        return {"modules": len(course.modules), "ready": ready}
+
+    def finalize_instructional_course(self, course, lesson_chunks: Sequence[Chunk]) -> int:
+        """Publish only modules whose active assessment bank meets pathway floors."""
+        cur = self.conn.cursor()
+        chunk_by_module = {
+            str(getattr(chunk, "module_id", "")): chunk.chunk_id for chunk in lesson_chunks
+        }
+        ready = 0
+        for module in course.modules:
+            if module.status != "ready":
+                continue
+            source_chunk_id = chunk_by_module.get(module.module_id, "")
+            cur.execute(
+                """SELECT COUNT(*) AS total,
+                          SUM(CASE WHEN question_type IN
+                              ('MultipleChoice', 'MultiSelect', 'TrueFalse', 'FillInBlank')
+                              THEN 1 ELSE 0 END) AS quick_count,
+                          COUNT(DISTINCT CASE WHEN question_type = 'MultipleChoice'
+                              THEN difficulty END) AS diagnostic_difficulties
+                     FROM dbo.GeneratedQuestions
+                    WHERE company_id = ? AND module_id = ? AND source_chunk_id = ?
+                      AND review_status = 'Approved'""",
+                self.company_id, module.module_id, source_chunk_id,
+            )
+            row = cur.fetchone()
+            total = int(getattr(row, "total", 0) or 0) if row else 0
+            quick = int(getattr(row, "quick_count", 0) or 0) if row else 0
+            diagnostic = int(getattr(row, "diagnostic_difficulties", 0) or 0) if row else 0
+            publish = total >= 10 and quick >= 10 and diagnostic == 3
+            notes = list(module.quality_notes)
+            if not publish:
+                notes.append(
+                    "assessment bank incomplete: {} total, {} quick-response, "
+                    "{} diagnostic difficulty levels".format(total, quick, diagnostic))
+            cur.execute(
+                """UPDATE dbo.TrainingModules
+                      SET status = ?, quality_notes_json = ?, updated_at = SYSUTCDATETIME()
+                    WHERE company_id = ? AND module_id = ?
+                      AND active_generation_id = ?""",
+                "ready" if publish else "insufficient", json.dumps(notes),
+                self.company_id, module.module_id, module.generation_id,
+            )
+            if publish:
+                ready += 1
+            else:
+                module.status = "insufficient"
+                module.quality_notes = notes
+        if ready:
+            cur.execute(
+                """UPDATE dbo.TrainingModules
+                      SET status = 'retired', updated_at = SYSUTCDATETIME()
+                    WHERE company_id = ? AND doc_id = ?
+                      AND generation_version = 'instructional-v1'
+                      AND active_generation_id <> ? AND status <> 'retired'""",
+                self.company_id, course.doc_id, course.generation_id,
+            )
+            # The diagnostic orders version-specific module ids. A newly published
+            # version must establish its own baseline; otherwise an old completion row
+            # would silently skip the new diagnostic and personalize from stale scores.
+            cur.execute(
+                "DELETE FROM dbo.EmployeeTrainingProgress "
+                "WHERE company_id = ? AND doc_id = ?",
+                self.company_id, course.doc_id,
+            )
+        self.conn.commit()
+        return ready
+
     def add_role_requirement(self, role_code: str, doc_title: str, category: str = "technical") -> None:
         """
         Add ONE role/doc pair to RoleRequirements, without touching whatever else
@@ -218,20 +399,25 @@ class SqlBank:
                 """INSERT INTO dbo.GeneratedQuestions
                        (question_id, topic, question_type, difficulty, prompt,
                         explanation, points, source_chunk_id, source_doc_title,
-                        source_page, source_quote, generator, review_status,
+                        source_page, source_quote, source_url, source_fetched_at,
+                        generator, review_status,
                         provenance_class, role_code, role_requirement,
                         rubric_json, fallback_json, grading_version,
-                        contradiction_notes, times_served, times_correct, company_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?)""",
+                        contradiction_notes, module_id, lesson_page_id,
+                        learning_point_id, times_served, times_correct, company_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?)""",
                 q.question_id, q.topic, q.question_type.value, q.difficulty.value,
                 q.prompt, q.explanation, q.points, q.source_chunk_id or None,
                 q.source_doc_title or None, q.source_page or None,
-                q.source_quote or None, q.generator or None, status,
+                q.source_quote or None, q.source_url or None,
+                _parse_dt(q.source_fetched_at), q.generator or None, status,
                 q.provenance_class.value, q.role_code or None,
                 q.role_requirement or None,
                 q.rubric_json or None, q.fallback_json or None,
                 q.grading_version or None,
                 "; ".join(notes.get(q.question_id, [])) or None,
+                q.module_id or None, q.lesson_page_id or None,
+                q.learning_point_id or None,
                 self.company_id,
             )
             for i, o in enumerate(q.options):
@@ -260,6 +446,31 @@ class SqlBank:
             "WHERE source_doc_title = ? AND company_id = ?",
             ReviewStatus.REJECTED.value, doc_title, self.company_id,
         )
+        n = cur.rowcount
+        self.conn.commit()
+        return n
+
+    def retire_stale_course_questions(
+        self, doc_title: str, active_source_chunk_ids: Sequence[str]
+    ) -> int:
+        """Retire the previous bank only after its replacement has been written."""
+        cur = self.conn.cursor()
+        active = list(dict.fromkeys(active_source_chunk_ids))
+        if active:
+            placeholders = ",".join("?" for _ in active)
+            cur.execute(
+                "UPDATE dbo.GeneratedQuestions SET review_status = ? "
+                "WHERE source_doc_title = ? AND company_id = ? "
+                "AND (source_chunk_id IS NULL OR source_chunk_id NOT IN ({}))".format(
+                    placeholders),
+                ReviewStatus.REJECTED.value, doc_title, self.company_id, *active,
+            )
+        else:
+            cur.execute(
+                "UPDATE dbo.GeneratedQuestions SET review_status = ? "
+                "WHERE source_doc_title = ? AND company_id = ?",
+                ReviewStatus.REJECTED.value, doc_title, self.company_id,
+            )
         n = cur.rowcount
         self.conn.commit()
         return n

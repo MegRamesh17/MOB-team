@@ -78,6 +78,33 @@ def select_chunks(
     return chunks, skipped
 
 
+def representative_chunks_by_topic(chunks: Sequence[Chunk],
+                                   max_per_topic: int = 5) -> List[Chunk]:
+    """Evenly sample a large website while retaining coverage of every module."""
+    if max_per_topic < 1:
+        raise ValueError("max_per_topic must be positive")
+
+    buckets: Dict[str, List[Chunk]] = {}
+    for chunk in chunks:
+        buckets.setdefault(chunk.topic, []).append(chunk)
+
+    selected: List[Chunk] = []
+    for topic in sorted(buckets):
+        available = sorted(
+            buckets[topic],
+            key=lambda chunk: (chunk.source_url, chunk.page_start, chunk.chunk_id),
+        )
+        if len(available) <= max_per_topic:
+            selected.extend(available)
+            continue
+        indexes = {
+            round(i * (len(available) - 1) / (max_per_topic - 1))
+            for i in range(max_per_topic)
+        } if max_per_topic > 1 else {0}
+        selected.extend(available[index] for index in sorted(indexes))
+    return selected
+
+
 def generate_questions(
     bank: Bank,
     chunks: Sequence[Chunk],

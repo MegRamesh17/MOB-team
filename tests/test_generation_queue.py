@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import function_app  # noqa: E402
 import shared.sqlbank as sqlbank  # noqa: E402
 import quizgen.pipeline as pipeline  # noqa: E402
+import quizgen.coursegen as coursegen  # noqa: E402
 
 
 class FakeConnection:
@@ -30,6 +31,10 @@ class FakeConnection:
 
 
 class FakeBank:
+    chunks = []
+    published_override = None
+    retire_stale_calls = 0
+
     def __init__(self, conn, company_id):
         self.conn = conn
         self.company_id = company_id
@@ -45,6 +50,27 @@ class FakeBank:
 
     def retire_document_questions(self, *args):
         return 0
+
+    def all_chunks(self):
+        return list(self.chunks)
+
+    def save_instructional_course(self, course, assignments):
+        self.course = course
+        self.assignments = assignments
+        return {"modules": len(course.modules), "ready": len(course.ready_modules)}
+
+    def save_chunks(self, chunks):
+        self.saved_chunks = list(chunks)
+        return len(self.saved_chunks)
+
+    def retire_stale_course_questions(self, *args):
+        type(self).retire_stale_calls += 1
+        return 0
+
+    def finalize_instructional_course(self, course, chunks):
+        if type(self).published_override is not None:
+            return type(self).published_override
+        return len(course.ready_modules)
 
 
 class FakeRequest:
@@ -71,6 +97,10 @@ def response_json(response):
 
 
 class TestGenerationQueueHandoff(unittest.TestCase):
+    def setUp(self):
+        FakeBank.published_override = None
+        FakeBank.retire_stale_calls = 0
+
     def test_confirm_returns_before_generation_and_queues_the_job(self):
         identity = SimpleNamespace(company_id=7)
         output = FakeOutput()
@@ -94,13 +124,19 @@ class TestGenerationQueueHandoff(unittest.TestCase):
             "jobId": "job_queued",
             "companyId": 7,
             "docTitle": "Capacity Planning",
+            "assignments": {"Role Overview": ["SWE_DIRECTOR"]},
         })
         create_job.assert_called_once()
         generate.assert_not_called()
 
     def test_worker_updates_progress_and_marks_the_job_done(self):
         connection = FakeConnection()
-        chunk = SimpleNamespace(topic="Capacity", chunk_id="chunk_1")
+        chunk = SimpleNamespace(topic="Capacity", chunk_id="chunk_1", doc_title="Capacity Planning",
+                                container="source", role_scope="SWE_DIRECTOR")
+        lesson = SimpleNamespace(topic="Capacity", chunk_id="lesson_1", module_id="mod_1")
+        module = SimpleNamespace(module_id="mod_1", heading="Capacity",
+                                 learning_points=list(range(5)))
+        course = SimpleNamespace(modules=[module], ready_modules=[module])
         result = SimpleNamespace(kept=[1, 2], written=2, rejected=[])
         updates = []
 
@@ -108,27 +144,91 @@ class TestGenerationQueueHandoff(unittest.TestCase):
             updates.append(fields)
 
         def generate(bank, chunks, **kwargs):
-            self.assertEqual(kwargs["per_chunk"], 6)
+            self.assertEqual(kwargs["per_chunk"], 7)
             self.assertTrue(kwargs["difficulty_ladder"])
-            kwargs["on_progress"](SimpleNamespace(
-                index=1, total=1, chunk=chunk,
-            ))
             return result
+
+        FakeBank.chunks = [chunk]
 
         with (
             patch.object(function_app, "_conn", return_value=connection),
             patch.object(sqlbank, "SqlBank", FakeBank),
             patch.object(sqlbank, "get_job", return_value={"state": "running"}),
             patch.object(sqlbank, "update_job", side_effect=update_job),
-            patch.object(pipeline, "select_chunks", return_value=([chunk], 0)),
+            patch.object(coursegen, "build_instructional_course", return_value=course),
+            patch.object(coursegen, "assessment_chunks", return_value=[lesson]),
             patch.object(pipeline, "generate_questions", side_effect=generate),
         ):
             function_app._run_generation_job("job_queued", 7, "Capacity Planning")
 
         self.assertEqual(updates[0]["total"], 1)
-        self.assertEqual(updates[1]["done_count"], 1)
+        self.assertTrue(any(update.get("done_count") == 1 for update in updates))
         self.assertEqual(updates[-1]["state"], "done")
         self.assertEqual(updates[-1]["written"], 2)
+        self.assertEqual(FakeBank.retire_stale_calls, 1)
+
+    def test_failed_replacement_keeps_previous_question_bank(self):
+        connection = FakeConnection()
+        chunk = SimpleNamespace(topic="Capacity", chunk_id="chunk_1",
+                                doc_title="Capacity Planning", container="source",
+                                role_scope="SWE_DIRECTOR")
+        lesson = SimpleNamespace(topic="Capacity", chunk_id="lesson_1", module_id="mod_1")
+        module = SimpleNamespace(module_id="mod_1", heading="Capacity",
+                                 learning_points=list(range(5)))
+        course = SimpleNamespace(modules=[module], ready_modules=[module])
+        FakeBank.chunks = [chunk]
+        FakeBank.published_override = 0
+
+        with (
+            patch.object(function_app, "_conn", return_value=connection),
+            patch.object(sqlbank, "SqlBank", FakeBank),
+            patch.object(sqlbank, "get_job", return_value={"state": "running"}),
+            patch.object(sqlbank, "update_job"),
+            patch.object(coursegen, "build_instructional_course", return_value=course),
+            patch.object(coursegen, "assessment_chunks", return_value=[lesson]),
+            patch.object(pipeline, "generate_questions", return_value=SimpleNamespace(
+                kept=[], written=0, rejected=[])),
+        ):
+            function_app._run_generation_job("site_job", 7, "Capacity Planning")
+
+        self.assertEqual(FakeBank.retire_stale_calls, 0)
+
+    def test_website_worker_bounds_generation_per_module(self):
+        connection = FakeConnection()
+        chunks = [SimpleNamespace(
+            topic="Prompting Techniques", chunk_id="chunk_{}".format(i),
+            container="trusted-site", source_url="https://docs.example.com/{}".format(i),
+            page_start=1, doc_title="Prompt Guide", role_scope="SWE_DIRECTOR",
+        ) for i in range(9)]
+        lesson = SimpleNamespace(topic="Prompting Techniques", chunk_id="lesson_1",
+                                 module_id="mod_prompting")
+        module = SimpleNamespace(module_id="mod_prompting", heading="Prompting Techniques",
+                                 learning_points=list(range(8)))
+        course = SimpleNamespace(modules=[module], ready_modules=[module])
+        result = SimpleNamespace(kept=list(range(24)), written=24, rejected=[])
+        updates = []
+
+        def generate(bank, selected, **kwargs):
+            self.assertEqual(selected, [lesson])
+            self.assertEqual(kwargs["per_chunk"], 8)
+            self.assertTrue(kwargs["difficulty_ladder"])
+            return result
+
+        FakeBank.chunks = chunks
+
+        with (
+            patch.object(function_app, "_conn", return_value=connection),
+            patch.object(sqlbank, "SqlBank", FakeBank),
+            patch.object(sqlbank, "get_job", return_value={"state": "running"}),
+            patch.object(sqlbank, "update_job", side_effect=lambda *args, **fields: updates.append(fields)),
+            patch.object(coursegen, "build_instructional_course", return_value=course),
+            patch.object(coursegen, "assessment_chunks", return_value=[lesson]),
+            patch.object(pipeline, "generate_questions", side_effect=generate),
+        ):
+            function_app._run_generation_job("site_job", 7, "Prompt Guide")
+
+        self.assertEqual(updates[0]["total"], 9)
+        self.assertEqual(updates[-1]["state"], "done")
 
 
 if __name__ == "__main__":

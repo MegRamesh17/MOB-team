@@ -139,10 +139,12 @@ class FakeCursor:
         elif "INSERT INTO dbo.GeneratedQuestions" in s:
             cols = ("question_id", "topic", "question_type", "difficulty", "prompt",
                     "explanation", "points", "source_chunk_id", "source_doc_title",
-                    "source_page", "source_quote", "generator", "review_status",
+                    "source_page", "source_quote", "source_url", "source_fetched_at",
+                    "generator", "review_status",
                     "provenance_class", "role_code", "role_requirement",
                     "rubric_json", "fallback_json", "grading_version",
-                    "contradiction_notes", "company_id")
+                    "contradiction_notes", "module_id", "lesson_page_id",
+                    "learning_point_id", "company_id")
             row = dict(zip(cols, p))
             row["times_served"], row["times_correct"] = 0, 0
             t["GeneratedQuestions"].append(row)
@@ -391,6 +393,19 @@ class TestQuestions(unittest.TestCase):
         self.assertEqual(conn.tables["GeneratedQuestions"][0]["review_status"], "Approved",
                           "regenerating clobbered a human review decision")
         self.assertEqual(len(conn.tables["GeneratedQuestions"]), 1, "duplicated the question")
+
+    def test_save_question_keeps_external_page_provenance(self):
+        conn = FakeConn()
+        question = make_question()
+        question.provenance_class = ProvenanceClass.EXTERNAL
+        question.source_url = "https://docs.example.com/basics"
+        question.source_fetched_at = "2026-08-19T12:00:00+00:00"
+
+        SqlBank(conn, company_id=1).save_questions([question])
+
+        stored = conn.tables["GeneratedQuestions"][0]
+        self.assertEqual(stored["source_url"], question.source_url)
+        self.assertTrue(str(stored["source_fetched_at"]).startswith("2026-08-19"))
 
     def test_chunk_ids_with_questions_scopes_by_company(self):
         conn = FakeConn()
