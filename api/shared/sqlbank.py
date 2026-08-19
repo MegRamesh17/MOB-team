@@ -154,7 +154,7 @@ class SqlBank:
         self.conn.commit()
         return n
 
-    def add_role_requirement(self, role_code: str, doc_title: str, category: str = "technical") -> None:
+    def add_role_requirement(self, role_code: str, doc_title: str, category: str = "technical") -> bool:
         """
         Add ONE role/doc pair to RoleRequirements, without touching whatever else
         that role already requires.
@@ -165,6 +165,10 @@ class SqlBank:
         IF NOT EXISTS against RoleRequirements' (company_id, role_code, doc_title)
         primary key, so calling this twice for the same pair is a no-op rather than
         a duplicate-key error.
+
+        Returns True only when this call actually inserted the row -- confirm_document
+        uses this to send a "new training assigned" email once, on the pair's first
+        assignment, not on every re-confirm of an already-required document.
         """
         cur = self.conn.cursor()
         code = (role_code or "ALL").strip().upper()
@@ -176,7 +180,9 @@ class SqlBank:
             self.company_id, code, doc_title,
             self.company_id, code, doc_title, (category or "technical").strip().lower(),
         )
+        inserted = cur.rowcount > 0
         self.conn.commit()
+        return inserted
 
     # ------------------------------------------------------------------
     # questions

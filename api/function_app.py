@@ -2470,6 +2470,45 @@ def _permitted_upload_roles(cur, identity) -> set:
     return allowed
 
 
+def _employees_for_role(cur, company_id: int, role_code: str) -> List[tuple]:
+    """
+    (email, name) for everyone in this company holding role_code -- or the whole
+    company, when role_code is 'ALL' (a company-wide requirement, per the same
+    'ALL means company-wide, not a role anyone controls' rule _permitted_upload_roles
+    already enforces on the write side).
+
+    Used by confirm_document to find who to notify when a document becomes newly
+    required for a role. Read-only, so it doesn't need SqlBank -- a plain query is
+    clearer than routing a two-column SELECT through a class built for chunks/questions.
+    """
+    if role_code == "ALL":
+        cur.execute(
+            "SELECT email, name FROM dbo.Employees WHERE company_id = ?",
+            company_id,
+        )
+    else:
+        cur.execute(
+            """SELECT e.email, e.name FROM dbo.Employees e
+                 JOIN dbo.Roles r ON r.id = e.role_id
+                WHERE e.company_id = ? AND r.role_code = ?""",
+            company_id, role_code,
+        )
+    return [(r.email, r.name) for r in cur.fetchall()]
+
+
+def _company_name(company_id: int) -> str:
+    """For the email's greeting/sign-off. Falls back to a generic label rather than
+    failing the whole notification over a display string."""
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT name FROM dbo.Companies WHERE id = ?", company_id)
+            row = cur.fetchone()
+            return row.name if row else "Your company"
+    except Exception:  # noqa: BLE001
+        return "Your company"
+
+
 def _ingest_and_propose(chunks, identity, label: str, retitle_suffix: str) -> func.HttpResponse:
     """
     Save already-extracted chunks, seed the role catalog if empty, and ask the model to
@@ -2705,10 +2744,17 @@ def confirm_document(req: func.HttpRequest, generation_message) -> func.HttpResp
             # they were already trusted to assign; they still cannot touch
             # requirements for any role outside their own chain.
             required_for: List[str] = []
+            # (email, name) pairs to notify once this transaction is committed --
+            # collected here, while cur is open, but the actual sends happen after the
+            # `with` block closes, so a slow or failing Resend call never holds the DB
+            # connection open.
+            to_notify: List[tuple] = []
             if make_required:
                 for code in {(c or "ALL").upper() for c in assignments.values()}:
-                    bank.add_role_requirement(code, doc_title)
+                    newly_required = bank.add_role_requirement(code, doc_title)
                     required_for.append(code)
+                    if newly_required:
+                        to_notify.extend(_employees_for_role(cur, identity.company_id, code))
 
             retired = 0
             if supersede and supersede != doc_title:
@@ -2722,6 +2768,22 @@ def confirm_document(req: func.HttpRequest, generation_message) -> func.HttpResp
             "companyId": identity.company_id,
             "docTitle": doc_title,
         }))
+
+        if to_notify:
+            from shared.comms import send_new_training_email
+            company_name = _company_name(identity.company_id)
+            # Same email can appear twice if, say, a role holder's role_code happens
+            # to match two different assignments in this same confirm -- dict.fromkeys
+            # on the pair de-dupes without needing the pairs to be hashable-sorted.
+            for email, name in dict.fromkeys(to_notify):
+                try:
+                    send_new_training_email(email, name, doc_title, company_name)
+                except Exception:  # noqa: BLE001
+                    # A notification failure must never fail the confirm itself -- the
+                    # document is already saved and generating either way.
+                    logging.exception(
+                        "confirm_document: failed to notify %s of new training %s",
+                        email, doc_title)
 
         return _json({
             "title": doc_title, "taggedChunks": tagged, "retired": retired,
@@ -3011,3 +3073,85 @@ def remove_role(req: func.HttpRequest) -> func.HttpResponse:
     if not removed:
         return _error(404, "No such role", code)
     return _json({"removed": code})
+
+
+# --------------------------------------------------------------------------
+# Track E: daily certificate-expiry reminders
+# --------------------------------------------------------------------------
+
+@app.timer_trigger(schedule="0 0 8 * * *", arg_name="mytimer",
+                    run_on_startup=False, use_monitor=True)
+def send_expiry_reminders(mytimer: func.TimerRequest) -> None:
+    """
+    Daily at 08:00 UTC (NCRONTAB "0 0 8 * * *"). Finds Certificates rows expiring
+    within EXPIRY_WARNING_DAYS days that have not already been reminded about, emails
+    the holder via Resend, then stamps reminder_sent_at so the same certificate is
+    never reminded twice.
+
+    Reads dbo.Certificates, not dbo.Completions -- Completions has had its own
+    reminder_sent_at column since 004_create_completions.sql, but nothing writes to
+    Completions any more. POST /quiz/submit issues real certificates into
+    dbo.Certificates (018_extend_certificates.sql). A job built against Completions
+    would run daily against a table nothing populates and silently do nothing.
+
+    A cross-tenant scan, deliberately: this runs once for every company, not once per
+    company_id, the same way the quarterly regeneration job (Track B, not yet built)
+    will need to. Every row already carries its own company via the Employees/Companies
+    join, so there is nothing to leak between tenants -- each email only ever
+    references its own recipient's own certificate.
+    """
+    warning_days = int(os.getenv("EXPIRY_WARNING_DAYS", "30"))
+    sent, failed, skipped_unconfigured = 0, 0, 0
+
+    from shared.comms import CommsNotConfigured, send_expiry_email
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """SELECT cert.id, cert.doc_title, cert.expires_at,
+                          e.email, e.name AS employee_name, comp.name AS company_name
+                     FROM dbo.Certificates cert
+                     JOIN dbo.Employees e   ON e.id = cert.employee_id
+                     JOIN dbo.Companies comp ON comp.id = e.company_id
+                    WHERE cert.status = 'Active'
+                      AND cert.reminder_sent_at IS NULL
+                      AND cert.expires_at BETWEEN SYSUTCDATETIME()
+                          AND DATEADD(DAY, ?, SYSUTCDATETIME())""",
+                warning_days,
+            )
+            rows = cur.fetchall()
+
+            for row in rows:
+                try:
+                    send_expiry_email(
+                        row.email, row.employee_name, row.doc_title,
+                        row.expires_at, row.company_name,
+                    )
+                except CommsNotConfigured:
+                    # Not a per-recipient failure -- nobody has set RESEND_API_KEY yet.
+                    # Every remaining row would fail the identical way, so stop the
+                    # loop rather than log the same cause N times, but this run is not
+                    # an error: it is expected until Resend is configured.
+                    skipped_unconfigured = len(rows) - sent - failed
+                    break
+                except Exception:  # noqa: BLE001
+                    failed += 1
+                    logging.exception(
+                        "send_expiry_reminders: failed to email certificate %s (%s)",
+                        row.id, row.email)
+                    continue
+
+                cur.execute(
+                    "UPDATE dbo.Certificates SET reminder_sent_at = SYSUTCDATETIME() "
+                    "WHERE id = ?",
+                    row.id,
+                )
+                c.commit()
+                sent += 1
+
+        logging.info(
+            "send_expiry_reminders: sent=%d failed=%d skipped_unconfigured=%d",
+            sent, failed, skipped_unconfigured)
+    except Exception:  # noqa: BLE001
+        logging.exception("send_expiry_reminders: run failed")

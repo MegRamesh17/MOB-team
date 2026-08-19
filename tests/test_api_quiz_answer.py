@@ -67,6 +67,13 @@ def _install_azure_stubs():
         def queue_trigger(self, **kw):
             return self.route(**kw)
 
+        def timer_trigger(self, **kw):
+            # send_expiry_reminders (function_app.py) is decorated with this. A no-op
+            # decorator, same as route/queue_trigger above -- this stub exists so
+            # importing function_app doesn't need a real Functions runtime, not to
+            # model timer scheduling.
+            return self.route(**kw)
+
     class FunctionApp(Blueprint):
         def __init__(self, **kw):
             pass
