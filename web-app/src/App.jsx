@@ -1283,6 +1283,21 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
   const selectable = roles.filter((r) => permitted.has(r.role_code));
   const canPublishCompanyWide = permitted.has("ALL");
 
+  // Grouped by org-chart team (r.team, from GET /roles — null for a role with no
+  // org-chart mapping, and always null in local dev, which has no Teams table to
+  // join against). Someone whose reporting subtree spans several teams -- a CTO
+  // over Cybersecurity, Software Engineering and DevOps, say -- would otherwise see
+  // every role_code across all of them mixed into one flat list. Falls back to that
+  // same flat list when no role in scope has team info, so this is a pure
+  // enhancement, not a dependency the picker breaks without.
+  const teamGroups = {};
+  const ungroupedRoles = [];
+  for (const r of selectable) {
+    if (r.team) (teamGroups[r.team] ||= []).push(r);
+    else ungroupedRoles.push(r);
+  }
+  const hasTeamGroups = Object.keys(teamGroups).length > 0;
+
   const knownCodes = new Set(selectable.map((r) => r.role_code));
   const [assignments, setAssignments] = useState(() => {
     const init = {};
@@ -1297,6 +1312,10 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
   const [newRoles, setNewRoles] = useState([]); // roles the manager adds inline
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  // Checked by default: assigning training to a role and having it count toward
+  // that role's Q Score are the same decision in a manager's head. Still a real
+  // checkbox a human can uncheck, not something inferred silently after the fact.
+  const [makeRequired, setMakeRequired] = useState(true);
 
   const allCodes = [...selectable.map((r) => r.role_code), ...newRoles.map((r) => r.roleCode)];
   const unresolved = Object.entries(assignments).filter(([, v]) => !v);
@@ -1313,7 +1332,7 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
     setBusy(true); setErr(null);
     try {
       const result = await api.confirmDocument({
-        title: analysis.title, assignments, newRoles, supersede: "",
+        title: analysis.title, assignments, newRoles, supersede: "", makeRequired,
       });
       onConfirmed(result);
     } catch (e) { setErr(e); } finally { setBusy(false); }
@@ -1373,7 +1392,22 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
               >
                 <option value="">— choose role —</option>
                 {canPublishCompanyWide && <option value="ALL">Everyone (company-wide)</option>}
-                {selectable.map((r) => <option key={r.role_code} value={r.role_code}>{r.title}</option>)}
+                {hasTeamGroups ? (
+                  <>
+                    {Object.keys(teamGroups).sort((a, b) => a.localeCompare(b)).map((team) => (
+                      <optgroup key={team} label={team}>
+                        {teamGroups[team].map((r) => <option key={r.role_code} value={r.role_code}>{r.title}</option>)}
+                      </optgroup>
+                    ))}
+                    {ungroupedRoles.length > 0 && (
+                      <optgroup label="Other roles">
+                        {ungroupedRoles.map((r) => <option key={r.role_code} value={r.role_code}>{r.title}</option>)}
+                      </optgroup>
+                    )}
+                  </>
+                ) : (
+                  selectable.map((r) => <option key={r.role_code} value={r.role_code}>{r.title}</option>)
+                )}
                 {newRoles.map((r) => <option key={r.roleCode} value={r.roleCode}>{r.title} (new)</option>)}
                 <option value="__new__">+ Add as new role…</option>
               </select>
@@ -1387,6 +1421,17 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
           Will be added to the company list: {newRoles.map((r) => r.title).join(", ")}
         </p>
       )}
+      <label className="flex items-start gap-2 mb-4 cursor-pointer">
+        <input type="checkbox" checked={makeRequired}
+          onChange={(e) => setMakeRequired(e.target.checked)}
+          className="mt-0.5" />
+        <span style={{ color: C.ink }} className="text-xs">
+          <span className="font-semibold">Also make this required</span>
+          <span style={{ color: C.sub }}> — counts toward Q Score for the roles above.
+            Leave checked unless this is optional reading.</span>
+        </span>
+      </label>
+
       {err && <ErrorBox error={err} />}
       <div className="flex gap-2">
         <Button onClick={confirm} disabled={busy || unresolved.length > 0}>

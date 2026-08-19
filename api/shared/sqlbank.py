@@ -126,6 +126,30 @@ class SqlBank:
         self.conn.commit()
         return n
 
+    def add_role_requirement(self, role_code: str, doc_title: str, category: str = "technical") -> None:
+        """
+        Add ONE role/doc pair to RoleRequirements, without touching whatever else
+        that role already requires.
+
+        Mirrors src/quizgen/bank.py's method of the same name -- see its docstring
+        for why this must not behave like the admin-facing "replace the whole list"
+        endpoint (set_requirements in function_app.py). Idempotent: guarded by
+        IF NOT EXISTS against RoleRequirements' (company_id, role_code, doc_title)
+        primary key, so calling this twice for the same pair is a no-op rather than
+        a duplicate-key error.
+        """
+        cur = self.conn.cursor()
+        code = (role_code or "ALL").strip().upper()
+        cur.execute(
+            "IF NOT EXISTS (SELECT 1 FROM dbo.RoleRequirements "
+            "               WHERE company_id = ? AND role_code = ? AND doc_title = ?) "
+            "  INSERT INTO dbo.RoleRequirements (company_id, role_code, doc_title, category) "
+            "  VALUES (?, ?, ?, ?);",
+            self.company_id, code, doc_title,
+            self.company_id, code, doc_title, (category or "technical").strip().lower(),
+        )
+        self.conn.commit()
+
     # ------------------------------------------------------------------
     # questions
     # ------------------------------------------------------------------

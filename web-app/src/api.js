@@ -187,8 +187,13 @@ export const removeRole = (roleCode) =>
  * roles they chose to create, and (if the AI judged this an update) which existing
  * module it supersedes. Generation starts only after this call.
  */
-export const confirmDocument = ({ title, assignments, newRoles, supersede }) =>
+export const confirmDocument = ({ title, assignments, newRoles, supersede, makeRequired }) =>
   call("/documents/confirm", {
     method: "POST",
-    body: { title, assignments, newRoles: newRoles || [], supersede: supersede || "" },
+    body: {
+      title, assignments, newRoles: newRoles || [], supersede: supersede || "",
+      // Defaults true server-side too if omitted; passed explicitly so the
+      // checkbox in the confirm screen is the actual source of truth.
+      makeRequired: makeRequired !== false,
+    },
   });
