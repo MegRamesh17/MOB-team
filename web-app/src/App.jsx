@@ -3,7 +3,7 @@ import {
   LogOut, BookOpen, Award, Users, CheckCircle2, Circle, Lock,
   ChevronRight, X, AlertCircle, Clock, ArrowLeft, User, Star,
   Trophy, Flame, Target, Mail, Briefcase, Share2, Download, Copy,
-  Loader2, RefreshCw, Upload, FileText,
+  Loader2, RefreshCw, Upload, FileText, Link2,
 } from "lucide-react";
 import * as api from "./api";
 import { Logo } from "./logo.jsx";
@@ -1273,6 +1273,78 @@ function RoleManager({ roles, onChanged }) {
   );
 }
 
+/**
+ * Manager-only. Submits a vetted URL through the exact same pipeline an upload goes
+ * through server-side (POST /links/add returns the same shape uploadDocument's response
+ * does), so onSubmitted just hands the result to the same MappingReview the dropzone
+ * already uses -- no separate confirmation flow to build.
+ */
+function TrustedLinkForm({ roles, canPublishCompanyWide, onSubmitted }) {
+  const [open, setOpen] = useState(false);
+  const [url, setUrl] = useState("");
+  const [scope, setScope] = useState("team");
+  const [roleCode, setRoleCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const canSubmit = url.trim() && (scope === "company_wide" || roleCode) && !busy;
+
+  const submit = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const res = await api.addTrustedLink({
+        url: url.trim(), scope, roleCode: scope === "company_wide" ? "ALL" : roleCode,
+      });
+      setUrl(""); setRoleCode("");
+      onSubmitted(res);
+    } catch (e) { setErr(e); } finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ borderColor: C.line }} className="border rounded-xl bg-white mb-5">
+      <button onClick={() => setOpen(!open)} className="w-full flex items-center justify-between p-4">
+        <span style={{ ...display, color: C.ink }} className="font-bold text-sm">Add a trusted link</span>
+        <ChevronRight size={15} color={C.sub} style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 120ms" }} />
+      </button>
+      {open && (
+        <div className="px-4 pb-4">
+          <p style={{ color: C.sub }} className="text-xs mb-3">
+            A vetted reference URL — vendor docs, a standards body, your own compliance page.
+            Goes through the same extraction and verbatim-quote check as an uploaded PDF.
+          </p>
+          <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…"
+            style={{ borderColor: C.line, color: C.ink }}
+            className="border rounded-lg px-3 py-2 text-xs w-full mb-2" />
+          <div className="flex gap-2 flex-wrap items-center">
+            <select value={scope} onChange={(e) => { setScope(e.target.value); setRoleCode(""); }}
+              style={{ borderColor: C.line, color: C.ink }} className="border rounded-lg px-3 py-2 text-xs">
+              <option value="team">My team</option>
+              {canPublishCompanyWide && <option value="company_wide">Company-wide</option>}
+            </select>
+            {scope === "team" && (
+              <select value={roleCode} onChange={(e) => setRoleCode(e.target.value)}
+                style={{ borderColor: C.line, color: C.ink }}
+                className="border rounded-lg px-3 py-2 text-xs flex-1 min-w-[160px]">
+                <option value="">Choose a role…</option>
+                {roles.map((r) => <option key={r.role_code} value={r.role_code}>{r.title}</option>)}
+              </select>
+            )}
+            <Button onClick={submit} disabled={!canSubmit} className="!py-2 text-xs">
+              {busy ? "Fetching…" : "Add link"}
+            </Button>
+          </div>
+          {scope === "company_wide" && (
+            <p style={{ color: C.sub }} className="text-xs mt-2">
+              Replaces the company's current active company-wide link — there is only ever one.
+            </p>
+          )}
+          {err && <ErrorBox error={err} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** The manager reviews the AI's proposed mapping before anything is generated. */
 function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
   // The AI proposes against every role the company has; this manager may only publish to
@@ -1444,9 +1516,10 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
   );
 }
 
-function DocumentsScreen({ team, onDone }) {
+function DocumentsScreen({ team, principal, onDone }) {
   const { data, loading, error, reload } = useAsync(() => api.documents(), []);
   const rolesQ = useAsync(() => api.roles(), []);
+  const linksQ = useAsync(() => api.trustedLinks(), []);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState(null);
   const [analysis, setAnalysis] = useState(null);   // awaiting manager confirmation
@@ -1458,6 +1531,9 @@ function DocumentsScreen({ team, onDone }) {
   const generator = data?.generator || "mock";
   const billed = generator !== "mock";
   const roles = rolesQ.data?.roles || [];
+  // Same tier POST /links/add itself checks server-side -- this only decides whether to
+  // offer the option at all, so nobody picks "Company-wide" only to have it 403.
+  const canPublishCompanyWide = ["admin", "executive"].includes(principal?.access_role);
 
   useEffect(() => {
     if (!job || job.state !== "running") return;
@@ -1480,6 +1556,15 @@ function DocumentsScreen({ team, onDone }) {
       setAnalysis(res);          // manager confirms before anything generates
       rolesQ.reload();
     } catch (e) { setUploadError(e); } finally { setUploading(false); }
+  };
+
+  // POST /links/add returns the exact same shape uploadDocument does (server runs both
+  // through the same _ingest_and_propose), so a submitted link joins the identical
+  // MappingReview flow below rather than needing its own confirmation UI.
+  const handleLinkSubmitted = (res) => {
+    setUploadError(null); setAnalysis(res); setJob(null);
+    rolesQ.reload();
+    linksQ.reload();
   };
 
   const pct = job && job.total ? Math.round((job.done / job.total) * 100) : 0;
@@ -1523,6 +1608,9 @@ function DocumentsScreen({ team, onDone }) {
         </p>
         <p style={{ color: C.sub }} className="text-xs">PDF, TXT or MD · up to 25 MB</p>
       </div>
+
+      <TrustedLinkForm roles={roles} canPublishCompanyWide={canPublishCompanyWide}
+        onSubmitted={handleLinkSubmitted} />
 
       {uploadError && <ErrorBox error={uploadError} />}
 
@@ -1590,6 +1678,42 @@ function DocumentsScreen({ team, onDone }) {
             <StatusPill status={d.ready ? "completed" : "in-progress"} />
           </div>
         ))}
+      </div>
+
+      <div className="flex items-center justify-between mb-3 mt-8">
+        <h3 style={{ ...display, color: C.ink }} className="font-bold">Trusted links</h3>
+        <button onClick={linksQ.reload} style={{ color: C.violet700 }} className="text-xs font-semibold flex items-center gap-1">
+          <RefreshCw size={12} /> Refresh
+        </button>
+      </div>
+
+      {linksQ.loading && <Loading />}
+      {linksQ.error && <ErrorBox error={linksQ.error} onRetry={linksQ.reload} />}
+
+      <div className="space-y-2">
+        {(linksQ.data?.links || []).map((l) => (
+          <div key={l.id} style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div style={{ background: l.isActive ? C.successBg : "#F1F0F3" }} className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0">
+                <Link2 size={16} color={l.isActive ? C.success : "#9A93A8"} />
+              </div>
+              <div className="min-w-0">
+                <p style={{ color: C.ink }} className="text-sm font-semibold truncate">{l.url}</p>
+                <p style={{ color: C.sub }} className="text-xs">
+                  {l.scope === "company_wide" ? "Company-wide" : l.roleCode}
+                  {l.addedBy ? ` · added by ${l.addedBy}` : ""}
+                </p>
+              </div>
+            </div>
+            <span style={{ background: l.isActive ? C.successBg : "#F1F0F3", color: l.isActive ? C.success : "#9A93A8" }}
+              className="text-[11px] font-semibold px-2.5 py-1 rounded-full shrink-0">
+              {l.isActive ? "Active" : "Retired"}
+            </span>
+          </div>
+        ))}
+        {!linksQ.loading && !(linksQ.data?.links || []).length && (
+          <p style={{ color: C.sub }} className="text-xs">No trusted links yet.</p>
+        )}
       </div>
     </div>
   );
@@ -2342,7 +2466,7 @@ export default function App() {
   if (view === "profile") {
     content = <Profile principal={auth} />;
   } else if (view === "documents") {
-    content = <DocumentsScreen team={team} onDone={() => goto("dashboard")} />;
+    content = <DocumentsScreen team={team} principal={auth} onDone={() => goto("dashboard")} />;
   } else if (view === "team") {
     content = <ManagerTeam team={team} />;
   } else if (view === "dashboard") {

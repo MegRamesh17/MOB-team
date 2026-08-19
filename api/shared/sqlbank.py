@@ -41,6 +41,21 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _parse_dt(value: str) -> Optional[datetime]:
+    """
+    Chunk.fetched_at is an ISO string (set by quizgen.web.fetch), but
+    SourceChunks.fetched_at is DATETIME2 -- pyodbc binds a Python str as text, and
+    relying on SQL Server to implicitly convert a string carrying a '+00:00' offset is
+    not worth the risk when parsing it here is one line.
+    """
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 class SqlBank:
     """Azure SQL storage for one company, matching the subset of Bank's interface
     the generation pipeline actually calls."""
@@ -65,24 +80,34 @@ class SqlBank:
             # missing here originally on the wrong assumption (stated in the old
             # comment on all_chunks below, now corrected) that this column did not
             # exist -- the first real upload hit that immediately with a 500.
+            # source_type/source_url/fetched_at were previously hardcoded to
+            # ('document', NULL, NULL) here regardless of what the Chunk actually
+            # carried -- harmless while every caller was a PDF upload, but it would have
+            # silently dropped a trusted link's URL and retrieval date (the citation
+            # ProvenanceClass.EXTERNAL questions require, per validators.py) the moment
+            # the chunk was saved. Now written from the Chunk itself, same as every
+            # other field here.
             cur.execute(
                 """MERGE dbo.SourceChunks AS target
                    USING (SELECT ? AS chunk_id) AS src ON target.chunk_id = src.chunk_id
                    WHEN MATCHED THEN UPDATE SET
                        doc_id = ?, doc_title = ?, section = ?, topic = ?,
                        page_start = ?, page_end = ?, chunk_text = ?, container = ?,
-                       role_scope = ?, company_id = ?
+                       role_scope = ?, company_id = ?, source_type = ?, source_url = ?,
+                       fetched_at = ?
                    WHEN NOT MATCHED THEN INSERT
                        (chunk_id, doc_id, doc_title, section, topic, page_start,
                         page_end, chunk_text, container, role_scope, source_type,
-                        company_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'document', ?);""",
+                        company_id, source_url, fetched_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
                 c.chunk_id,
                 c.doc_id, c.doc_title, c.section, c.topic, c.page_start, c.page_end,
                 c.text, c.container, c.role_scope, self.company_id,
+                c.source_type or "document", c.source_url or None, _parse_dt(c.fetched_at),
                 c.chunk_id, c.doc_id, c.doc_title, c.section, c.topic,
                 c.page_start, c.page_end, c.text, c.container, c.role_scope,
-                self.company_id,
+                c.source_type or "document", self.company_id,
+                c.source_url or None, _parse_dt(c.fetched_at),
             )
             n += 1
         self.conn.commit()
@@ -97,7 +122,8 @@ class SqlBank:
         # file is scoped, so one company never reads another's uploaded chunks.
         cur.execute(
             """SELECT chunk_id, doc_id, doc_title, topic, section, page_start,
-                      page_end, chunk_text, container, role_scope
+                      page_end, chunk_text, container, role_scope, source_type,
+                      source_url, fetched_at
                  FROM dbo.SourceChunks
                 WHERE company_id = ?
                 ORDER BY doc_title, page_start""",
@@ -109,6 +135,8 @@ class SqlBank:
                 topic=r.topic, section=r.section, page_start=r.page_start,
                 page_end=r.page_end, text=r.chunk_text, container=r.container or "",
                 role_scope=r.role_scope or "ALL", company_id=str(self.company_id),
+                source_type=r.source_type or "document", source_url=r.source_url or "",
+                fetched_at=r.fetched_at.isoformat() if r.fetched_at else "",
             )
             for r in cur.fetchall()
         ]
@@ -250,16 +278,26 @@ class SqlBank:
         ]
 
     def add_role(self, role_code: str, title: str, description: str = "") -> None:
+        # MERGE, not IF EXISTS/ELSE INSERT: the old two-step check-then-act let two
+        # near-simultaneous calls for the same (role_code, company_id) both see "not
+        # found" and both try to INSERT, colliding on PK_QuizgenRoles with an
+        # IntegrityError. seed_roles() calls this in a loop on every document upload
+        # while a company's QuizgenRoles is still empty, which made the race easy to
+        # hit -- exactly the same problem save_chunks() below already avoids the same
+        # way.
         cur = self.conn.cursor()
         code = role_code.upper()
         cur.execute(
-            "IF EXISTS (SELECT 1 FROM dbo.QuizgenRoles WHERE role_code = ? AND company_id = ?) "
-            "  UPDATE dbo.QuizgenRoles SET title = ?, description = ? "
-            "  WHERE role_code = ? AND company_id = ?; "
-            "ELSE "
-            "  INSERT INTO dbo.QuizgenRoles (role_code, company_id, title, description) "
-            "  VALUES (?, ?, ?, ?);",
-            code, self.company_id, title, description, code, self.company_id,
+            """MERGE dbo.QuizgenRoles AS target
+               USING (SELECT ? AS role_code, ? AS company_id) AS src
+                 ON target.role_code = src.role_code AND target.company_id = src.company_id
+               WHEN MATCHED THEN UPDATE SET
+                   title = ?, description = ?
+               WHEN NOT MATCHED THEN INSERT
+                   (role_code, company_id, title, description)
+                   VALUES (?, ?, ?, ?);""",
+            code, self.company_id,
+            title, description,
             code, self.company_id, title, description,
         )
         self.conn.commit()
@@ -273,6 +311,56 @@ class SqlBank:
         n = cur.rowcount
         self.conn.commit()
         return n
+
+    # ------------------------------------------------------------------
+    # trusted links (dbo.TrustedLinks, 026)
+    # ------------------------------------------------------------------
+
+    def add_trusted_link(self, added_by: int, scope: str, role_code: str, url: str) -> int:
+        """
+        Insert a trusted link. For scope='company_wide', retires the previous active
+        company-wide link first -- Decisions Log #4: exactly one active at a time, and
+        adding a new one supersedes rather than stacking. Both statements run under this
+        one connection/request, so there is no window for the QuizgenRoles.add_role-style
+        race a second concurrent caller could hit.
+
+        Returns the new row's id.
+        """
+        cur = self.conn.cursor()
+        if scope == "company_wide":
+            cur.execute(
+                "UPDATE dbo.TrustedLinks SET is_active = 0 "
+                "WHERE company_id = ? AND scope = 'company_wide' AND is_active = 1",
+                self.company_id,
+            )
+        cur.execute(
+            "INSERT INTO dbo.TrustedLinks (company_id, added_by, scope, role_code, url) "
+            "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?)",
+            self.company_id, added_by, scope, role_code.upper(), url,
+        )
+        new_id = cur.fetchone()[0]
+        self.conn.commit()
+        return new_id
+
+    def trusted_links(self) -> List[Dict[str, object]]:
+        cur = self.conn.cursor()
+        cur.execute(
+            """SELECT tl.id, tl.scope, tl.role_code, tl.url, tl.is_active, tl.created_at,
+                      e.name AS added_by_name
+                 FROM dbo.TrustedLinks tl
+                 LEFT JOIN dbo.Employees e ON e.id = tl.added_by
+                WHERE tl.company_id = ?
+                ORDER BY tl.created_at DESC""",
+            self.company_id,
+        )
+        return [
+            {
+                "id": r.id, "scope": r.scope, "roleCode": r.role_code, "url": r.url,
+                "isActive": bool(r.is_active), "createdAt": r.created_at,
+                "addedBy": r.added_by_name or "",
+            }
+            for r in cur.fetchall()
+        ]
 
 
 # ------------------------------------------------------------------------------
