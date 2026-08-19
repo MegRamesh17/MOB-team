@@ -627,9 +627,30 @@ function Dashboard({ name, onOpenPath, onOpenTraining }) {
 }
 
 // ---------- Learning path ----------
+const PATH_TABS = [
+  { id: "required", label: "Required", test: (t) => t.required },
+  { id: "recommended", label: "Recommended", test: (t) => t.recommended },
+  { id: "completed", label: "Completed", test: (t) => t.status === "completed" },
+  { id: "all", label: "All", test: () => true },
+];
+
 function LearningPath({ onBack, onOpenTraining }) {
   const { data, loading, error, reload } = useAsync(() => api.trainings(), []);
   const trainings = data?.trainings || [];
+  // Required is the default: it's the one tab that answers "what do I actually owe" --
+  // the question someone opening this page is most often here to answer. Falls
+  // through to All only once trainings have loaded and nothing is actually required,
+  // so a person with zero required items doesn't land on a tab that's empty for them
+  // specifically (as opposed to genuinely having nothing at all).
+  const [tabId, setTabId] = useState("required");
+  useEffect(() => {
+    if (!loading && trainings.length > 0 && !trainings.some((t) => t.required) && tabId === "required") {
+      setTabId("all");
+    }
+  }, [loading, trainings, tabId]);
+
+  const activeTab = PATH_TABS.find((tab) => tab.id === tabId) || PATH_TABS[0];
+  const visible = trainings.filter(activeTab.test);
 
   return (
     <div className="p-8 max-w-3xl">
@@ -638,12 +659,44 @@ function LearningPath({ onBack, onOpenTraining }) {
       </button>
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-6">My training path</h1>
 
+      <div className="flex gap-2 mb-6 flex-wrap">
+        {PATH_TABS.map((tab) => {
+          const count = trainings.filter(tab.test).length;
+          const isActive = tab.id === tabId;
+          return (
+            <button key={tab.id} onClick={() => setTabId(tab.id)}
+              style={{
+                background: isActive ? C.violet700 : "#fff",
+                color: isActive ? "#fff" : C.sub,
+                borderColor: isActive ? C.violet700 : C.line,
+              }}
+              className="border px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-colors">
+              {tab.label}
+              {!loading && (
+                <span style={{ opacity: isActive ? 0.85 : 0.6 }}>{count}</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
       {loading && <Loading />}
       {error && <ErrorBox error={error} onRetry={reload} />}
 
+      {!loading && !error && visible.length === 0 && (
+        <div style={{ borderColor: C.line }} className="border rounded-xl p-6 bg-white text-center">
+          <p style={{ color: C.sub }} className="text-sm">
+            {tabId === "required" ? "Nothing required right now."
+              : tabId === "recommended" ? "No recommendations yet — the skills popup offers these when there's something to suggest."
+              : tabId === "completed" ? "Nothing completed yet."
+              : "No trainings yet."}
+          </p>
+        </div>
+      )}
+
       <div className="relative pl-8">
-        {trainings.length > 0 && <div style={{ background: C.line }} className="absolute left-[15px] top-2 bottom-2 w-0.5" />}
-        {trainings.map((t) => (
+        {visible.length > 0 && <div style={{ background: C.line }} className="absolute left-[15px] top-2 bottom-2 w-0.5" />}
+        {visible.map((t) => (
           <div key={t.id} className="relative mb-6 last:mb-0">
             <div style={{ background: t.status === "completed" ? C.success : C.violet700 }}
               className="absolute -left-8 top-1 w-4 h-4 rounded-full border-2 border-white ring-2" />
@@ -2108,6 +2161,101 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
   );
 }
 
+// ---------- Skill interest popup ----------
+// Shown once, ever, per employee -- GET /skills/options reports `prompted` from
+// Employees.skills_prompted_at, which POST /skills/interest sets regardless of whether
+// anything was picked. Offers only trainings already visible to this person's role and
+// not already required for it (enforced server-side, not just hidden here) -- there is
+// deliberately no free-text option, so every choice maps to something that already
+// exists in the bank and can be recommended immediately, not something the AI has to go
+// build from nothing.
+function SkillInterestPopup({ onRecorded }) {
+  const [state, setState] = useState({ loading: true, options: null });
+  const [selected, setSelected] = useState(new Set());
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.skillOptions()
+      .then((res) => {
+        if (cancelled) return;
+        setState({ loading: false, options: !res.prompted && res.options.length > 0 ? res.options : null });
+      })
+      .catch(() => { if (!cancelled) setState({ loading: false, options: null }); });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (state.loading || !state.options) return null;
+
+  const toggle = (title) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(title) ? next.delete(title) : next.add(title);
+      return next;
+    });
+  };
+
+  const submit = async (skills) => {
+    setSubmitting(true);
+    try {
+      await api.setSkillInterest(skills);
+    } catch {
+      // The popup closing either way is more honest than pretending a retry loop here
+      // would help -- worst case it asks again a later session, which is a mild
+      // inconvenience, not a broken feature.
+    } finally {
+      setSubmitting(false);
+      setState({ loading: false, options: null });
+      onRecorded && onRecorded();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(30,27,46,0.6)" }}>
+      <div style={font} className="bg-white rounded-2xl p-6 max-w-md w-full">
+        <div className="flex items-start justify-between gap-3 mb-1">
+          <div style={{ background: C.lavender }} className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0">
+            <Target size={18} color={C.violet700} />
+          </div>
+          <button onClick={() => submit([])} disabled={submitting} style={{ color: C.sub }} className="shrink-0">
+            <X size={18} />
+          </button>
+        </div>
+        <h3 style={{ ...display, color: C.ink }} className="font-bold text-lg mt-3 mb-1">Anything you'd like to learn?</h3>
+        <p style={{ color: C.sub }} className="text-sm mb-4">
+          These are already in the training bank, beyond what your role requires. Pick any
+          that interest you and they'll show up under Recommended.
+        </p>
+
+        <div className="space-y-2 mb-5 max-h-64 overflow-y-auto">
+          {state.options.map((title) => {
+            const isChecked = selected.has(title);
+            return (
+              <button key={title} onClick={() => toggle(title)}
+                style={{ borderColor: isChecked ? C.violet700 : C.line, background: isChecked ? C.lavender : "#fff" }}
+                className="w-full text-left border rounded-lg px-3 py-2.5 text-sm flex items-center gap-2.5">
+                {isChecked
+                  ? <CheckCircle2 size={16} color={C.violet700} className="shrink-0" />
+                  : <Circle size={16} color="#C9C2DB" className="shrink-0" />}
+                <span style={{ color: C.ink }} className="min-w-0">{title}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex gap-2">
+          <Button onClick={() => submit([...selected])} disabled={submitting || selected.size === 0}>
+            {submitting ? "Saving…" : selected.size > 0 ? `Save ${selected.size} pick${selected.size === 1 ? "" : "s"}` : "Pick at least one"}
+          </Button>
+          <button onClick={() => submit([])} disabled={submitting} style={{ color: C.sub }} className="text-sm font-semibold px-3">
+            None of these
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------- Profile ----------
 function Profile({ principal }) {
   // Identity from the signed-in principal. PROFILES is a fallback ONLY for the fields
@@ -2437,20 +2585,26 @@ export default function App() {
   const quizViews = ["trainingDetail", "lesson", "quizPre", "quizRunner", "quizResults"];
 
   return (
-    <Shell
-      name={auth.name || auth.email}
-      roleCode={auth.role_code}
-      manages={manages}
-      active={quizViews.includes(view) ? "dashboard" : view}
-      setActive={goto}
-      onLogout={async () => {
-        await api.logout();
-        setAuth(null);
-        setTeam(null);
-        setView("dashboard");
-      }}
-    >
-      {content}
-    </Shell>
+    <>
+      <Shell
+        name={auth.name || auth.email}
+        roleCode={auth.role_code}
+        manages={manages}
+        active={quizViews.includes(view) ? "dashboard" : view}
+        setActive={goto}
+        onLogout={async () => {
+          await api.logout();
+          setAuth(null);
+          setTeam(null);
+          setView("dashboard");
+        }}
+      >
+        {content}
+      </Shell>
+      {/* Manages its own visibility -- fetches /skills/options and renders nothing if
+          already prompted or nothing to offer, so mounting it unconditionally here is
+          correct rather than something that needs its own loading gate in App. */}
+      <SkillInterestPopup />
+    </>
   );
 }

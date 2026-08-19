@@ -122,6 +122,9 @@ export const lesson = (training, moduleId) => {
   return call(`/lesson?training=${encodeURIComponent(training)}${module}`);
 };
 export const certificates = () => call("/certificates");
+export const skillOptions = () => call("/skills/options");
+export const setSkillInterest = (skills) =>
+  call("/skills/interest", { method: "POST", body: { skills } });
 
 export async function downloadCertificate(certificateUrl) {
   const url = certificateUrl.startsWith("http") ? certificateUrl : BASE + certificateUrl;

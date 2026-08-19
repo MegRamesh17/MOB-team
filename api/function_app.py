@@ -984,6 +984,18 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
             )
             certificates_by_doc = {row["doc_title"]: row for row in _rows(cur)}
 
+            # Reuses the same helper /qscore already reads its denominator from, so
+            # "required" here can never drift from what actually counts toward
+            # compliance -- one definition of required, not two that happen to agree
+            # today and quietly diverge later.
+            required_docs = {r["doc_title"] for r in _role_requirements(cur, role, identity.company_id)}
+
+            cur.execute(
+                "SELECT doc_title FROM dbo.EmployeeSkillInterest WHERE employee_id = ? AND company_id = ?",
+                identity.employee_id, identity.company_id,
+            )
+            interested_docs = {r["doc_title"] for r in _rows(cur)}
+
         rolled: Dict[str, Dict[str, int]] = {}
         for topic, row in by_topic.items():
             doc = topic_to_doc.get(topic, topic)
@@ -1017,10 +1029,131 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
                 "modules": modules.get(doc, []),
                 "compliant": bool(certificate),
                 "expiresAt": certificate.get("expires_at") if certificate else None,
+                "required": doc in required_docs,
+                # A required training is never ALSO "recommended" -- it's not optional
+                # enrichment for that person, it's already owed. Interest expressed in
+                # something that later became required (a manager made it mandatory
+                # after the fact) should read as Required, not both.
+                "recommended": doc in interested_docs and doc not in required_docs,
             })
         return _json({"trainings": out})
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="skills/options", methods=["GET"])
+def skill_options(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Whether to show the "anything you'd like to learn" popup, and what it can offer.
+
+    Deliberately offers ONLY trainings that already exist and are already visible to
+    this employee's role -- same role_scope filter list_trainings uses. Nothing here
+    can recommend content the employee couldn't otherwise see, and nothing here can
+    trigger new generation: this is a pointer into the existing bank, not a request for
+    more of it. A document already required for their role is excluded from the
+    options -- asking "want to learn X" about something they already owe is confusing,
+    not helpful.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    role = (identity.role_code or "ALL").upper()
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT skills_prompted_at FROM dbo.Employees WHERE id = ? AND company_id = ?",
+                identity.employee_id, identity.company_id,
+            )
+            row = cur.fetchone()
+            already_prompted = bool(row and row.skills_prompted_at is not None)
+
+            cur.execute(
+                """SELECT DISTINCT source_doc_title AS doc_title
+                     FROM dbo.GeneratedQuestions q
+                     LEFT JOIN dbo.SourceChunks c ON c.chunk_id = q.source_chunk_id
+                    WHERE q.review_status = 'Approved'
+                      AND q.company_id = ?
+                      AND COALESCE(c.role_scope, 'ALL') IN ('ALL', ?)
+                      AND source_doc_title IS NOT NULL
+                    ORDER BY source_doc_title""",
+                identity.company_id, role,
+            )
+            visible_docs = [r["doc_title"] for r in _rows(cur)]
+
+            required_docs = {r["doc_title"] for r in _role_requirements(cur, role, identity.company_id)}
+
+        options = [d for d in visible_docs if d not in required_docs]
+        return _json({"prompted": already_prompted, "options": options})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="skills/interest", methods=["POST"])
+def set_skill_interest(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Records the popup's answer -- a chosen list of existing trainings, or an empty one
+    if the employee closed it without picking anything. Either way this is a ONE-TIME
+    answer: skills_prompted_at is set regardless of whether anything was picked, so the
+    popup never asks again. There is deliberately no "ask me later" -- respecting a
+    dismissal means respecting it, not nagging again next session.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+
+    skills = body.get("skills")
+    if not isinstance(skills, list):
+        return _error(400, "Bad request", "skills must be a list (empty if none chosen)")
+    chosen = sorted({str(s).strip() for s in skills if str(s).strip()})
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            role = (identity.role_code or "ALL").upper()
+            # Only ever record interest in something this employee could actually be
+            # shown -- a title submitted from a stale/tampered client request that
+            # isn't in their own visible+non-required set is silently dropped rather
+            # than trusted, same posture as the role-tagging checks elsewhere in this
+            # file that never take a client's word for what it's allowed to touch.
+            cur.execute(
+                """SELECT DISTINCT source_doc_title AS doc_title
+                     FROM dbo.GeneratedQuestions q
+                     LEFT JOIN dbo.SourceChunks c ON c.chunk_id = q.source_chunk_id
+                    WHERE q.review_status = 'Approved'
+                      AND q.company_id = ?
+                      AND COALESCE(c.role_scope, 'ALL') IN ('ALL', ?)
+                      AND source_doc_title IS NOT NULL""",
+                identity.company_id, role,
+            )
+            allowed = {r["doc_title"] for r in _rows(cur)}
+            required_docs = {r["doc_title"] for r in _role_requirements(cur, role, identity.company_id)}
+            valid = [s for s in chosen if s in allowed and s not in required_docs]
+
+            for doc_title in valid:
+                cur.execute(
+                    "IF NOT EXISTS (SELECT 1 FROM dbo.EmployeeSkillInterest "
+                    "               WHERE employee_id = ? AND doc_title = ?) "
+                    "INSERT INTO dbo.EmployeeSkillInterest (employee_id, company_id, doc_title) "
+                    "VALUES (?, ?, ?)",
+                    identity.employee_id, doc_title,
+                    identity.employee_id, identity.company_id, doc_title,
+                )
+
+            cur.execute(
+                "UPDATE dbo.Employees SET skills_prompted_at = SYSUTCDATETIME() "
+                "WHERE id = ? AND company_id = ?",
+                identity.employee_id, identity.company_id,
+            )
+            c.commit()
+        return _json({"recorded": valid})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
 
 
 def _sync_training_modules(cur, company_id: int, training: str) -> None:
