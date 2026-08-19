@@ -141,6 +141,7 @@ class FakeCursor:
                     "explanation", "points", "source_chunk_id", "source_doc_title",
                     "source_page", "source_quote", "generator", "review_status",
                     "provenance_class", "role_code", "role_requirement",
+                    "rubric_json", "fallback_json", "grading_version",
                     "contradiction_notes", "company_id")
             row = dict(zip(cols, p))
             row["times_served"], row["times_correct"] = 0, 0

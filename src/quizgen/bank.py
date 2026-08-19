@@ -70,6 +70,9 @@ CREATE TABLE IF NOT EXISTS questions (
     provenance_class TEXT NOT NULL DEFAULT 'Documented',
     role_code        TEXT,
     role_requirement TEXT,
+    rubric_json      TEXT,
+    fallback_json    TEXT,
+    grading_version  TEXT,
     contradiction_notes TEXT,
     times_served     INTEGER NOT NULL DEFAULT 0,
     times_correct    INTEGER NOT NULL DEFAULT 0,
@@ -242,7 +245,12 @@ class Bank:
         tenant_column = ("company_id", "TEXT NOT NULL DEFAULT ''")
         additions = {
             "chunks": [tenant_column],
-            "questions": [tenant_column],
+            "questions": [
+                tenant_column,
+                ("rubric_json", "TEXT"),
+                ("fallback_json", "TEXT"),
+                ("grading_version", "TEXT"),
+            ],
             "attempts": [tenant_column],
             "responses": [tenant_column],
             "certificates": [tenant_column],
@@ -385,10 +393,11 @@ class Bank:
                                           explanation, points, source_chunk_id, source_doc_title,
                                           source_page, source_quote, generator, review_status,
                                           provenance_class, role_code, role_requirement,
+                                          rubric_json, fallback_json, grading_version,
                                           contradiction_notes,
                                           times_served, times_correct, created_at,
                                           company_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?)""",
                 (
                     q.question_id, q.topic, q.question_type.value, q.difficulty.value, q.prompt,
                     q.explanation, q.points, q.source_chunk_id, q.source_doc_title,
@@ -397,6 +406,8 @@ class Bank:
                     # checks in validators.py are then the only gate.
                     ReviewStatus.APPROVED.value if auto else q.review_status.value,
                     q.provenance_class.value, q.role_code, q.role_requirement,
+                    q.rubric_json or None, q.fallback_json or None,
+                    q.grading_version or None,
                     "; ".join(notes.get(q.question_id, [])), utcnow(),
                     self.company_id,
                 ),
@@ -436,6 +447,9 @@ class Bank:
             prompt=row["prompt"],
             options=options,
             accepted_answers=accepted,
+            rubric_json=row["rubric_json"] or "",
+            fallback_json=row["fallback_json"] or "",
+            grading_version=row["grading_version"] or "",
             explanation=row["explanation"] or "",
             points=row["points"],
             source_chunk_id=row["source_chunk_id"] or "",

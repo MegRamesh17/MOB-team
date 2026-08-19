@@ -61,11 +61,28 @@ _SCHEMA_HINT = """Return ONLY a JSON object of this exact shape:
 {
   "questions": [
     {
-      "type": "MultipleChoice" | "TrueFalse" | "FillInBlank",
+      "type": "MultipleChoice" | "TrueFalse" | "FillInBlank" | "ShortAnswer" |
+              "PromptResponse" | "PythonCode",
       "difficulty": "Easy" | "Medium" | "Hard",
       "prompt": "the question text",
       "options": [{"text": "...", "is_correct": true}],
       "accepted_answers": ["..."],
+      "rubric": {
+        "criteria": [{
+          "id": "lowercase_identifier",
+          "description": "what must be demonstrated",
+          "accepted_evidence": ["concepts or approaches that satisfy this criterion"],
+          "weight": 50,
+          "required": true,
+          "critical": false
+        }],
+        "correct_threshold": 80,
+        "syntax_tolerance": "minor_errors_allowed" | "valid_syntax_required"
+      },
+      "fallback": {
+        "prompt": "an equivalent multiple-choice check of the same objective",
+        "options": [{"text": "...", "is_correct": true}]
+      },
       "explanation": "why the answer is right, citing the passage",
       "source_quote": "the exact sentence from the passage that supports the answer"
     }
@@ -76,6 +93,13 @@ Rules:
 - MultipleChoice: exactly 4 options, exactly 1 correct. Leave accepted_answers empty.
 - TrueFalse: exactly 2 options, "True" and "False", exactly 1 correct.
 - FillInBlank: options empty; accepted_answers lists every acceptable spelling.
+- ShortAnswer: a response of one to three sentences. Options and accepted_answers empty.
+- PromptResponse: asks the learner to write a compact AI prompt for the stated task.
+- PythonCode: asks for a small Python snippet or function; never require code execution.
+- Every ShortAnswer, PromptResponse and PythonCode item MUST include a rubric whose
+  weights total 100 and a fallback with exactly 4 options and 1 correct answer.
+- Keep at least half of each batch choice-based. Use PythonCode or PromptResponse only
+  when that format genuinely fits the section; do not force it into policy recall.
 - source_quote: in grounded mode it MUST appear verbatim in the passage. In augmented
   mode leave it empty when the answer comes from your own knowledge of the subject."""
 
@@ -160,7 +184,9 @@ class AzureOpenAIGenerator:
             response_format={"type": "json_object"},
             # Temperature 0.3 where supported: near-deterministic, but enough variation
             # that regenerating a topic gives different questions. Ignored on gpt-5.
-            **_chat_kwargs(self._deployment, 4000, 0.3),
+            # Six-question pathway batches may include locked rubrics and equivalent
+            # fallbacks, which are substantially larger than the old two-question JSON.
+            **_chat_kwargs(self._deployment, 8000, 0.3),
         )
 
         raw = response.choices[0].message.content or "{}"
@@ -219,10 +245,58 @@ class AzureOpenAIGenerator:
 
         accepted = [str(a).strip() for a in (item.get("accepted_answers") or []) if str(a).strip()]
 
+        ai_graded = qtype in (
+            QuestionType.SHORT_ANSWER,
+            QuestionType.PROMPT_RESPONSE,
+            QuestionType.PYTHON_CODE,
+        )
+        rubric_json = ""
+        fallback_json = ""
+        if ai_graded:
+            rubric = item.get("rubric") or {}
+            fallback = item.get("fallback") or {}
+            criteria = rubric.get("criteria") or []
+            fallback_options = fallback.get("options") or []
+            try:
+                weight_total = sum(int(c.get("weight") or 0) for c in criteria)
+            except (AttributeError, TypeError, ValueError):
+                return None
+            if (
+                not criteria
+                or weight_total != 100
+                or any(not str(c.get("id") or "").strip() for c in criteria)
+                or any(not str(c.get("description") or "").strip() for c in criteria)
+                or len(fallback_options) != 4
+                or sum(1 for option in fallback_options if option.get("is_correct")) != 1
+                or not str(fallback.get("prompt") or "").strip()
+            ):
+                return None
+            fallback_id = stable_id("fb", question_id)
+            safe_options = []
+            for option in fallback_options:
+                text = str(option.get("text") or "").strip()
+                if not text:
+                    return None
+                safe_options.append({
+                    "optionId": stable_id("fbopt", fallback_id, text),
+                    "text": text,
+                    "isCorrect": bool(option.get("is_correct")),
+                })
+            rubric_json = json.dumps(rubric, separators=(",", ":"), sort_keys=True)
+            fallback_json = json.dumps({
+                "questionId": fallback_id,
+                "prompt": str(fallback["prompt"]).strip(),
+                "difficulty": item.get("difficulty", "Medium"),
+                "options": safe_options,
+            }, separators=(",", ":"), sort_keys=True)
+
         # Structural validation — a question with no correct answer grades everyone to
         # zero, and that is worth catching here rather than in front of a learner.
         if qtype == QuestionType.FILL_IN_BLANK:
             if not accepted:
+                return None
+        elif ai_graded:
+            if options or accepted:
                 return None
         else:
             correct = [o for o in options if o.is_correct]
@@ -259,6 +333,9 @@ class AzureOpenAIGenerator:
             prompt=prompt,
             options=options,
             accepted_answers=accepted,
+            rubric_json=rubric_json,
+            fallback_json=fallback_json,
+            grading_version="rubric-v1" if ai_graded else "",
             explanation=str(item.get("explanation", "")).strip(),
             source_chunk_id=chunk.chunk_id,
             source_doc_title=chunk.doc_title,

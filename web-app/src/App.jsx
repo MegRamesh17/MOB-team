@@ -764,7 +764,10 @@ function LearningPath({ onBack, onOpenTraining }) {
 }
 
 // ---------- Training detail ----------
-function TrainingDetail({ training, onBack, onStartLesson }) {
+function TrainingDetail({ training, onBack, onStartDiagnostic, onOpenModule, onStartFinal }) {
+  const { data, loading, error, reload } = useAsync(() => api.pathway(training.title), [training.title]);
+  const path = data?.training;
+
   return (
     <div className="p-8 max-w-3xl">
       <button onClick={onBack} style={{ color: C.sub }} className="flex items-center gap-1 text-sm font-semibold mb-4">
@@ -774,29 +777,89 @@ function TrainingDetail({ training, onBack, onStartLesson }) {
         <div className="min-w-0">
           <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">{training.title}</h1>
           <p style={{ color: C.sub }} className="text-sm">
-            {training.modules.length} modules · {training.questionCount} questions in the bank
+            {path?.modules.length ?? training.modules.length} required modules
           </p>
         </div>
         <MasteryRing value={training.mastery} />
       </div>
 
-      <h3 style={{ ...display, color: C.ink }} className="font-bold mb-3">Modules</h3>
-      <div className="space-y-2 mb-8">
-        {training.modules.map((m) => (
-          <div key={m} style={{ borderColor: C.line }} className="border rounded-xl p-4 flex items-center gap-3 bg-white">
-            <Circle size={16} color={C.violet500} className="shrink-0" />
-            <span style={{ color: C.ink }} className="text-sm font-medium flex-1 min-w-0">{m}</span>
+      {loading && <Loading label="Building your pathway…" />}
+      {error && <ErrorBox error={error} onRetry={reload} />}
+
+      {path && !path.diagnostic.completed && (
+        <div style={{ borderColor: C.line }} className="border rounded-lg p-5 bg-white mb-6">
+          <div className="flex items-start gap-3">
+            <Target size={18} color={C.violet700} className="shrink-0 mt-0.5" />
+            <div className="min-w-0 flex-1">
+              <h2 style={{ ...display, color: C.ink }} className="text-sm font-bold mb-1">Start with a diagnostic</h2>
+              <p style={{ color: C.sub }} className="text-sm mb-4">
+                {path.diagnostic.questionCount} questions: one Easy, Medium, and Hard check for every module.
+                Your results set the order, but every module remains required.
+              </p>
+              {!path.diagnostic.ready && (
+                <p style={{ color: C.amber }} className="text-xs font-semibold mb-3">
+                  This document still needs a complete Easy, Medium, and Hard question set.
+                </p>
+              )}
+              <Button onClick={onStartDiagnostic} disabled={!path.diagnostic.ready}>Take diagnostic</Button>
+            </div>
           </div>
-        ))}
-      </div>
-      <Button onClick={onStartLesson}>Start lesson</Button>
+        </div>
+      )}
+
+      {path && (
+        <>
+          <h3 style={{ ...display, color: C.ink }} className="font-bold mb-3">Training pathway</h3>
+          <div className="space-y-2 mb-6">
+            {path.modules.map((module) => {
+              const locked = module.status === "locked";
+              const passed = module.status === "passed";
+              const needsReview = module.status === "needs-review";
+              return (
+                <button key={module.moduleId} onClick={() => !locked && onOpenModule(module)} disabled={locked}
+                  style={{ borderColor: needsReview ? C.amber : C.line, opacity: locked ? 0.62 : 1 }}
+                  className="w-full border rounded-lg p-4 flex items-center gap-3 bg-white text-left disabled:cursor-not-allowed">
+                  {passed ? <CheckCircle2 size={17} color={C.success} className="shrink-0" />
+                    : locked ? <Lock size={16} color={C.sub} className="shrink-0" />
+                      : <Circle size={17} color={needsReview ? C.amber : C.violet700} className="shrink-0" />}
+                  <div className="min-w-0 flex-1">
+                    <p style={{ color: C.ink }} className="text-sm font-semibold">
+                      {module.pathwayOrder}. {module.title || module.topic}
+                    </p>
+                    <p style={{ color: C.sub }} className="text-xs mt-0.5">
+                      {module.questionCount} questions available
+                      {module.attemptCount > 0 ? ` · best ${Math.round(module.bestScore)}%` : ""}
+                    </p>
+                  </div>
+                  <span style={{ color: needsReview ? C.amber : passed ? C.success : C.sub }} className="text-xs font-semibold">
+                    {needsReview ? "Review required" : passed ? "Passed" : locked ? "Locked" : "Available"}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div style={{ borderColor: C.line }} className="border-t pt-5 flex items-center justify-between gap-4">
+            <div>
+              <h3 style={{ ...display, color: C.ink }} className="text-sm font-bold">Final assessment</h3>
+              <p style={{ color: C.sub }} className="text-xs mt-0.5">
+                {path.finalAssessment.questionCount} balanced questions · 80% to earn your certificate
+              </p>
+            </div>
+            <Button onClick={onStartFinal} disabled={path.finalAssessment.locked}>
+              {path.finalAssessment.locked ? "Locked" : "Start final"}
+            </Button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
 // ---------- Lesson ----------
-function LessonScreen({ training, onContinue, onBack }) {
-  const { data, loading, error, reload } = useAsync(() => api.lesson(training.title), [training.title]);
+function LessonScreen({ training, module, onContinue, onBack }) {
+  const { data, loading, error, reload } = useAsync(
+    () => api.lesson(training.title, module.moduleId), [training.title, module.moduleId]);
   const [scrolledToEnd, setScrolledToEnd] = useState(false);
   const boxRef = useRef(null);
 
@@ -819,7 +882,7 @@ function LessonScreen({ training, onContinue, onBack }) {
       </button>
 
       <div className="flex items-center justify-between gap-3 mb-1">
-        <h1 style={{ ...display, color: C.ink }} className="text-xl font-bold min-w-0">{data?.title || training.title}</h1>
+        <h1 style={{ ...display, color: C.ink }} className="text-xl font-bold min-w-0">{module.title || module.topic}</h1>
         {data && (
           <span style={{ color: C.sub, background: C.lavender }} className="text-xs font-semibold px-2.5 py-1 rounded-full flex items-center gap-1 shrink-0">
             <Clock size={12} /> {data.readTime}
@@ -827,7 +890,9 @@ function LessonScreen({ training, onContinue, onBack }) {
         )}
       </div>
       <p style={{ color: C.sub }} className="text-sm mb-4">
-        Read this before you take the quiz — the questions are generated from these passages.
+        {module.status === "passed"
+          ? "Review the source material from this completed module."
+          : "Complete this module before its 10-question adaptive checkpoint."}
       </p>
 
       {loading && <Loading label="Loading lesson…" />}
@@ -837,9 +902,11 @@ function LessonScreen({ training, onContinue, onBack }) {
         <>
           <div ref={boxRef} onScroll={handleScroll} style={{ borderColor: C.line, maxHeight: 420 }}
             className="border rounded-xl bg-white p-6 overflow-y-auto mb-4 space-y-5">
-            {data.sections.map((s, i) => (
-              <div key={i}>
+            {data.sections.map((s) => {
+              const weak = (module.weakSections || []).includes(s.heading);
+              return <div key={s.id} style={weak ? { borderLeft: `3px solid ${C.amber}`, paddingLeft: 12 } : undefined}>
                 <h3 style={{ ...display, color: C.ink }} className="text-sm font-bold mb-1.5">{s.heading}</h3>
+                {weak && <p style={{ color: C.amber }} className="text-xs font-semibold mb-1">Review this section carefully</p>}
                 <p style={{ color: C.sub }} className="text-sm leading-relaxed">{s.body}</p>
                 {s.sourceUrl && (
                   <a href={s.sourceUrl} target="_blank" rel="noopener noreferrer"
@@ -847,9 +914,9 @@ function LessonScreen({ training, onContinue, onBack }) {
                     Source ↗
                   </a>
                 )}
-              </div>
-            ))}
-            <p style={{ color: C.sub }} className="text-xs text-center pt-2 pb-1 italic">— end of reading —</p>
+              </div>;
+            })}
+            <p style={{ color: C.sub }} className="text-xs text-center pt-2 pb-1 italic">End of module</p>
           </div>
 
           {!scrolledToEnd && (
@@ -857,7 +924,9 @@ function LessonScreen({ training, onContinue, onBack }) {
               <ChevronRight size={12} className="rotate-90" /> Scroll to the end to unlock the quiz
             </p>
           )}
-          <Button onClick={onContinue} disabled={!scrolledToEnd}>I've read this — continue</Button>
+          <Button onClick={onContinue} disabled={!scrolledToEnd}>
+            {module.status === "passed" ? "Back to pathway" : "Continue to checkpoint"}
+          </Button>
         </>
       )}
     </div>
@@ -865,7 +934,21 @@ function LessonScreen({ training, onContinue, onBack }) {
 }
 
 // ---------- Quiz ----------
-function QuizPreScreen({ training, onStart, onBack, starting, error }) {
+function QuizPreScreen({ training, assessment, onStart, onBack, starting, error }) {
+  const isDiagnostic = assessment.kind === "diagnostic";
+  const isModule = assessment.kind === "module";
+  const title = isDiagnostic ? "Ready for your diagnostic?"
+    : isModule ? "Ready for the module checkpoint?" : "Ready for the final assessment?";
+  const detail = isDiagnostic
+    ? "Three difficulty checks per module · No content can be skipped"
+    : isModule
+      ? "10 adaptive questions · You need 90% to pass"
+      : "Balanced shared and variable questions · You need 80% to earn a certificate";
+  const note = isDiagnostic
+    ? "Your results personalize the order and emphasis of the required modules."
+    : isModule
+      ? "The next question becomes harder after a correct answer and easier after a mistake."
+      : "Every form follows the same topic and difficulty blueprint for fairness.";
   return (
     <div className="p-8 max-w-xl">
       <button onClick={onBack} style={{ color: C.sub }} className="flex items-center gap-1 text-sm font-semibold mb-4">
@@ -875,11 +958,9 @@ function QuizPreScreen({ training, onStart, onBack, starting, error }) {
         <div style={{ background: C.lavender }} className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-4">
           <Clock size={22} color={C.violet700} />
         </div>
-        <h1 style={{ ...display, color: C.ink }} className="text-xl font-bold mb-2">Ready for the quiz?</h1>
-        <p style={{ color: C.sub }} className="text-sm mb-2">8 questions · No time limit · You need 80% to pass</p>
-        <p style={{ color: C.sub }} className="text-xs mb-6">
-          Questions are picked for you — weak areas first, then whatever there's least evidence on.
-        </p>
+        <h1 style={{ ...display, color: C.ink }} className="text-xl font-bold mb-2">{title}</h1>
+        <p style={{ color: C.sub }} className="text-sm mb-2">{detail}</p>
+        <p style={{ color: C.sub }} className="text-xs mb-6">{note}</p>
         {error && <ErrorBox error={error} />}
         <Button onClick={onStart} disabled={starting}>{starting ? "Building your quiz…" : "Begin quiz"}</Button>
       </div>
@@ -896,27 +977,35 @@ function QuizPreScreen({ training, onStart, onBack, starting, error }) {
  * server-side from the full submission.
  */
 function QuizRunner({ training, quiz, onSubmit, onBack }) {
-  const [index, setIndex] = useState(0);
-  const [answers, setAnswers] = useState({});     // questionId -> answer payload
-  const [verdicts, setVerdicts] = useState({});   // questionId -> server verdict
+  const [q, setQuestion] = useState(quiz.currentQuestion);
+  const [answeredCount, setAnsweredCount] = useState(quiz.answeredCount || 0);
+  const [verdict, setVerdict] = useState(null);
   const [pending, setPending] = useState(false);
-  const [draft, setDraft] = useState(undefined);  // selection before it is committed
+  const [draft, setDraft] = useState(undefined);
   const [error, setError] = useState(null);
+  const [fallbackNotice, setFallbackNotice] = useState(false);
 
-  const q = quiz.questions[index];
-  const isMulti = false;                     // backend emits one correct option per question
-  const isFree = q.type === "FillInBlank";
-  const isLast = index === quiz.questions.length - 1;
-  const verdict = verdicts[q.questionId];
+  const isMulti = q?.type === "MultiSelect";
+  const isFree = ["FillInBlank", "ShortAnswer", "PythonCode", "PromptResponse"].includes(q?.type);
   const checked = Boolean(verdict);
+  const position = Math.min(checked ? answeredCount : answeredCount + 1, quiz.questionTarget);
 
   const commit = async (payload) => {
     setPending(true);
     setError(null);
     try {
-      const v = await api.gradeAnswer({ attemptId: quiz.attemptId, questionId: q.questionId, ...payload });
-      setAnswers((a) => ({ ...a, [q.questionId]: payload }));
-      setVerdicts((s) => ({ ...s, [q.questionId]: v }));
+      const response = await api.answerPathwayQuestion({
+        attemptId: quiz.attemptId, questionId: q.questionId, ...payload,
+      });
+      setAnsweredCount(response.answeredCount);
+      if (response.fallbackQuestion) {
+        setQuestion(response.fallbackQuestion);
+        setDraft(undefined);
+        setVerdict(null);
+        setFallbackNotice(true);
+        return;
+      }
+      setVerdict(response);
     } catch (e) {
       setError(e);
     } finally {
@@ -926,27 +1015,43 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
 
   const selectOption = (optionId) => {
     if (checked || pending) return;
+    if (isMulti) {
+      setDraft((current) => {
+        const values = Array.isArray(current) ? current : [];
+        return values.includes(optionId)
+          ? values.filter((value) => value !== optionId)
+          : [...values, optionId];
+      });
+      return;
+    }
     setDraft(optionId);
     commit({ selectedOptionIds: [optionId] });
   };
 
   const next = async () => {
-    if (!isLast) {
-      setIndex((i) => i + 1);
+    if (verdict?.nextQuestion) {
+      setQuestion(verdict.nextQuestion);
+      setVerdict(null);
       setDraft(undefined);
+      setError(null);
+      setFallbackNotice(false);
       return;
     }
-    const payload = quiz.questions.map((qq) => ({ questionId: qq.questionId, ...(answers[qq.questionId] || {}) }));
+    setPending(true);
+    setError(null);
     try {
-      const result = await api.submitQuiz({ attemptId: quiz.attemptId, answers: payload });
-      onSubmit(result, verdicts);
+      const result = await api.completePathwayAssessment(quiz.attemptId);
+      onSubmit(result);
     } catch (e) {
       setError(e);
+      setPending(false);
     }
   };
 
   const optionStyle = (optionId) => {
-    const selected = draft === optionId || (answers[q.questionId]?.selectedOptionIds || []).includes(optionId);
+    const selected = isMulti
+      ? (Array.isArray(draft) ? draft : []).includes(optionId)
+      : draft === optionId;
     if (!checked) {
       return {
         state: "default",
@@ -966,15 +1071,24 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
         <ArrowLeft size={14} /> Exit quiz
       </button>
       <div className="flex items-center justify-between gap-3 mb-2">
-        <h1 style={{ ...display, color: C.ink }} className="text-xl font-bold min-w-0 truncate">{training.title} — Quiz</h1>
+        <h1 style={{ ...display, color: C.ink }} className="text-xl font-bold min-w-0 truncate">
+          {training.title} · {quiz.kind === "diagnostic" ? "Diagnostic" : quiz.kind === "module" ? "Checkpoint" : "Final"}
+        </h1>
         <span style={{ color: C.sub }} className="text-xs font-semibold shrink-0">
-          Question {index + 1} of {quiz.questions.length}
+          Question {position} of {quiz.questionTarget}
         </span>
       </div>
       <div style={{ background: C.line }} className="w-full h-1.5 rounded-full overflow-hidden mb-6">
-        <div style={{ width: `${((index + (checked ? 1 : 0)) / quiz.questions.length) * 100}%`, background: C.violet700 }}
+        <div style={{ width: `${((answeredCount) / quiz.questionTarget) * 100}%`, background: C.violet700 }}
           className="h-full rounded-full transition-all" />
       </div>
+
+      {fallbackNotice && (
+        <div style={{ background: C.amberBg, color: C.amber }} className="rounded-lg px-4 py-3 text-sm mb-4">
+          Your written answer was genuinely ambiguous to the grader. This equivalent
+          multiple-choice check will decide the same question slot.
+        </div>
+      )}
 
       <div style={{ borderColor: C.line }} className="border rounded-xl p-5 bg-white">
         <div className="flex items-start justify-between gap-3 mb-3">
@@ -988,13 +1102,14 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
 
         {isFree ? (
           <div>
-            <input
+            <textarea
               value={draft ?? ""}
               onChange={(e) => setDraft(e.target.value)}
               disabled={checked || pending}
               placeholder="Type your answer"
+              rows={q.type === "PythonCode" ? 10 : 4}
               style={{ borderColor: C.line, color: C.ink }}
-              className="w-full border rounded-lg px-3 py-2.5 text-sm mb-3"
+              className={`w-full border rounded-lg px-3 py-2.5 text-sm mb-3 resize-y ${q.type === "PythonCode" ? "font-mono" : ""}`}
             />
             {!checked && (
               <Button onClick={() => commit({ textAnswer: draft || "" })} disabled={!draft || pending}>
@@ -1004,7 +1119,7 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
           </div>
         ) : (
           <div className="space-y-2">
-            {q.options.map((opt) => {
+            {(q.options || []).map((opt) => {
               const { state, selected, style } = optionStyle(opt.optionId);
               return (
                 <button
@@ -1027,6 +1142,16 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
                 </button>
               );
             })}
+            {isMulti && !checked && (
+              <div className="pt-1">
+                <Button
+                  onClick={() => commit({ selectedOptionIds: Array.isArray(draft) ? draft : [] })}
+                  disabled={!Array.isArray(draft) || draft.length === 0 || pending}
+                >
+                  {pending ? "Checking…" : "Check answers"}
+                </Button>
+              </div>
+            )}
           </div>
         )}
 
@@ -1056,7 +1181,9 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
 
       {checked && (
         <div className="mt-6">
-          <Button onClick={next}>{isLast ? "See results" : "Next question"}</Button>
+          <Button onClick={next} disabled={pending}>
+            {pending ? "Finishing…" : verdict.readyToComplete ? "See results" : "Next question"}
+          </Button>
         </div>
       )}
     </div>
@@ -1066,42 +1193,62 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
 function QuizResults({ result, onRetake, onDone }) {
   const pass = result.passed;
   const right = result.results.filter((r) => r.correct).length;
+  const diagnostic = result.kind === "diagnostic";
+  const checkpoint = result.kind === "module";
   return (
     <div className="p-8 max-w-2xl">
       <div style={{ borderColor: C.line }} className="border rounded-2xl p-8 bg-white text-center mb-6">
         <div className="flex justify-center mb-4">
           <MasteryRing value={result.scorePercent} size={100} stroke={9} />
         </div>
-        {pass ? (
+        {diagnostic ? (
           <>
-            <h1 style={{ ...display, color: C.ink }} className="text-xl font-bold mb-2">Nice work — you passed</h1>
+            <h1 style={{ ...display, color: C.ink }} className="text-xl font-bold mb-2">Your pathway is ready</h1>
+            <p style={{ color: C.sub }} className="text-sm mb-6">
+              {right} of {result.results.length} correct. Every module is still required; weaker areas now come first.
+            </p>
+            <Button onClick={onDone}>View training pathway</Button>
+          </>
+        ) : pass ? (
+          <>
+            <h1 style={{ ...display, color: C.ink }} className="text-xl font-bold mb-2">
+              {checkpoint ? "Module checkpoint passed" : "Final assessment passed"}
+            </h1>
             <p style={{ color: C.sub }} className="text-sm mb-6">
               {right} of {result.results.length} correct · pass mark {result.passingScore}%
             </p>
-            <div style={{ background: C.successBg, color: C.success }} className="rounded-xl px-4 py-3 text-sm font-semibold mb-6 flex items-center justify-center gap-2">
-              <Award size={16} /> Certificate earned
-            </div>
-            <Button onClick={onDone}>Back to dashboard</Button>
+            {checkpoint ? (
+              <div style={{ background: C.successBg, color: C.success }} className="rounded-lg px-4 py-3 text-sm font-semibold mb-6">
+                The next required module is now available.
+              </div>
+            ) : (
+              <div style={{ background: C.successBg, color: C.success }} className="rounded-lg px-4 py-3 text-sm font-semibold mb-6 flex items-center justify-center gap-2">
+                <Award size={16} /> Certificate earned
+              </div>
+            )}
+            <Button onClick={onDone}>View training pathway</Button>
           </>
         ) : (
           <>
-            <h1 style={{ ...display, color: C.ink }} className="text-xl font-bold mb-2">Not quite — you can retake it</h1>
+            <h1 style={{ ...display, color: C.ink }} className="text-xl font-bold mb-2">
+              {checkpoint ? "Review this module and try again" : "Final assessment not passed"}
+            </h1>
             <p style={{ color: C.sub }} className="text-sm mb-6">
               {right} of {result.results.length} correct · you need {result.passingScore}% to pass
             </p>
             <div className="flex gap-2 justify-center">
-              <Button onClick={onRetake}>Retake quiz</Button>
-              <Button variant="ghost" onClick={onDone}>Back to dashboard</Button>
+              <Button onClick={onRetake}>{checkpoint ? "Review module" : "Try final again"}</Button>
+              <Button variant="ghost" onClick={onDone}>View pathway</Button>
             </div>
           </>
         )}
       </div>
 
-      {result.weakTopics?.length > 0 && (
+      {result.weakSections?.length > 0 && (
         <div style={{ background: C.amberBg, borderColor: C.amber }} className="border rounded-xl p-4 mb-6">
-          <p style={{ color: C.amber }} className="text-sm font-semibold mb-1">What the next quiz will focus on</p>
+          <p style={{ color: C.amber }} className="text-sm font-semibold mb-1">Sections to review</p>
           <p style={{ color: C.ink }} className="text-sm opacity-90">
-            {result.weakTopics.map((w) => `${w.topic} (${w.accuracyPercent}%)`).join(", ")}
+            {result.weakSections.join(", ")}
           </p>
         </div>
       )}
@@ -1140,6 +1287,28 @@ function Certificates() {
   const { data, loading, error, reload } = useAsync(() => api.certificates(), []);
   const certs = data?.certificates || [];
   const due = data?.renewalsDue || [];
+  const [downloading, setDownloading] = useState(null);
+  const [downloadError, setDownloadError] = useState(null);
+
+  const download = async (certificate) => {
+    setDownloading(certificate.certificateId);
+    setDownloadError(null);
+    try {
+      const blob = await api.downloadCertificate(certificate.certificateUrl);
+      const href = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = href;
+      anchor.download = `quizrant-certificate-${certificate.certificateId}.pdf`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(href);
+    } catch (e) {
+      setDownloadError(e);
+    } finally {
+      setDownloading(null);
+    }
+  };
 
   return (
     <div className="p-8 max-w-3xl">
@@ -1156,6 +1325,7 @@ function Certificates() {
 
       {loading && <Loading />}
       {error && <ErrorBox error={error} onRetry={reload} />}
+      {downloadError && <ErrorBox error={downloadError} />}
 
       {!loading && !error && certs.length === 0 && (
         <div style={{ borderColor: C.line }} className="border rounded-xl p-6 bg-white text-center">
@@ -1194,8 +1364,14 @@ function Certificates() {
                     : `Valid until ${c.expiresAt}`}
               </p>
             )}
-            {/* No certificate artefact yet. Saying so beats a button that does nothing. */}
-            {!c.certificateUrl && (
+            {c.certificateUrl ? (
+              <button onClick={() => download(c)} disabled={downloading === c.certificateId}
+                style={{ color: C.violet700 }} className="text-xs font-semibold mt-3 flex items-center gap-1.5 disabled:opacity-60">
+                {downloading === c.certificateId
+                  ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                Download PDF
+              </button>
+            ) : (
               <p style={{ color: C.sub }} className="text-[10px] mt-2">
                 Downloadable certificate not generated yet
               </p>
@@ -2408,6 +2584,8 @@ export default function App() {
   const [team, setTeam] = useState(null);
   const [view, setView] = useState("dashboard");
   const [training, setTraining] = useState(null);
+  const [module, setModule] = useState(null);
+  const [assessment, setAssessment] = useState(null);
   const [quiz, setQuiz] = useState(null);
   const [result, setResult] = useState(null);
   const [starting, setStarting] = useState(false);
@@ -2443,13 +2621,30 @@ export default function App() {
 
   const manages = Boolean(team?.manages);
   const goto = (v) => setView(v);
-  const openTraining = (t) => { setTraining(t); setView("trainingDetail"); };
+  const openTraining = (t) => {
+    setTraining(t);
+    setModule(null);
+    setAssessment(null);
+    setView("trainingDetail");
+  };
+
+  const prepareAssessment = (kind, selectedModule = null) => {
+    setModule(selectedModule);
+    setAssessment({ kind, module: selectedModule });
+    setQuiz(null);
+    setStartError(null);
+    goto("quizPre");
+  };
 
   const beginQuiz = async () => {
     setStarting(true);
     setStartError(null);
     try {
-      const q = await api.startQuiz({ training: training.title, length: 8 });
+      const q = await api.startPathwayAssessment({
+        training: training.title,
+        kind: assessment.kind,
+        moduleId: assessment.module?.moduleId,
+      });
       setQuiz(q);
       goto("quizRunner");
     } catch (e) {
@@ -2474,11 +2669,30 @@ export default function App() {
   } else if (view === "path") {
     content = <LearningPath onBack={() => goto("dashboard")} onOpenTraining={openTraining} />;
   } else if (view === "trainingDetail") {
-    content = <TrainingDetail training={training} onBack={() => goto("dashboard")} onStartLesson={() => goto("lesson")} />;
+    content = <TrainingDetail
+      training={training}
+      onBack={() => goto("dashboard")}
+      onStartDiagnostic={() => prepareAssessment("diagnostic")}
+      onOpenModule={(selectedModule) => { setModule(selectedModule); goto("lesson"); }}
+      onStartFinal={() => prepareAssessment("final")}
+    />;
   } else if (view === "lesson") {
-    content = <LessonScreen training={training} onBack={() => goto("trainingDetail")} onContinue={() => goto("quizPre")} />;
+    content = <LessonScreen
+      training={training}
+      module={module}
+      onBack={() => goto("trainingDetail")}
+      onContinue={() => module.status === "passed"
+        ? goto("trainingDetail") : prepareAssessment("module", module)}
+    />;
   } else if (view === "quizPre") {
-    content = <QuizPreScreen training={training} onStart={beginQuiz} onBack={() => goto("lesson")} starting={starting} error={startError} />;
+    content = <QuizPreScreen
+      training={training}
+      assessment={assessment}
+      onStart={beginQuiz}
+      onBack={() => goto(assessment.kind === "module" ? "lesson" : "trainingDetail")}
+      starting={starting}
+      error={startError}
+    />;
   } else if (view === "quizRunner") {
     content = (
       <QuizRunner
@@ -2489,7 +2703,11 @@ export default function App() {
       />
     );
   } else if (view === "quizResults") {
-    content = <QuizResults result={result} onRetake={() => goto("quizPre")} onDone={() => goto("dashboard")} />;
+    content = <QuizResults
+      result={result}
+      onRetake={() => goto(result.kind === "module" ? "lesson" : "quizPre")}
+      onDone={() => goto("trainingDetail")}
+    />;
   } else if (view === "certificates") {
     content = <Certificates />;
   } else if (view === "teammates") {

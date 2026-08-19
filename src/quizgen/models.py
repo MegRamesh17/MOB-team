@@ -21,6 +21,9 @@ class QuestionType(str, Enum):
     MULTI_SELECT = "MultiSelect"
     TRUE_FALSE = "TrueFalse"
     FILL_IN_BLANK = "FillInBlank"
+    SHORT_ANSWER = "ShortAnswer"
+    PROMPT_RESPONSE = "PromptResponse"
+    PYTHON_CODE = "PythonCode"
 
 
 class Difficulty(str, Enum):
@@ -147,6 +150,13 @@ class Question:
     # Choice-based questions use options; FillInBlank uses accepted_answers.
     options: List[Option] = field(default_factory=list)
     accepted_answers: List[str] = field(default_factory=list)
+
+    # AI-graded responses use an immutable rubric and a pre-authored equivalent
+    # multiple-choice fallback. Both stay server-side; the browser receives the
+    # fallback only when two grading passes genuinely cannot resolve the answer.
+    rubric_json: str = ""
+    fallback_json: str = ""
+    grading_version: str = ""
 
     explanation: str = ""
     points: int = 1

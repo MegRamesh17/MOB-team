@@ -389,7 +389,9 @@ def start_quiz(req: func.HttpRequest) -> func.HttpResponse:
                             q.prompt, q.points, q.provenance_class, c.role_scope
                      FROM dbo.GeneratedQuestions q
                      JOIN dbo.SourceChunks c ON c.chunk_id = q.source_chunk_id
-                     WHERE q.review_status = 'Approved' AND q.company_id = ?"""
+                     WHERE q.review_status = 'Approved' AND q.company_id = ?
+                       AND q.question_type IN
+                           ('MultipleChoice', 'MultiSelect', 'TrueFalse', 'FillInBlank')"""
             params: List[Any] = [identity.company_id]
             if role:
                 # A role sees its own material plus everything company-wide.
@@ -477,7 +479,23 @@ def start_quiz(req: func.HttpRequest) -> func.HttpResponse:
         return _error(500, "Internal error", type(exc).__name__)
 
 
-def _issue_certificate(cur, identity, attempt_id, results):
+def _store_certificate_artifact(
+        identity, attempt_id, doc_title, score, issued_at, expires_at):
+    from shared.certificates import render_certificate, store_certificate
+
+    certificate_ref = "cert_{}".format(attempt_id.removeprefix("att_"))
+    pdf = render_certificate(
+        identity.name or identity.email, doc_title, score, issued_at,
+        expires_at, certificate_ref,
+    )
+    return store_certificate(
+        pdf,
+        "{}/{}/{}.pdf".format(
+            identity.company_id, identity.employee_id, certificate_ref),
+    )
+
+
+def _issue_certificate(cur, identity, attempt_id, results, artifact_writer=None):
     """
     Record a pass as a certificate.
 
@@ -516,21 +534,32 @@ def _issue_certificate(cur, identity, attempt_id, results):
     expires_at = qscore.expiry_from(
         datetime.now(timezone.utc).isoformat(timespec="seconds"), CERT_VALIDITY_MONTHS)
 
+    blob_name = None
+    if artifact_writer is not None:
+        try:
+            blob_name = artifact_writer(
+                identity, attempt_id, doc_title, score, _now(), expires_at)
+        except Exception:  # noqa: BLE001
+            # The pass and certificate row are facts even if Blob Storage has a bad minute.
+            # Keeping the URL null makes the missing artefact visible and retryable without
+            # taking away the learner's result.
+            blob_name = None
+
     cur.execute(
         """INSERT INTO dbo.Certificates
                (employee_id, attempt_id, doc_title, attempt_score, category,
-                issued_at, expires_at, status, company_id)
-           VALUES (?, ?, ?, ?, ?, SYSUTCDATETIME(), ?, 'Active', ?)""",
+                issued_at, expires_at, certificate_url, status, company_id)
+           VALUES (?, ?, ?, ?, ?, SYSUTCDATETIME(), ?, ?, 'Active', ?)""",
         identity.employee_id, attempt_id, doc_title, score, category, expires_at,
-        identity.company_id,
+        blob_name, identity.company_id,
     )
     return {
         "docTitle": doc_title,
         "attemptScore": score,
         "category": category,
         "expiresAt": expires_at,
-        # No artefact yet. Null beats a link that 404s.
-        "certificateUrl": None,
+        "certificateUrl": blob_name,
+        "artifactReady": bool(blob_name),
     }
 
 
@@ -676,7 +705,8 @@ def submit_quiz(req: func.HttpRequest) -> func.HttpResponse:
 
             certificate = None
             if passed:
-                certificate = _issue_certificate(cur, identity, attempt_id, results)
+                certificate = _issue_certificate(
+                    cur, identity, attempt_id, results, _store_certificate_artifact)
 
             c.commit()
 
@@ -923,7 +953,7 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
             # role_scope 'ALL' is company-wide material everyone takes.
             cur.execute(
                 """SELECT COALESCE(q.source_doc_title, q.topic) AS doc,
-                          COUNT(*) AS question_count
+                          MAX(c.doc_id) AS doc_id, COUNT(*) AS question_count
                      FROM dbo.GeneratedQuestions q
                      LEFT JOIN dbo.SourceChunks c ON c.chunk_id = q.source_chunk_id
                     WHERE q.review_status = 'Approved'
@@ -965,6 +995,24 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
                     WHERE company_id = ?""", identity.company_id)
             topic_to_doc = {r["topic"]: r["doc_title"] for r in _rows(cur)}
 
+            cur.execute(
+                """SELECT DISTINCT training_doc_id
+                     FROM dbo.GeneratedQuizAttempts
+                    WHERE company_id = ? AND learner_id = ?
+                      AND training_doc_id IS NOT NULL""",
+                identity.company_id, learner,
+            )
+            started_docs = {row["training_doc_id"] for row in _rows(cur)}
+
+            cur.execute(
+                """SELECT doc_title, MAX(expires_at) AS expires_at
+                     FROM dbo.Certificates
+                    WHERE company_id = ? AND employee_id = ? AND status = 'Active'
+                    GROUP BY doc_title""",
+                identity.company_id, identity.employee_id,
+            )
+            certificates_by_doc = {row["doc_title"]: row for row in _rows(cur)}
+
         rolled: Dict[str, Dict[str, int]] = {}
         for topic, row in by_topic.items():
             doc = topic_to_doc.get(topic, topic)
@@ -978,14 +1026,16 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
             acc = rolled.get(doc, {"answered": 0, "correct": 0})
             answered = acc["answered"]
             accuracy = round(100.0 * acc["correct"] / answered, 1) if answered else 0.0
-            # Status comes from evidence, not a stored flag: nothing answered means not
-            # started, and at or above the pass mark means done.
-            if answered == 0:
-                status = "not-started"
-            elif accuracy >= PASSING_SCORE:
+            # Certification completion is intentionally separate from topic accuracy.
+            # Diagnostic and module responses contribute mastery evidence, but neither
+            # is allowed to mark the training complete or issue a certificate.
+            certificate = certificates_by_doc.get(doc)
+            if certificate:
                 status = "completed"
-            else:
+            elif d.get("doc_id") in started_docs:
                 status = "in-progress"
+            else:
+                status = "not-started"
             out.append({
                 "id": doc,
                 "title": doc,
@@ -994,10 +1044,874 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
                 "answered": answered,
                 "questionCount": d["question_count"],
                 "modules": modules.get(doc, []),
+                "compliant": bool(certificate),
+                "expiresAt": certificate.get("expires_at") if certificate else None,
             })
         return _json({"trainings": out})
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
+
+
+def _sync_training_modules(cur, company_id: int, training: str) -> None:
+    """Mirror source topics into stable module rows without rewriting source content."""
+    from shared.pathway import stable_module_id
+
+    cur.execute(
+        """SELECT doc_id, doc_title, topic, MIN(section) AS heading,
+                  MIN(page_start) AS source_order, MIN(role_scope) AS role_scope
+             FROM dbo.SourceChunks
+            WHERE company_id = ? AND doc_title = ?
+            GROUP BY doc_id, doc_title, topic""",
+        company_id, training,
+    )
+    for source in _rows(cur):
+        module_id = stable_module_id(company_id, source["doc_id"], source["topic"])
+        cur.execute(
+            """MERGE dbo.TrainingModules AS target
+               USING (SELECT ? AS module_id) AS source
+                  ON target.module_id = source.module_id
+               WHEN MATCHED THEN UPDATE SET
+                    doc_title = ?, heading = ?, source_order = ?, role_scope = ?
+               WHEN NOT MATCHED THEN INSERT
+                    (module_id, company_id, doc_id, doc_title, topic, heading,
+                     source_order, role_scope)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?);""",
+            module_id,
+            source["doc_title"], source["heading"], source["source_order"],
+            source["role_scope"] or "ALL",
+            module_id, company_id, source["doc_id"], source["doc_title"],
+            source["topic"], source["heading"], source["source_order"],
+            source["role_scope"] or "ALL",
+        )
+
+
+def _pathway_state(cur, identity, learner: str, training: str) -> Optional[Dict[str, Any]]:
+    """Load the ordered modules and derive locks from completed checkpoint evidence."""
+    from shared.pathway import DIFFICULTIES, final_assessment_size
+
+    _sync_training_modules(cur, identity.company_id, training)
+    role = (identity.role_code or "ALL").upper()
+    cur.execute(
+        """SELECT module_id, doc_id, doc_title, topic, heading, source_order
+             FROM dbo.TrainingModules
+            WHERE company_id = ? AND doc_title = ?
+              AND role_scope IN ('ALL', ?)
+            ORDER BY source_order, module_id""",
+        identity.company_id, training, role,
+    )
+    modules = _rows(cur)
+    if not modules:
+        return None
+
+    doc_id = modules[0]["doc_id"]
+    cur.execute(
+        """SELECT diagnostic_attempt_id, diagnostic_completed_at,
+                  diagnostic_scores_json, pathway_json
+             FROM dbo.EmployeeTrainingProgress
+            WHERE company_id = ? AND learner_id = ? AND doc_id = ?""",
+        identity.company_id, learner, doc_id,
+    )
+    progress_rows = _rows(cur)
+    progress = progress_rows[0] if progress_rows else {}
+
+    def decoded(name: str, fallback):
+        try:
+            return json.loads(progress.get(name) or "")
+        except (TypeError, ValueError):
+            return fallback
+
+    diagnostic_done = bool(progress.get("diagnostic_completed_at"))
+    scores = decoded("diagnostic_scores_json", {})
+    saved_order = decoded("pathway_json", []) if diagnostic_done else []
+    by_id = {module["module_id"]: module for module in modules}
+    ordered_ids = [module_id for module_id in saved_order if module_id in by_id]
+    ordered_ids.extend(module["module_id"] for module in modules if module["module_id"] not in ordered_ids)
+    modules = [by_id[module_id] for module_id in ordered_ids]
+
+    cur.execute(
+        """SELECT module_id, status, best_score, attempt_count,
+                  weak_sections_json, completed_at
+             FROM dbo.EmployeeModuleProgress
+            WHERE company_id = ? AND learner_id = ?""",
+        identity.company_id, learner,
+    )
+    module_progress = {row["module_id"]: row for row in _rows(cur)}
+
+    cur.execute(
+        """SELECT m.module_id, q.difficulty, COUNT(DISTINCT q.question_id) AS n
+             FROM dbo.TrainingModules m
+             JOIN dbo.SourceChunks c
+               ON c.company_id = m.company_id AND c.doc_id = m.doc_id AND c.topic = m.topic
+             JOIN dbo.GeneratedQuestions q
+               ON q.company_id = m.company_id AND q.source_chunk_id = c.chunk_id
+            WHERE m.company_id = ? AND m.doc_id = ? AND q.review_status = 'Approved'
+            GROUP BY m.module_id, q.difficulty""",
+        identity.company_id, doc_id,
+    )
+    counts: Dict[str, Dict[str, int]] = {}
+    for row in _rows(cur):
+        counts.setdefault(row["module_id"], {})[row["difficulty"]] = int(row["n"] or 0)
+
+    first_incomplete = next(
+        (module["module_id"] for module in modules
+         if module_progress.get(module["module_id"], {}).get("status") != "passed"),
+        None,
+    )
+    output_modules = []
+    for pathway_order, module in enumerate(modules, 1):
+        stored = module_progress.get(module["module_id"], {})
+        if stored.get("status") == "passed":
+            status = "passed"
+        elif not diagnostic_done or module["module_id"] != first_incomplete:
+            status = "locked"
+        else:
+            status = stored.get("status") or "available"
+        try:
+            weak_sections = json.loads(stored.get("weak_sections_json") or "[]")
+        except (TypeError, ValueError):
+            weak_sections = []
+        difficulty_counts = counts.get(module["module_id"], {})
+        output_modules.append({
+            "moduleId": module["module_id"],
+            "title": module["heading"] or module["topic"],
+            "topic": module["topic"],
+            "sourceOrder": module["source_order"],
+            "pathwayOrder": pathway_order,
+            "status": status,
+            "bestScore": float(stored.get("best_score") or 0),
+            "attemptCount": int(stored.get("attempt_count") or 0),
+            "weakSections": weak_sections,
+            "questionCount": sum(difficulty_counts.values()),
+            "difficultyCounts": {
+                difficulty: difficulty_counts.get(difficulty, 0)
+                for difficulty in DIFFICULTIES
+            },
+            "diagnosticScore": scores.get(module["module_id"]),
+        })
+
+    all_passed = diagnostic_done and all(module["status"] == "passed" for module in output_modules)
+    diagnostic_ready = all(
+        all(module["difficultyCounts"].get(difficulty, 0) > 0 for difficulty in DIFFICULTIES)
+        for module in output_modules
+    )
+    return {
+        "id": doc_id,
+        "title": training,
+        "diagnostic": {
+            "completed": diagnostic_done,
+            "ready": diagnostic_ready,
+            "questionCount": len(output_modules) * 3,
+            "attemptId": progress.get("diagnostic_attempt_id"),
+        },
+        "modules": output_modules,
+        "finalAssessment": {
+            "locked": not all_passed,
+            "questionCount": final_assessment_size(len(output_modules)),
+            "passingScore": 80,
+        },
+    }
+
+
+@app.route(route="pathway", methods=["GET"])
+def get_pathway(req: func.HttpRequest) -> func.HttpResponse:
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    training = (req.params.get("training") or "").strip()
+    if not training:
+        return _error(400, "Bad request", "training is required")
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            state = _pathway_state(cur, identity, _learner_key(identity), training)
+            c.commit()
+        if state is None:
+            return _error(404, "No training pathway", "No readable modules were found.")
+        return _json({"training": state})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:240]))
+
+
+def _pathway_question_pool(cur, identity, doc_id: str, topic: str = "") -> List[Dict[str, Any]]:
+    role = (identity.role_code or "ALL").upper()
+    sql = """SELECT DISTINCT q.question_id, q.topic, q.question_type, q.difficulty,
+                    q.prompt, q.points, q.provenance_class, q.times_served,
+                    q.times_correct
+               FROM dbo.GeneratedQuestions q
+               JOIN dbo.SourceChunks c ON c.chunk_id = q.source_chunk_id
+              WHERE q.review_status = 'Approved' AND q.company_id = ?
+                AND c.doc_id = ? AND c.role_scope IN ('ALL', ?)"""
+    params: List[Any] = [identity.company_id, doc_id, role]
+    if topic:
+        sql += " AND c.topic = ?"
+        params.append(topic)
+    cur.execute(sql, *params)
+    return _rows(cur)
+
+
+def _pathway_question_payload(cur, identity, question_id: str) -> Optional[Dict[str, Any]]:
+    cur.execute(
+        """SELECT DISTINCT question_id, topic, question_type, difficulty, prompt,
+                  points, provenance_class
+             FROM dbo.vw_ServableQuestions
+            WHERE question_id = ? AND company_id = ?""",
+        question_id, identity.company_id,
+    )
+    rows = _rows(cur)
+    if not rows:
+        return None
+    question = rows[0]
+    cur.execute(
+        """SELECT option_id, option_text, sort_order
+             FROM dbo.vw_ServableQuestions
+            WHERE question_id = ? AND company_id = ? AND option_id IS NOT NULL
+            ORDER BY sort_order""",
+        question_id, identity.company_id,
+    )
+    return {
+        "questionId": question_id,
+        "type": question["question_type"],
+        "topic": question["topic"],
+        "difficulty": question["difficulty"],
+        "points": question["points"],
+        "provenanceClass": question["provenance_class"],
+        "prompt": question["prompt"],
+        "options": [
+            {"optionId": option["option_id"], "text": option["option_text"]}
+            for option in _rows(cur)
+        ],
+    }
+
+
+@app.route(route="pathway/start", methods=["POST"])
+def start_pathway_assessment(req: func.HttpRequest) -> func.HttpResponse:
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    learner = _learner_key(identity)
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+    training = str(body.get("training") or "").strip()
+    kind = str(body.get("kind") or "").strip().lower()
+    module_id = str(body.get("moduleId") or "").strip()
+    if not training or kind not in ("diagnostic", "module", "final"):
+        return _error(400, "Bad request", "training and a valid kind are required")
+
+    from shared import pathway
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            state = _pathway_state(cur, identity, learner, training)
+            if state is None:
+                return _error(404, "No training pathway", training)
+            modules = [{
+                "module_id": module["moduleId"], "topic": module["topic"],
+                "source_order": module["sourceOrder"],
+            } for module in state["modules"]]
+            doc_id = state["id"]
+            pool = _pathway_question_pool(cur, identity, doc_id)
+            attempt_id = "att_" + uuid.uuid4().hex[:12]
+            blueprint: Dict[str, Any] = {}
+
+            if kind == "diagnostic":
+                if state["diagnostic"]["completed"]:
+                    return _error(409, "Diagnostic already completed",
+                                  "Continue with the first available module.")
+                selected, missing = pathway.diagnostic_questions(pool, modules, learner + doc_id)
+                if missing:
+                    labels = ["{} {}".format(mid, difficulty) for mid, difficulty in missing[:6]]
+                    return _error(
+                        409, "Diagnostic question bank is incomplete",
+                        "Generate an Easy, Medium and Hard question for every module. Missing: "
+                        + ", ".join(labels),
+                    )
+                target, pass_mark = len(selected), None
+            elif kind == "module":
+                if not state["diagnostic"]["completed"]:
+                    return _error(409, "Diagnostic required", "Complete the diagnostic first.")
+                module = next((item for item in state["modules"] if item["moduleId"] == module_id), None)
+                if module is None:
+                    return _error(404, "Unknown module", module_id)
+                if module["status"] not in ("available", "needs-review", "in-progress"):
+                    return _error(409, "Module is locked", "Complete the previous module first.")
+                module_pool = [q for q in pool if q["topic"] == module["topic"]]
+                if len(module_pool) < 10:
+                    return _error(409, "Module question bank is incomplete",
+                                  "This module needs at least 10 approved questions.")
+                diagnostic = module.get("diagnosticScore") or {}
+                wanted = pathway.initial_module_difficulty(
+                    int(diagnostic.get("correct") or 0), int(diagnostic.get("possible") or 3))
+                cur.execute(
+                    """SELECT DISTINCT aq.question_id
+                         FROM dbo.GeneratedQuizAttemptQuestions aq
+                         JOIN dbo.GeneratedQuizAttempts a ON a.attempt_id = aq.attempt_id
+                        WHERE a.company_id = ? AND a.learner_id = ? AND a.module_id = ?""",
+                    identity.company_id, learner, module_id,
+                )
+                historical = [row["question_id"] for row in _rows(cur)]
+                first = pathway.choose_adaptive_question(
+                    module_pool, wanted, [], historical, [], False, attempt_id)
+                if first is None:
+                    return _error(409, "No module questions available", module["title"])
+                selected = [{**first, "purpose": "adaptive"}]
+                target, pass_mark = 10, 90
+                blueprint = {"initialDifficulty": wanted}
+            else:
+                if state["finalAssessment"]["locked"]:
+                    return _error(409, "Final assessment is locked",
+                                  "Pass every module checkpoint first.")
+                selected, blueprint = pathway.final_questions(pool, modules, learner + attempt_id)
+                target, pass_mark = blueprint["total"], 80
+                if len(selected) < target:
+                    return _error(
+                        409, "Final question bank is incomplete",
+                        "The balanced blueprint needs {} questions but only {} could be selected."
+                        .format(target, len(selected)),
+                    )
+
+            cur.execute(
+                """INSERT INTO dbo.GeneratedQuizAttempts
+                       (attempt_id, learner_id, started_at, company_id, training_doc_id,
+                        training_title, module_id, attempt_kind, question_target,
+                        passing_score, current_difficulty, blueprint_json)
+                   VALUES (?, ?, SYSUTCDATETIME(), ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                attempt_id, learner, identity.company_id, doc_id, training,
+                module_id or None, kind, target, pass_mark,
+                blueprint.get("initialDifficulty"), json.dumps(blueprint),
+            )
+            cur.executemany(
+                """INSERT INTO dbo.GeneratedQuizAttemptQuestions
+                       (attempt_id, question_id, sort_order, purpose)
+                   VALUES (?, ?, ?, ?)""",
+                [
+                    (attempt_id, question["question_id"], index, question.get("purpose"))
+                    for index, question in enumerate(selected, 1)
+                ],
+            )
+            if kind == "module":
+                cur.execute(
+                    """MERGE dbo.EmployeeModuleProgress AS target
+                       USING (SELECT ? AS company_id, ? AS learner_id, ? AS module_id) AS source
+                          ON target.company_id = source.company_id
+                         AND target.learner_id = source.learner_id
+                         AND target.module_id = source.module_id
+                       WHEN MATCHED THEN UPDATE SET status = 'in-progress', updated_at = SYSUTCDATETIME()
+                       WHEN NOT MATCHED THEN INSERT
+                           (company_id, learner_id, module_id, status)
+                           VALUES (source.company_id, source.learner_id, source.module_id, 'in-progress');""",
+                    identity.company_id, learner, module_id,
+                )
+            current = _pathway_question_payload(cur, identity, selected[0]["question_id"])
+            c.commit()
+
+        return _json({
+            "attemptId": attempt_id,
+            "kind": kind,
+            "training": training,
+            "moduleId": module_id or None,
+            "questionTarget": target,
+            "passingScore": pass_mark,
+            "answeredCount": 0,
+            "currentQuestion": current,
+            "blueprint": blueprint if kind == "final" else None,
+        }, 201)
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:240]))
+
+
+def _grade_pathway_question(
+    cur, question_id: str, selected: List[str], text_answer: str,
+    fallback_active: bool = False,
+):
+    cur.execute(
+        """SELECT question_type, explanation, source_doc_title, source_page,
+                  source_quote, source_url, provenance_class, difficulty, prompt, topic,
+                  rubric_json, fallback_json, grading_version
+             FROM dbo.GeneratedQuestions WHERE question_id = ?""",
+        question_id,
+    )
+    rows = _rows(cur)
+    if not rows:
+        return None
+    question = rows[0]
+    cur.execute(
+        "SELECT option_id, option_text, is_correct FROM dbo.GeneratedOptions WHERE question_id = ?",
+        question_id,
+    )
+    options = _rows(cur)
+    cur.execute(
+        "SELECT accepted_answer FROM dbo.GeneratedAnswerKeys WHERE question_id = ?",
+        question_id,
+    )
+    accepted = [row["accepted_answer"] for row in _rows(cur)]
+    if fallback_active:
+        try:
+            fallback = json.loads(question["fallback_json"] or "{}")
+            fallback_options = fallback.get("options") or []
+        except (TypeError, ValueError):
+            fallback_options = []
+        key = {
+            option["optionId"] for option in fallback_options if option.get("isCorrect")
+        }
+        correct = bool(key) and set(selected) == key
+        display_options = [{
+            "option_id": option["optionId"],
+            "option_text": option["text"],
+            "is_correct": bool(option.get("isCorrect")),
+        } for option in fallback_options]
+        return question, display_options, [], correct, None
+
+    key = {option["option_id"] for option in options if option["is_correct"]}
+    qtype = (question["question_type"] or "").lower()
+    if qtype in ("fill_in_blank", "fillintheblank", "fillinblank"):
+        normalized = " ".join(text_answer.lower().split())
+        correct = bool(normalized) and any(
+            normalized == " ".join(answer.lower().split()) for answer in accepted)
+        guard = None
+    elif qtype in ("shortanswer", "promptresponse", "pythoncode"):
+        from shared.guarded_grading import grade_answer
+
+        guard = grade_answer(
+            question["prompt"], question["rubric_json"] or "", text_answer,
+            question["question_type"],
+        )
+        correct = True if guard.verdict == "correct" else (
+            False if guard.verdict == "incorrect" else None)
+    else:
+        correct = bool(key) and set(selected) == key
+        guard = None
+    return question, options, accepted, correct, guard
+
+
+@app.route(route="pathway/answer", methods=["POST"])
+def answer_pathway_question(req: func.HttpRequest) -> func.HttpResponse:
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    learner = _learner_key(identity)
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+    attempt_id = str(body.get("attemptId") or "").strip()
+    question_id = str(body.get("questionId") or "").strip()
+    selected = body.get("selectedOptionIds") or []
+    text_answer = str(body.get("textAnswer") or "").strip()
+    if not attempt_id or not question_id:
+        return _error(400, "Bad request", "attemptId and questionId are required")
+
+    from shared import pathway
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """SELECT attempt_kind, training_doc_id, module_id, question_target,
+                          current_difficulty, submitted_at
+                     FROM dbo.GeneratedQuizAttempts
+                    WHERE attempt_id = ? AND learner_id = ? AND company_id = ?""",
+                attempt_id, learner, identity.company_id,
+            )
+            attempts = _rows(cur)
+            if not attempts:
+                return _error(404, "Unknown attempt", "Start an assessment first.")
+            attempt = attempts[0]
+            if attempt["submitted_at"] is not None:
+                return _error(409, "Already completed", attempt_id)
+
+            cur.execute(
+                """SELECT sort_order, answered_at, fallback_active
+                     FROM dbo.GeneratedQuizAttemptQuestions
+                    WHERE attempt_id = ? AND question_id = ?""",
+                attempt_id, question_id,
+            )
+            served = _rows(cur)
+            if not served:
+                return _error(403, "Not part of this attempt", question_id)
+            if served[0]["answered_at"] is not None:
+                return _error(409, "Question already answered", question_id)
+
+            fallback_active = bool(served[0].get("fallback_active"))
+            graded = _grade_pathway_question(
+                cur, question_id, selected, text_answer, fallback_active)
+            if graded is None:
+                return _error(404, "Unknown question", question_id)
+            question, options, accepted, correct, guard = graded
+
+            if guard is not None:
+                fallback_used = guard.verdict in ("uncertain", "system_error")
+                cur.execute(
+                    """INSERT INTO dbo.GeneratedGradingEvents
+                           (grading_event_id, company_id, attempt_id, question_id,
+                            verdict, rubric_score, confidence, reason, criteria_json,
+                            grader_model, grading_version, fallback_used)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    "grade_" + uuid.uuid4().hex[:12], identity.company_id,
+                    attempt_id, question_id, guard.verdict, guard.score,
+                    guard.confidence, guard.reason[:500], json.dumps(guard.criteria),
+                    guard.model, guard.grading_version, 1 if fallback_used else 0,
+                )
+                if fallback_used:
+                    try:
+                        fallback = json.loads(question["fallback_json"] or "{}")
+                    except (TypeError, ValueError):
+                        fallback = {}
+                    fallback_options = fallback.get("options") or []
+                    if not fallback.get("prompt") or not fallback_options:
+                        return _error(
+                            409, "Fallback unavailable",
+                            "This question cannot be graded safely. Start a new attempt.",
+                        )
+                    cur.execute(
+                        """UPDATE dbo.GeneratedQuizAttemptQuestions
+                              SET text_answer = ?, fallback_active = 1
+                            WHERE attempt_id = ? AND question_id = ?""",
+                        text_answer, attempt_id, question_id,
+                    )
+                    cur.execute(
+                        """SELECT COUNT(*) AS n FROM dbo.GeneratedQuizAttemptQuestions
+                            WHERE attempt_id = ? AND answered_at IS NOT NULL""",
+                        attempt_id,
+                    )
+                    answered_before_fallback = int(_rows(cur)[0]["n"])
+                    c.commit()
+                    return _json({
+                        "questionId": question_id,
+                        "requiresFallback": True,
+                        "answeredCount": answered_before_fallback,
+                        "questionTarget": int(attempt["question_target"] or 0),
+                        "fallbackQuestion": {
+                            "questionId": question_id,
+                            "type": "MultipleChoice",
+                            "topic": question.get("topic") or "Clarification",
+                            "difficulty": fallback.get("difficulty") or question["difficulty"],
+                            "prompt": fallback["prompt"],
+                            "options": [{
+                                "optionId": option["optionId"], "text": option["text"]
+                            } for option in fallback_options],
+                            "isFallback": True,
+                        },
+                    })
+
+            cur.execute(
+                """UPDATE dbo.GeneratedQuizAttemptQuestions
+                      SET selected = ?,
+                          text_answer = CASE WHEN ? = 1 THEN text_answer ELSE ? END,
+                          is_correct = ?,
+                          answered_at = SYSUTCDATETIME()
+                    WHERE attempt_id = ? AND question_id = ?""",
+                ",".join(selected), 1 if fallback_active else 0, text_answer,
+                1 if correct else 0,
+                attempt_id, question_id,
+            )
+            next_question = None
+            next_difficulty = None
+
+            cur.execute(
+                """SELECT question_id, sort_order
+                     FROM dbo.GeneratedQuizAttemptQuestions
+                    WHERE attempt_id = ? AND answered_at IS NULL
+                    ORDER BY sort_order""",
+                attempt_id,
+            )
+            pending = _rows(cur)
+
+            if attempt["attempt_kind"] == "module" and not pending:
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM dbo.GeneratedQuizAttemptQuestions WHERE attempt_id = ?",
+                    attempt_id,
+                )
+                count = int(_rows(cur)[0]["n"])
+                if count < int(attempt["question_target"] or 10):
+                    next_difficulty = pathway.next_difficulty(
+                        attempt["current_difficulty"] or question["difficulty"], correct)
+                    cur.execute(
+                        "SELECT topic FROM dbo.TrainingModules WHERE module_id = ? AND company_id = ?",
+                        attempt["module_id"], identity.company_id,
+                    )
+                    module_rows = _rows(cur)
+                    if not module_rows:
+                        return _error(409, "Module is unavailable", attempt["module_id"])
+                    pool = _pathway_question_pool(
+                        cur, identity, attempt["training_doc_id"], module_rows[0]["topic"])
+                    cur.execute(
+                        "SELECT question_id FROM dbo.GeneratedQuizAttemptQuestions WHERE attempt_id = ?",
+                        attempt_id,
+                    )
+                    current_ids = [row["question_id"] for row in _rows(cur)]
+                    cur.execute(
+                        """SELECT DISTINCT aq.question_id
+                             FROM dbo.GeneratedQuizAttemptQuestions aq
+                             JOIN dbo.GeneratedQuizAttempts a ON a.attempt_id = aq.attempt_id
+                            WHERE a.company_id = ? AND a.learner_id = ? AND a.module_id = ?
+                              AND a.attempt_id <> ?""",
+                        identity.company_id, learner, attempt["module_id"], attempt_id,
+                    )
+                    historical = [row["question_id"] for row in _rows(cur)]
+                    cur.execute(
+                        """SELECT DISTINCT aq.question_id
+                             FROM dbo.GeneratedQuizAttemptQuestions aq
+                             JOIN dbo.GeneratedQuizAttempts a ON a.attempt_id = aq.attempt_id
+                            WHERE a.company_id = ? AND a.learner_id = ? AND a.module_id = ?
+                              AND aq.is_correct = 0 AND a.attempt_id <> ?""",
+                        identity.company_id, learner, attempt["module_id"], attempt_id,
+                    )
+                    review_ids = [row["question_id"] for row in _rows(cur)]
+                    # Positions 3, 6 and 9 are review slots on a retake: seven fresh
+                    # selections plus three focused checks of prior mistakes.
+                    position = count + 1
+                    pick = pathway.choose_adaptive_question(
+                        pool, next_difficulty, current_ids, historical, review_ids,
+                        bool(historical) and position in (3, 6, 9), attempt_id + str(position),
+                    )
+                    if pick is None:
+                        return _error(409, "Question bank exhausted",
+                                      "This module needs more approved questions for an adaptive quiz.")
+                    cur.execute(
+                        """INSERT INTO dbo.GeneratedQuizAttemptQuestions
+                               (attempt_id, question_id, sort_order, purpose)
+                           VALUES (?, ?, ?, ?)""",
+                        attempt_id, pick["question_id"], position,
+                        "review" if position in (3, 6, 9) and pick["question_id"] in review_ids
+                        else "adaptive",
+                    )
+                    cur.execute(
+                        "UPDATE dbo.GeneratedQuizAttempts SET current_difficulty = ? WHERE attempt_id = ?",
+                        next_difficulty, attempt_id,
+                    )
+                    pending = [{"question_id": pick["question_id"], "sort_order": position}]
+
+            if pending:
+                next_question = _pathway_question_payload(
+                    cur, identity, pending[0]["question_id"])
+            cur.execute(
+                """SELECT COUNT(*) AS n FROM dbo.GeneratedQuizAttemptQuestions
+                    WHERE attempt_id = ? AND answered_at IS NOT NULL""",
+                attempt_id,
+            )
+            answered_count = int(_rows(cur)[0]["n"])
+            c.commit()
+
+        return _json({
+            "questionId": question_id,
+            "correct": correct,
+            "correctOptionIds": [option["option_id"] for option in options if option["is_correct"]],
+            "acceptedAnswers": accepted,
+            "explanation": question["explanation"],
+            "sourceTitle": question["source_doc_title"],
+            "sourcePage": question["source_page"],
+            "sourceQuote": question["source_quote"],
+            "sourceUrl": question["source_url"],
+            "provenance": question["provenance_class"],
+            "answeredCount": answered_count,
+            "questionTarget": int(attempt["question_target"] or 0),
+            "nextDifficulty": next_difficulty,
+            "nextQuestion": next_question,
+            "readyToComplete": next_question is None,
+        })
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:240]))
+
+
+@app.route(route="pathway/complete", methods=["POST"])
+def complete_pathway_assessment(req: func.HttpRequest) -> func.HttpResponse:
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    learner = _learner_key(identity)
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+    attempt_id = str(body.get("attemptId") or "").strip()
+    if not attempt_id:
+        return _error(400, "Bad request", "attemptId is required")
+
+    from shared import pathway
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """SELECT attempt_kind, training_doc_id, training_title, module_id,
+                          question_target, passing_score, submitted_at
+                     FROM dbo.GeneratedQuizAttempts
+                    WHERE attempt_id = ? AND learner_id = ? AND company_id = ?""",
+                attempt_id, learner, identity.company_id,
+            )
+            attempt_rows = _rows(cur)
+            if not attempt_rows:
+                return _error(404, "Unknown attempt", attempt_id)
+            attempt = attempt_rows[0]
+            if attempt["submitted_at"] is not None:
+                return _error(409, "Already completed", attempt_id)
+
+            cur.execute(
+                """SELECT aq.question_id, aq.selected, aq.text_answer, aq.is_correct,
+                          aq.purpose, q.topic, q.prompt, q.points, q.difficulty,
+                          q.explanation, q.source_doc_title, q.source_page,
+                          q.source_quote, q.source_url, q.provenance_class,
+                          c.section
+                     FROM dbo.GeneratedQuizAttemptQuestions aq
+                     JOIN dbo.GeneratedQuestions q ON q.question_id = aq.question_id
+                     LEFT JOIN dbo.SourceChunks c ON c.chunk_id = q.source_chunk_id
+                    WHERE aq.attempt_id = ? AND aq.answered_at IS NOT NULL
+                    ORDER BY aq.sort_order""",
+                attempt_id,
+            )
+            answered = _rows(cur)
+            target = int(attempt["question_target"] or 0)
+            if len(answered) < target:
+                return _error(409, "Assessment is not finished",
+                              "Answer all {} questions first.".format(target))
+
+            awarded = sum(int(row["points"] or 0) for row in answered if row["is_correct"])
+            possible = sum(int(row["points"] or 0) for row in answered)
+            percent = round(100.0 * awarded / possible, 2) if possible else 0.0
+            pass_mark = float(attempt["passing_score"] or 0)
+            passed = True if attempt["attempt_kind"] == "diagnostic" else percent >= pass_mark
+
+            for row in answered:
+                cur.execute(
+                    """INSERT INTO dbo.GeneratedQuizResponses
+                           (response_id, attempt_id, learner_id, question_id, topic,
+                            selected, text_answer, is_correct, points_awarded, company_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    "res_" + uuid.uuid4().hex[:12], attempt_id, learner,
+                    row["question_id"], row["topic"], row["selected"] or "",
+                    row["text_answer"] or "", 1 if row["is_correct"] else 0,
+                    int(row["points"] or 0) if row["is_correct"] else 0,
+                    identity.company_id,
+                )
+                cur.execute(
+                    """UPDATE dbo.GeneratedQuestions
+                          SET times_served = times_served + 1,
+                              times_correct = times_correct + ?
+                        WHERE question_id = ? AND company_id = ?""",
+                    1 if row["is_correct"] else 0, row["question_id"], identity.company_id,
+                )
+
+            cur.execute(
+                """UPDATE dbo.GeneratedQuizAttempts
+                      SET submitted_at = SYSUTCDATETIME(), score_percent = ?,
+                          points_awarded = ?, points_possible = ?, passed = ?
+                    WHERE attempt_id = ?""",
+                percent, awarded, possible, 1 if passed else 0, attempt_id,
+            )
+
+            weak_sections = sorted({
+                row["section"] for row in answered
+                if not row["is_correct"] and row.get("section")
+            })
+            certificate = None
+
+            if attempt["attempt_kind"] == "diagnostic":
+                cur.execute(
+                    """SELECT module_id, topic, source_order
+                         FROM dbo.TrainingModules
+                        WHERE company_id = ? AND doc_id = ?
+                        ORDER BY source_order""",
+                    identity.company_id, attempt["training_doc_id"],
+                )
+                modules = _rows(cur)
+                by_topic = {module["topic"]: module["module_id"] for module in modules}
+                scores: Dict[str, Dict[str, int]] = {
+                    module["module_id"]: {"correct": 0, "possible": 0}
+                    for module in modules
+                }
+                for row in answered:
+                    mid = by_topic.get(row["topic"])
+                    if mid:
+                        scores[mid]["possible"] += 1
+                        scores[mid]["correct"] += 1 if row["is_correct"] else 0
+                order = pathway.diagnostic_pathway(modules, scores)
+                cur.execute(
+                    """MERGE dbo.EmployeeTrainingProgress AS target
+                       USING (SELECT ? AS company_id, ? AS learner_id, ? AS doc_id) AS source
+                          ON target.company_id = source.company_id
+                         AND target.learner_id = source.learner_id
+                         AND target.doc_id = source.doc_id
+                       WHEN MATCHED THEN UPDATE SET
+                            doc_title = ?, diagnostic_attempt_id = ?,
+                            diagnostic_completed_at = SYSUTCDATETIME(),
+                            diagnostic_scores_json = ?, pathway_json = ?,
+                            updated_at = SYSUTCDATETIME()
+                       WHEN NOT MATCHED THEN INSERT
+                            (company_id, learner_id, doc_id, doc_title,
+                             diagnostic_attempt_id, diagnostic_completed_at,
+                             diagnostic_scores_json, pathway_json)
+                            VALUES (source.company_id, source.learner_id, source.doc_id,
+                                    ?, ?, SYSUTCDATETIME(), ?, ?);""",
+                    identity.company_id, learner, attempt["training_doc_id"],
+                    attempt["training_title"], attempt_id, json.dumps(scores), json.dumps(order),
+                    attempt["training_title"], attempt_id, json.dumps(scores), json.dumps(order),
+                )
+            elif attempt["attempt_kind"] == "module":
+                status = "passed" if passed else "needs-review"
+                cur.execute(
+                    """MERGE dbo.EmployeeModuleProgress AS target
+                       USING (SELECT ? AS company_id, ? AS learner_id, ? AS module_id) AS source
+                          ON target.company_id = source.company_id
+                         AND target.learner_id = source.learner_id
+                         AND target.module_id = source.module_id
+                       WHEN MATCHED THEN UPDATE SET
+                            status = ?, best_score = CASE WHEN best_score > ? THEN best_score ELSE ? END,
+                            attempt_count = attempt_count + 1,
+                            weak_sections_json = ?,
+                            completed_at = CASE WHEN ? = 'passed' THEN SYSUTCDATETIME() ELSE completed_at END,
+                            updated_at = SYSUTCDATETIME()
+                       WHEN NOT MATCHED THEN INSERT
+                            (company_id, learner_id, module_id, status, best_score,
+                             attempt_count, weak_sections_json, completed_at)
+                            VALUES (source.company_id, source.learner_id, source.module_id,
+                                    ?, ?, 1, ?, CASE WHEN ? = 'passed' THEN SYSUTCDATETIME() END);""",
+                    identity.company_id, learner, attempt["module_id"],
+                    status, percent, percent, json.dumps(weak_sections), status,
+                    status, percent, json.dumps(weak_sections), status,
+                )
+            elif attempt["attempt_kind"] == "final" and passed:
+                cert_results = [{
+                    "difficulty": row["difficulty"],
+                    "isCorrect": bool(row["is_correct"]),
+                    "topic": row["topic"],
+                    "source": {"documentTitle": row["source_doc_title"]},
+                } for row in answered]
+                certificate = _issue_certificate(
+                    cur, identity, attempt_id, cert_results,
+                    _store_certificate_artifact)
+
+            c.commit()
+
+        results = [{
+            "questionId": row["question_id"],
+            "topic": row["topic"],
+            "prompt": row["prompt"],
+            "difficulty": row["difficulty"],
+            "correct": bool(row["is_correct"]),
+            "explanation": row["explanation"],
+            "sourceTitle": row["source_doc_title"],
+            "sourcePage": row["source_page"],
+            "sourceQuote": row["source_quote"],
+            "sourceUrl": row["source_url"],
+            "provenance": row["provenance_class"],
+        } for row in answered]
+        return _json({
+            "attemptId": attempt_id,
+            "kind": attempt["attempt_kind"],
+            "scorePercent": percent,
+            "pointsAwarded": awarded,
+            "pointsPossible": possible,
+            "passed": passed,
+            "passingScore": pass_mark,
+            "certificate": certificate,
+            "weakSections": weak_sections,
+            "results": results,
+        })
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:240]))
 
 
 @app.route(route="lesson", methods=["GET"])
@@ -1018,21 +1932,27 @@ def get_lesson(req: func.HttpRequest) -> func.HttpResponse:
     role = (identity.role_code or "ALL").upper()
 
     training = (req.params.get("training") or "").strip()
+    module_id = (req.params.get("moduleId") or "").strip()
     if not training:
         return _error(400, "Bad request", "training is required")
 
     try:
         with _conn() as c:
             cur = c.cursor()
-            cur.execute(
-                """SELECT chunk_id, topic, section, page_start, page_end, chunk_text
-                     FROM dbo.SourceChunks
-                    WHERE doc_title = ?
-                      AND company_id = ?
-                      AND COALESCE(role_scope, 'ALL') IN ('ALL', ?)
-                    ORDER BY page_start, section""",
-                training, identity.company_id, role,
-            )
+            sql = """SELECT c.chunk_id, c.topic, c.section, c.page_start,
+                            c.page_end, c.chunk_text
+                       FROM dbo.SourceChunks c"""
+            params: List[Any] = []
+            if module_id:
+                sql += " JOIN dbo.TrainingModules m ON m.company_id = c.company_id AND m.doc_id = c.doc_id AND m.topic = c.topic"
+            sql += """ WHERE c.doc_title = ? AND c.company_id = ?
+                        AND COALESCE(c.role_scope, 'ALL') IN ('ALL', ?)"""
+            params.extend([training, identity.company_id, role])
+            if module_id:
+                sql += " AND m.module_id = ?"
+                params.append(module_id)
+            sql += " ORDER BY c.page_start, c.section"
+            cur.execute(sql, *params)
             sections = _rows(cur)
 
         if not sections:
@@ -1042,8 +1962,14 @@ def get_lesson(req: func.HttpRequest) -> func.HttpResponse:
             return _error(404, "No lesson available",
                           "No readable sections for this training.")
 
+        # Frontend reads .body, not .text -- key mismatch, not a naming preference.
+        # Every lesson has been rendering with an empty reading pane since this
+        # endpoint was written, invisible until the first real document actually
+        # reached it end to end.
+        total_words = sum(len((s["chunk_text"] or "").split()) for s in sections)
         return _json({
             "training": training,
+            "readTime": "{} min read".format(max(1, round(total_words / 200))),
             "sections": [
                 {
                     "id": s["chunk_id"],
@@ -1051,7 +1977,7 @@ def get_lesson(req: func.HttpRequest) -> func.HttpResponse:
                     "heading": s["section"],
                     "pageStart": s["page_start"],
                     "pageEnd": s["page_end"],
-                    "text": s["chunk_text"],
+                    "body": s["chunk_text"],
                 }
                 for s in sections
             ],
@@ -1233,7 +2159,10 @@ def list_certificates(req: func.HttpRequest) -> func.HttpResponse:
                     "daysUntilExpiry": qscore.days_until_expiry(cert["expires_at"]),
                     "ofRecord": best.get(cert["doc_title"], {}).get(
                         "certificate_id") == cert["certificate_id"],
-                    "certificateUrl": cert["certificate_url"],
+                    "certificateUrl": (
+                        "/api/certificates/{}/download".format(cert["certificate_id"])
+                        if cert["certificate_url"] else None
+                    ),
                 }
                 for cert in held
             ],
@@ -1241,6 +2170,43 @@ def list_certificates(req: func.HttpRequest) -> func.HttpResponse:
         })
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="certificates/{certificateId}/download", methods=["GET"])
+def download_certificate_pdf(req: func.HttpRequest) -> func.HttpResponse:
+    """Authenticated proxy for a PDF in the private Blob container."""
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    certificate_id = str(req.route_params.get("certificateId") or "").strip()
+    if not certificate_id.isdigit():
+        return _error(404, "Certificate not found", certificate_id)
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """SELECT certificate_url, doc_title
+                     FROM dbo.Certificates
+                    WHERE id = ? AND employee_id = ? AND company_id = ?""",
+                int(certificate_id), identity.employee_id, identity.company_id,
+            )
+            rows = _rows(cur)
+        if not rows or not rows[0]["certificate_url"]:
+            return _error(404, "Certificate PDF not available", certificate_id)
+
+        from shared.certificates import download_certificate
+
+        content = download_certificate(rows[0]["certificate_url"])
+        filename = "quizrant-certificate-{}.pdf".format(certificate_id)
+        return func.HttpResponse(
+            body=content,
+            status_code=200,
+            mimetype="application/pdf",
+            headers={"Content-Disposition": 'attachment; filename="{}"'.format(filename)},
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _error(503, "Certificate download unavailable", type(exc).__name__)
 
 
 @app.route(route="qscore", methods=["GET"])
@@ -1690,7 +2656,13 @@ def confirm_document(req: func.HttpRequest) -> func.HttpResponse:
         from quizgen.pipeline import select_chunks, generate_questions
         with _conn() as c2:
             bank2 = SqlBank(c2, identity.company_id)
-            to_generate, skipped = select_chunks(bank2, doc_title=doc_title)
+            # Confirmation is also the explicit top-up action for an older upload.
+            # Before pathways existed a chunk stopped after two questions, which can
+            # never supply a three-level diagnostic plus ten-question checkpoint.
+            # Re-reading a confirmed document is intentional and billed; merely listing
+            # or opening the document never invokes the model.
+            to_generate, skipped = select_chunks(
+                bank2, doc_title=doc_title, regenerate=True)
             update_job(c2, job_id, identity.company_id, total=len(to_generate),
                        message="Reading {} section(s)…".format(len(to_generate))
                        if to_generate else "Already generated for this document.")
@@ -1700,7 +2672,12 @@ def confirm_document(req: func.HttpRequest) -> func.HttpResponse:
                            message="Already generated.")
             else:
                 try:
-                    result = generate_questions(bank2, to_generate)
+                    # Six candidates at each difficulty gives every module a real
+                    # diagnostic ladder and enough inventory for a ten-question
+                    # adaptive checkpoint. The manager confirmation remains the cost
+                    # boundary: no billed generation happens merely from viewing a PDF.
+                    result = generate_questions(
+                        bank2, to_generate, per_chunk=6, difficulty_ladder=True)
                     update_job(
                         c2, job_id, identity.company_id, state="done",
                         done_count=len(to_generate), kept=len(result.kept),
@@ -1927,4 +2904,3 @@ def remove_role(req: func.HttpRequest) -> func.HttpResponse:
     if not removed:
         return _error(404, "No such role", code)
     return _json({"removed": code})
-

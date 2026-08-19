@@ -18,6 +18,7 @@ substitute for the human review gate.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import List, Optional, Sequence, Tuple
 
@@ -52,6 +53,13 @@ def _text_of(question: Question) -> str:
     parts = [question.prompt, question.explanation]
     parts.extend(o.text for o in question.options)
     parts.extend(question.accepted_answers)
+    for raw in (question.rubric_json, question.fallback_json):
+        if not raw:
+            continue
+        try:
+            parts.append(json.dumps(json.loads(raw), sort_keys=True))
+        except (TypeError, ValueError):
+            parts.append(raw)
     return " ".join(p for p in parts if p)
 
 
@@ -136,6 +144,17 @@ def check_structure(question: Question) -> Optional[str]:
     if question.question_type == QuestionType.FILL_IN_BLANK:
         if not question.accepted_answers:
             return "fill-in-blank with no accepted answers"
+        return None
+
+    if question.question_type in (
+        QuestionType.SHORT_ANSWER,
+        QuestionType.PROMPT_RESPONSE,
+        QuestionType.PYTHON_CODE,
+    ):
+        if not question.rubric_json:
+            return "AI-graded question has no locked rubric"
+        if not question.fallback_json:
+            return "AI-graded question has no multiple-choice fallback"
         return None
 
     if len(question.options) < 2:

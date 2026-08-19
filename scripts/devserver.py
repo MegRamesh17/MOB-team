@@ -166,7 +166,7 @@ def _start_generation_job(doc_title: str) -> str:
             # has gone out. Falls back to the configured company, which is correct
             # for a single-tenant local bank and is the reason this is a DEV server.
             with Bank(DB) as bank:
-                chunks, _ = select_chunks(bank, doc_title=doc_title)
+                chunks, _ = select_chunks(bank, doc_title=doc_title, regenerate=True)
                 with _JOB_LOCK:
                     _JOBS[job_id]["total"] = len(chunks)
                     _JOBS[job_id]["message"] = (
@@ -188,7 +188,9 @@ def _start_generation_job(doc_title: str) -> str:
                             j["failed"] += 1
                         j["message"] = "{} ({}/{})".format(p.chunk.topic[:44], p.index, p.total)
 
-                result = generate_questions(bank, chunks, per_chunk=2, on_progress=report)
+                result = generate_questions(
+                    bank, chunks, per_chunk=6, difficulty_ladder=True,
+                    on_progress=report)
 
             with _JOB_LOCK:
                 _JOBS[job_id].update(
