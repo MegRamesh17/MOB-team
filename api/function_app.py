@@ -949,8 +949,14 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
         with _conn() as c:
             cur = c.cursor()
 
-            # TrainingModuleRoles is authoritative for new multi-role courses. The
-            # migration backfills one row for every legacy module as well.
+            # Which visible documents this role is actually required to pass.
+            required_titles = {
+                r["doc_title"]
+                for r in _role_requirements(cur, role, identity.company_id)
+            }
+
+            # TrainingModuleRoles is authoritative for new multi-role courses.
+            # Migration 030 backfills legacy modules.
             cur.execute(
                 """SELECT COALESCE(q.source_doc_title, q.topic) AS doc,
                           MAX(m.doc_id) AS doc_id, COUNT(*) AS question_count
@@ -1057,6 +1063,7 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
                 "modules": modules.get(doc, []),
                 "compliant": bool(certificate),
                 "expiresAt": certificate.get("expires_at") if certificate else None,
+                "required": doc in required_titles,
             })
         return _json({"trainings": out})
     except Exception as exc:  # noqa: BLE001
