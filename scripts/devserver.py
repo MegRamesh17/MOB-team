@@ -845,6 +845,10 @@ class Handler(BaseHTTPRequestHandler):
         body = self._body()
         doc_title = str(body.get("title", "")).strip()
         assignments = body.get("assignments") or {}
+        # See api/function_app.py's confirm_document for the full reasoning -- default
+        # true, still a per-request opt-out rather than inferring "required" silently
+        # from role_scope after the fact.
+        make_required = bool(body.get("makeRequired", True))
         if not doc_title or not isinstance(assignments, dict):
             return self._error(400, "Missing title or assignments")
 
@@ -892,6 +896,18 @@ class Handler(BaseHTTPRequestHandler):
 
             tagged = bank.set_chunk_roles(doc_title, normalized)
 
+            # Same reasoning as function_app.py's confirm_document: gated by the
+            # "manager" tier already required above, not the admin/executive-only
+            # bar on set_role_requirements, because `permitted` just above already
+            # confines this to roles in the caller's own reporting subtree -- a
+            # manager can only make required the exact thing they were already
+            # trusted to assign.
+            required_for = []
+            if make_required:
+                for role_code in set(normalized.values()):
+                    bank.add_role_requirement(role_code, doc_title)
+                    required_for.append(role_code)
+
             # Update-vs-add was decided by gpt-5 and shown to the manager before
             # this call; supersede arrives here already reviewed. Old questions stop
             # being served; passes already earned hold until their one-year expiry.
@@ -906,6 +922,7 @@ class Handler(BaseHTTPRequestHandler):
             "taggedChunks": tagged,
             "retiredQuestions": retired,
             "superseded": supersede,
+            "requiredFor": sorted(required_for),
             "jobId": job_id,
         })
 

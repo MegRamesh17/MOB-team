@@ -1610,6 +1610,15 @@ def confirm_document(req: func.HttpRequest) -> func.HttpResponse:
     assignments = body.get("assignments") or {}
     new_roles = body.get("newRoles") or []
     supersede = str(body.get("supersede", "")).strip()
+    # Default true: assigning a document to a role and having it count toward that
+    # role's Q Score are the same decision in the manager's head, and making them
+    # tick a second box to get the obvious outcome is friction with no upside. Still
+    # opt-out, and still a per-request choice a human made -- not inferred silently
+    # from role_scope after the fact, which is exactly what RoleRequirements' own
+    # migration comment (019_create_role_requirements.sql) warns against: a Q Score
+    # that moves because a document was uploaded or retired, not because anyone did
+    # any training.
+    make_required = bool(body.get("makeRequired", True))
     if not doc_title or not isinstance(assignments, dict):
         return _error(400, "Bad request", "title and assignments are required")
 
@@ -1637,6 +1646,20 @@ def confirm_document(req: func.HttpRequest) -> func.HttpResponse:
             tagged = bank.set_chunk_roles(doc_title, {
                 topic: str(code) for topic, code in assignments.items()
             })
+
+            # Deliberately gated by the same require_manager(...) check at the top of
+            # this endpoint, not restricted to admin/executive like set_requirements
+            # below -- and that is safe rather than a loosening of that endpoint's
+            # "compliance decision, not a team one" rule, because the permitted-roles
+            # check just above already confines this to roles in the caller's own
+            # reporting subtree. A manager can only make required the exact thing
+            # they were already trusted to assign; they still cannot touch
+            # requirements for any role outside their own chain.
+            required_for: List[str] = []
+            if make_required:
+                for code in {(c or "ALL").upper() for c in assignments.values()}:
+                    bank.add_role_requirement(code, doc_title)
+                    required_for.append(code)
 
             retired = 0
             if supersede and supersede != doc_title:
@@ -1671,7 +1694,7 @@ def confirm_document(req: func.HttpRequest) -> func.HttpResponse:
 
         return _json({
             "title": doc_title, "taggedChunks": tagged, "retired": retired,
-            "jobId": job_id,
+            "requiredFor": sorted(required_for), "jobId": job_id,
         }, 201)
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
