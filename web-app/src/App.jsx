@@ -215,19 +215,12 @@ function MasteryRing({ value, size = 64, stroke = 7 }) {
   const c = 2 * Math.PI * r;
   const pct = Math.max(0, Math.min(100, Math.round(value || 0)));
   const dash = (pct / 100) * c;
-  const id = `grad-${size}-${pct}`;
   return (
     <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-      <defs>
-        <linearGradient id={id} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor={C.violet500} />
-          <stop offset="100%" stopColor={C.violet900} />
-        </linearGradient>
-      </defs>
       <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={C.line} strokeWidth={stroke} />
       <circle
         cx={size / 2} cy={size / 2} r={r} fill="none"
-        stroke={`url(#${id})`} strokeWidth={stroke} strokeLinecap="round"
+        stroke={C.violet700} strokeWidth={stroke} strokeLinecap="round"
         strokeDasharray={`${dash} ${c - dash}`}
         transform={`rotate(-90 ${size / 2} ${size / 2})`}
       />
@@ -597,7 +590,7 @@ function Dashboard({ name, onOpenPath, onOpenTraining }) {
       {!loading && !error && <DashboardStats trainings={trainings} />}
 
       {focus && (
-        <div style={{ background: `linear-gradient(120deg, ${C.violet900}, ${C.violet700})` }}
+        <div style={{ background: C.violet900 }}
           className="rounded-2xl p-6 flex items-center justify-between gap-6 mb-8 text-white">
           <div className="min-w-0">
             <p className="text-xs uppercase tracking-wide opacity-80 mb-1 font-semibold">
@@ -1851,7 +1844,7 @@ function DocumentsScreen({ team, principal, onDone }) {
           <div style={{ background: C.line }} className="w-full h-2 rounded-full overflow-hidden mb-2">
             <div style={{
               width: `${job.state === "done" ? 100 : pct}%`,
-              background: job.state === "error" ? C.danger : `linear-gradient(90deg, ${C.violet500}, ${C.violet700})`,
+              background: job.state === "error" ? C.danger : C.violet700,
             }} className="h-full rounded-full transition-all" />
           </div>
           <p style={{ color: job.state === "error" ? C.danger : C.sub }} className="text-xs">{job.message}</p>
@@ -2058,17 +2051,6 @@ function PetCreature({ stageIdx, size }) {
   const uid = `${size}-${stageIdx}`;
   return (
     <svg width={s} height={s} viewBox={`0 0 ${s} ${s}`}>
-      <defs>
-        <linearGradient id={`pet-grad-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor={C.violet500} />
-          <stop offset="100%" stopColor={C.violet700} />
-        </linearGradient>
-        <linearGradient id={`pet-crown-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor={C.violet300} />
-          <stop offset="100%" stopColor={C.violet700} />
-        </linearGradient>
-      </defs>
-
       {stageIdx >= 4 && (
         <ellipse cx={cx} cy={cy} rx={bodyR * 1.55} ry={bodyR * 0.5} fill="none" stroke={C.violet300} strokeWidth="2" opacity="0.7" />
       )}
@@ -2091,16 +2073,16 @@ function PetCreature({ stageIdx, size }) {
       {stageIdx >= 1 && (
         <>
           <ellipse cx={cx - bodyR * 0.72} cy={cy - bodyR * 0.85} rx={bodyR * 0.24} ry={bodyR * 0.34}
-            fill={`url(#pet-grad-${uid})`} transform={`rotate(-25 ${cx - bodyR * 0.72} ${cy - bodyR * 0.85})`} />
+            fill={C.violet600} transform={`rotate(-25 ${cx - bodyR * 0.72} ${cy - bodyR * 0.85})`} />
           <ellipse cx={cx + bodyR * 0.72} cy={cy - bodyR * 0.85} rx={bodyR * 0.24} ry={bodyR * 0.34}
-            fill={`url(#pet-grad-${uid})`} transform={`rotate(25 ${cx + bodyR * 0.72} ${cy - bodyR * 0.85})`} />
+            fill={C.violet600} transform={`rotate(25 ${cx + bodyR * 0.72} ${cy - bodyR * 0.85})`} />
         </>
       )}
 
       <path d={`M ${cx + bodyR * 0.48} ${cy + bodyR * 0.58} L ${cx + bodyR * 1.02} ${cy + bodyR * 1.12}`}
         stroke={C.violet900} strokeWidth={Math.max(2.5, bodyR * 0.16)} strokeLinecap="round" />
 
-      <circle cx={cx} cy={cy} r={bodyR} fill={`url(#pet-grad-${uid})`} />
+      <circle cx={cx} cy={cy} r={bodyR} fill={C.violet600} />
       <ellipse cx={cx} cy={cy + bodyR * 0.32} rx={bodyR * 0.62} ry={bodyR * 0.42} fill={C.lavender} opacity="0.85" />
 
       <circle cx={cx - bodyR * 0.32} cy={cy - bodyR * 0.05} r={bodyR * 0.15} fill="#fff" />
@@ -2117,7 +2099,7 @@ function PetCreature({ stageIdx, size }) {
       {stageIdx >= 5 && (
         <polygon
           points={`${cx - bodyR * 0.5},${cy - bodyR * 0.95} ${cx - bodyR * 0.28},${cy - bodyR * 1.25} ${cx},${cy - bodyR * 0.98} ${cx + bodyR * 0.28},${cy - bodyR * 1.25} ${cx + bodyR * 0.5},${cy - bodyR * 0.95}`}
-          fill={`url(#pet-crown-${uid})`} stroke={C.violet900} strokeWidth="1" strokeLinejoin="round" />
+          fill={C.violet500} stroke={C.violet900} strokeWidth="1" strokeLinejoin="round" />
       )}
     </svg>
   );
@@ -2148,7 +2130,7 @@ function TeamHabitat({ members, highlightName }) {
 
   return (
     <div>
-      <div style={{ borderColor: C.line, background: `linear-gradient(160deg, ${C.lavender}, #ffffff)` }} className="border rounded-2xl p-3 overflow-hidden">
+      <div style={{ borderColor: C.line, background: C.lavender }} className="border rounded-2xl p-3 overflow-hidden">
         <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ display: "block" }}>
           <style>{`
             @keyframes qhub-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 0.95; } }
@@ -2322,7 +2304,7 @@ function CompanionCard({ trainingsCompleted, name, qScore }) {
                 <span style={{ color: C.sub }} className="text-xs font-semibold">{progressPct}%</span>
               </div>
               <div style={{ background: C.line }} className="w-full h-2.5 rounded-full overflow-hidden">
-                <div style={{ width: `${progressPct}%`, background: `linear-gradient(90deg, ${C.violet500}, ${C.violet700})` }} className="h-full rounded-full transition-all" />
+                <div style={{ width: `${progressPct}%`, background: C.violet700 }} className="h-full rounded-full transition-all" />
               </div>
             </>
           ) : (
@@ -2404,13 +2386,7 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
 
         <div className="flex justify-center mb-4">
           <svg ref={svgRef} width="240" height="340" viewBox="0 0 240 340" xmlns="http://www.w3.org/2000/svg">
-            <defs>
-              <linearGradient id="share-bg" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stopColor={C.violet900} />
-                <stop offset="100%" stopColor={C.violet700} />
-              </linearGradient>
-            </defs>
-            <rect x="0" y="0" width="240" height="340" rx="20" fill="url(#share-bg)" />
+            <rect x="0" y="0" width="240" height="340" rx="20" fill={C.violet900} />
             <text x="20" y="32" fill="#fff" fontSize="13" fontWeight="700" fontFamily="Fraunces, serif" letterSpacing="1">QUIZRANT</text>
             <svg x="45" y="52" width="150" height="150" viewBox="0 0 150 150">
               <PetCreature stageIdx={stageIdx} size={150} />
@@ -2497,7 +2473,7 @@ function Profile({ principal }) {
       {loading && <Loading />}
       {error && <ErrorBox error={error} onRetry={reload} />}
 
-      <div style={{ background: `linear-gradient(120deg, ${C.violet900}, ${C.violet700})` }}
+      <div style={{ background: C.violet700 }}
         className="rounded-2xl p-6 mb-6 text-white flex items-center justify-between gap-6 flex-wrap">
         <div className="flex items-center gap-4">
           <div style={{ background: "rgba(255,255,255,0.15)" }} className="w-16 h-16 rounded-2xl flex items-center justify-center text-xl font-bold shrink-0">
@@ -2596,7 +2572,7 @@ function Profile({ principal }) {
               </span>
             </div>
             <div style={{ background: C.line }} className="w-full h-2 rounded-full overflow-hidden">
-              <div style={{ width: `${b.accuracyPercent}%`, background: `linear-gradient(90deg, ${C.violet500}, ${C.violet700})` }} className="h-full rounded-full" />
+              <div style={{ width: `${b.accuracyPercent}%`, background: C.violet700 }} className="h-full rounded-full" />
             </div>
           </div>
         ))}
@@ -2674,7 +2650,7 @@ export default function App() {
   if (restoring) {
     return (
       <div className="min-h-screen flex items-center justify-center"
-           style={{ ...font, background: `linear-gradient(160deg, ${C.violet900} 0%, ${C.violet700} 45%, ${C.violet500} 100%)` }}>
+           style={{ ...font, background: "#F5F4F9" }}>
         <Logo size={36} />
       </div>
     );
