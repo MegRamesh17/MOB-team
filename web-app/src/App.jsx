@@ -4,7 +4,7 @@ import {
   ChevronRight, X, AlertCircle, Clock, ArrowLeft, User, Star,
   Trophy, Flame, Target, Mail, Briefcase, Share2, Download, Copy,
   Loader2, RefreshCw, Upload, FileText, Link2, Search, Send,
-  Map as MapIcon, Settings as SettingsIcon,
+  Map as MapIcon, Settings as SettingsIcon, Box, Calendar, ShieldCheck,
 } from "lucide-react";
 import * as api from "./api";
 import { Logo } from "./logo.jsx";
@@ -44,9 +44,9 @@ const C = {
   green500: "#22C55E",  // brief: Fresh green
   green300: "#88C7B7",  // brief: Sage
   mint: "#E3F1EB",       // derived pale tint of sage/forest
-  paper: "#F6F3EC",      // brief: Warm cream
+  paper: "#FFFFFF",      // white, not the brief's cream -- per direct request
   sand: "#F3EDE1",       // brief: Soft sand -- subtle section backgrounds
-  line: "#E5DFD2",
+  line: "#E4E7E2",       // cooled from the brief's warm tan now the ground is white, not cream
   amber: "#FF9E4A",      // brief: Coral/orange
   amberBg: "#FFEFDD",
   success: "#14B8A6",    // brief: Teal
@@ -228,12 +228,19 @@ function MasteryRing({ value, size = 64, stroke = 7 }) {
   const c = 2 * Math.PI * r;
   const pct = Math.max(0, Math.min(100, Math.round(value || 0)));
   const dash = (pct / 100) * c;
+  const gradId = `mastery-ring-grad-${size}`;
   return (
     <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={C.line} strokeWidth={stroke} />
+      <defs>
+        <linearGradient id={gradId} x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor={C.green500} />
+          <stop offset="100%" stopColor={C.green700} />
+        </linearGradient>
+      </defs>
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={C.mint} strokeWidth={stroke} />
       <circle
         cx={size / 2} cy={size / 2} r={r} fill="none"
-        stroke={C.green700} strokeWidth={stroke} strokeLinecap="round"
+        stroke={`url(#${gradId})`} strokeWidth={stroke} strokeLinecap="round"
         strokeDasharray={`${dash} ${c - dash}`}
         transform={`rotate(-90 ${size / 2} ${size / 2})`}
       />
@@ -426,8 +433,8 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
           -- stays put while a long page like Profile scrolls inside <main> only.
           min-height let the whole row grow with the page's content instead, which
           dragged the sidebar along with it and buried sign-out below the fold. */}
-      <aside style={{ background: C.rail, width: 196 }} className="flex flex-col shrink-0 h-full overflow-y-auto">
-        <div className="px-5 py-5 flex items-center"><Logo size={22} light /></div>
+      <aside style={{ background: C.rail, width: 252 }} className="flex flex-col shrink-0 h-full overflow-y-auto">
+        <div className="px-5 py-6 flex items-center"><Logo size={38} light /></div>
         <nav className="flex-1 px-3 py-4 space-y-1">
           {nav.map((n) => {
             const Icon = n.icon;
@@ -447,19 +454,19 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
             );
           })}
         </nav>
-        <div style={{ borderColor: "rgba(240,234,216,0.14)" }} className="border-t px-5 py-4">
+        <div style={{ borderColor: "rgba(240,234,216,0.14)" }} className="border-t px-4 py-5">
           <button
             onClick={() => setActive("profile")}
             style={{ background: active === "profile" ? "rgba(34,197,94,0.18)" : "transparent" }}
-            className="w-full flex items-center gap-2 mb-3 p-1.5 -m-1.5 rounded-xl text-left hover:bg-white/5"
+            className="w-full flex items-center gap-3 mb-3 p-2 -m-2 rounded-xl text-left hover:bg-white/5"
           >
-            <div style={{ background: "rgba(240,234,216,0.14)", color: "#F0EAD8" }} className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0">
+            <div style={{ background: "rgba(240,234,216,0.14)", color: "#F0EAD8" }} className="w-11 h-11 rounded-full flex items-center justify-center text-sm font-bold shrink-0">
               {name.split(" ").map((p) => p[0]).join("")}
             </div>
             <div className="min-w-0">
-              <div style={{ color: "#F0EAD8" }} className="text-sm font-semibold leading-tight truncate">{name}</div>
-              <div style={{ color: "rgba(240,234,216,0.6)" }} className="text-xs truncate">{department || "—"}</div>
-              {title && <div style={{ color: "rgba(240,234,216,0.5)" }} className="text-[11px] truncate">{title}</div>}
+              <div style={{ color: "#F0EAD8" }} className="text-base font-semibold leading-tight">{name}</div>
+              <div style={{ color: "rgba(240,234,216,0.65)" }} className="text-sm truncate">{department || "—"}</div>
+              {title && <div style={{ color: "rgba(240,234,216,0.5)" }} className="text-xs truncate">{title}</div>}
             </div>
           </button>
           <button onClick={onLogout} style={{ color: "rgba(240,234,216,0.6)" }} className="flex items-center gap-2 text-xs font-semibold hover:text-white">
@@ -575,7 +582,7 @@ function FocusSession() {
 // expiring within 30 days), the same data the Certificates page uses. Counting the
 // not-yet-expired ones is exactly "due soon"; the already-expired ones are counted
 // separately below, since "expired" and "about to expire" are different facts.
-function DashboardStats({ trainings, renewalsDue }) {
+function DashboardStats({ trainings, renewalsDue, onOpenPath, onOpenCertificates }) {
   if (trainings.length === 0) return null;
   const total = trainings.length;
   const completed = trainings.filter((t) => t.status === "completed").length;
@@ -583,40 +590,55 @@ function DashboardStats({ trainings, renewalsDue }) {
   const dueSoon = renewalsDue.filter((r) => !r.expired).length;
   const pct = Math.round((completed / total) * 100);
 
+  const Link = ({ onClick, children }) => (
+    <button onClick={onClick} style={{ color: C.green700 }}
+      className="text-xs font-semibold flex items-center gap-0.5 mt-2 hover:opacity-75">
+      {children} <ChevronRight size={12} />
+    </button>
+  );
+
   return (
     <div className="grid grid-cols-4 gap-4 mb-8">
-      <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 flex items-center gap-4">
-        <MasteryRing value={pct} size={48} stroke={5} />
+      <div style={{ borderColor: C.line }} className="border rounded-2xl bg-white p-6 flex items-center gap-4">
+        <MasteryRing value={pct} size={72} stroke={7} />
         <div>
-          <div style={{ color: C.sub }} className="text-xs font-semibold uppercase tracking-wide mb-0.5">Overall progress</div>
-          <div style={{ color: C.sub }} className="text-xs">across {total} training{total === 1 ? "" : "s"}</div>
+          <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-1">{pct}%</div>
+          <div style={{ color: C.sub }} className="text-xs font-semibold">Overall Progress</div>
+          <Link onClick={onOpenPath}>View progress</Link>
         </div>
       </div>
-      <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 flex items-center gap-4">
-        <div style={{ background: C.mint }} className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0">
-          <CheckCircle2 size={20} color={C.green700} />
+      <div style={{ borderColor: C.line }} className="border rounded-2xl bg-white p-6 flex items-center gap-4">
+        <div style={{ background: C.mint }} className="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0">
+          <Box size={26} color={C.green700} />
         </div>
         <div>
-          <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-0.5">{completed}/{total}</div>
-          <div style={{ color: C.sub }} className="text-xs font-semibold uppercase tracking-wide">Completed</div>
+          <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-1">{completed}</div>
+          <div style={{ color: C.sub }} className="text-xs font-semibold">Trainings Completed</div>
+          <Link onClick={onOpenPath}>View all</Link>
         </div>
       </div>
-      <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 flex items-center gap-4">
-        <div style={{ background: C.amberBg }} className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0">
-          <Clock size={20} color={C.amber} />
+      <div style={{ borderColor: C.line }} className="border rounded-2xl bg-white p-6 flex items-center gap-4">
+        <div style={{ background: C.amberBg }} className="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0">
+          <Calendar size={26} color={C.amber} />
         </div>
         <div>
-          <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-0.5">{dueSoon}</div>
-          <div style={{ color: C.sub }} className="text-xs font-semibold uppercase tracking-wide">Due soon</div>
+          <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-1">{dueSoon}</div>
+          <div style={{ color: C.sub }} className="text-xs font-semibold">Due Soon</div>
+          <Link onClick={onOpenCertificates}>View all</Link>
         </div>
       </div>
-      <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 flex items-center gap-4">
-        <div style={{ background: C.successBg }} className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0">
-          <Award size={20} color={C.success} />
+      <div style={{ borderColor: C.line }} className="border rounded-2xl bg-white p-6 flex items-center gap-4">
+        <div style={{ background: C.successBg }} className="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0">
+          <ShieldCheck size={26} color={C.success} />
         </div>
         <div>
-          <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-0.5">{compliant}/{total}</div>
-          <div style={{ color: C.sub }} className="text-xs font-semibold uppercase tracking-wide">Compliant</div>
+          <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-1">
+            {Math.round((compliant / total) * 100)}%
+          </div>
+          <div style={{ color: C.sub }} className="text-xs font-semibold">Compliant</div>
+          {compliant === total
+            ? <p style={{ color: C.success }} className="text-xs font-semibold mt-2">All caught up</p>
+            : <Link onClick={onOpenCertificates}>View all</Link>}
         </div>
       </div>
     </div>
@@ -639,12 +661,12 @@ function TeamProgressCard({ team }) {
     .slice(0, 5);
 
   return (
-    <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5">
+    <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 h-full flex flex-col">
       <h3 style={{ ...display, color: C.ink }} className="font-bold mb-4">Team progress</h3>
       {!rows.length ? (
         <p style={{ color: C.sub }} className="text-xs">Completion numbers are still loading.</p>
       ) : (
-        <div className="space-y-3.5">
+        <div className="flex-1 flex flex-col justify-between gap-3.5">
           {rows.map((p) => (
             <div key={p.employeeId}>
               <div className="flex items-center gap-2 mb-1">
@@ -665,7 +687,7 @@ function TeamProgressCard({ team }) {
   );
 }
 
-function Dashboard({ name, team, onOpenPath, onOpenTraining }) {
+function Dashboard({ name, team, onOpenPath, onOpenTraining, onOpenCertificates }) {
   const { data, loading, error, reload } = useAsync(() => api.trainings(), []);
   const { data: certData } = useAsync(() => api.certificates(), []);
   const trainings = data?.trainings || [];
@@ -685,7 +707,10 @@ function Dashboard({ name, team, onOpenPath, onOpenTraining }) {
       {loading && <Loading label="Loading your trainings…" />}
       {error && <ErrorBox error={error} onRetry={reload} />}
 
-      {!loading && !error && <DashboardStats trainings={trainings} renewalsDue={renewalsDue} />}
+      {!loading && !error && (
+        <DashboardStats trainings={trainings} renewalsDue={renewalsDue}
+          onOpenPath={onOpenPath} onOpenCertificates={onOpenCertificates} />
+      )}
 
       {focus && (
         <div style={{ borderColor: C.line }}
@@ -711,7 +736,7 @@ function Dashboard({ name, team, onOpenPath, onOpenTraining }) {
       )}
 
       {!loading && !error && trainings.length > 0 && (
-        <div className={manages ? "grid grid-cols-3 gap-6 items-start mb-8" : "mb-8"}>
+        <div className={manages ? "grid grid-cols-3 gap-6 items-stretch mb-8" : "mb-8"}>
           <div className={manages ? "col-span-2" : ""}>
             <div className="flex items-center justify-between mb-3">
               <h3 style={{ ...display, color: C.ink }} className="font-bold">Your learning path</h3>
@@ -3061,7 +3086,7 @@ export default function App() {
   } else if (view === "team") {
     content = <ManagerTeam team={team} />;
   } else if (view === "dashboard") {
-    content = <Dashboard name={auth.name || auth.email} team={team} onOpenPath={() => goto("path")} onOpenTraining={openTraining} />;
+    content = <Dashboard name={auth.name || auth.email} team={team} onOpenPath={() => goto("path")} onOpenTraining={openTraining} onOpenCertificates={() => goto("certificates")} />;
   } else if (view === "path") {
     content = <LearningPath onBack={() => goto("dashboard")} onOpenTraining={openTraining} />;
   } else if (view === "trainingDetail") {
