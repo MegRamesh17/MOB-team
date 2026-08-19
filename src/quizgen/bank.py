@@ -140,6 +140,22 @@ CREATE TABLE IF NOT EXISTS role_requirements (
 );
 CREATE INDEX IF NOT EXISTS ix_role_requirements_role ON role_requirements(role_code);
 
+-- Track D: manager-submitted trusted reference URLs. Mirrors Azure SQL's TrustedLinks
+-- (026_create_trusted_links.sql) -- scope='team' targets one role in the caller's own
+-- reporting subtree; scope='company_wide' is admin/executive-only and retires the
+-- previous active company-wide row (only one active at a time).
+CREATE TABLE IF NOT EXISTS trusted_links (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    added_by    TEXT NOT NULL,
+    scope       TEXT NOT NULL,
+    role_code   TEXT NOT NULL,
+    url         TEXT NOT NULL,
+    is_active   INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT NOT NULL,
+    company_id  TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ix_trusted_links_company ON trusted_links(company_id, is_active);
+
 -- Certificates. One row per pass, never edited afterwards.
 CREATE TABLE IF NOT EXISTS certificates (
     certificate_id  TEXT PRIMARY KEY,
@@ -482,6 +498,46 @@ class Bank:
         cur = self.conn.execute("DELETE FROM roles WHERE role_code = ?", (role_code.upper(),))
         self.conn.commit()
         return cur.rowcount
+
+    # ------------------------------------------------------------------
+    # trusted links -- mirrors SqlBank.add_trusted_link/trusted_links (026)
+    # ------------------------------------------------------------------
+
+    def add_trusted_link(self, added_by: str, scope: str, role_code: str, url: str) -> int:
+        """
+        Insert a trusted link. For scope='company_wide', retires the previous active
+        company-wide link first -- exactly one active at a time, same rule as the Azure
+        SQL side. Returns the new row's id.
+        """
+        if scope == "company_wide":
+            self.conn.execute(
+                "UPDATE trusted_links SET is_active = 0 "
+                "WHERE scope = 'company_wide' AND is_active = 1" + self._where(),
+                self._params(),
+            )
+        cur = self.conn.execute(
+            "INSERT INTO trusted_links (added_by, scope, role_code, url, created_at, company_id) "
+            "VALUES (?,?,?,?,?,?)",
+            (added_by, scope, role_code.upper(), url, utcnow(), self.company_id),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def trusted_links(self) -> List[Dict[str, object]]:
+        rows = self.conn.execute(
+            "SELECT id, added_by, scope, role_code, url, is_active, created_at "
+            "FROM trusted_links WHERE 1=1" + self._where()
+            + " ORDER BY created_at DESC",
+            self._params(),
+        )
+        return [
+            {
+                "id": r["id"], "scope": r["scope"], "roleCode": r["role_code"],
+                "url": r["url"], "isActive": bool(r["is_active"]),
+                "createdAt": r["created_at"], "addedBy": r["added_by"],
+            }
+            for r in rows
+        ]
 
     def set_chunk_roles(self, doc_title: str, mapping: Dict[str, str]) -> int:
         """
