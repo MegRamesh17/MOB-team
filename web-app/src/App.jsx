@@ -2002,10 +2002,11 @@ function buildTeamRows(people, completionByEmployeeId) {
   });
 }
 
-function downloadTeamCsv(rows) {
-  const header = ["Name", "Email", "Team size", "Incomplete", "Within deadline", "Completion %"];
+function downloadTeamCsv(rows, showTeamSize) {
+  const header = ["Name", "Email", ...(showTeamSize ? ["Team size"] : []),
+    "Incomplete", "Within deadline", "Completion %"];
   const lines = [header, ...rows.map((r) => [
-    r.name, r.email, r.teamSize, r.incomplete, r.withinDeadline,
+    r.name, r.email, ...(showTeamSize ? [r.teamSize] : []), r.incomplete, r.withinDeadline,
     r.completionPercent == null ? "" : r.completionPercent,
   ])];
   const csv = lines
@@ -2103,6 +2104,14 @@ function ManagerTeam({ team }) {
     (r) => !q || r.name.toLowerCase().includes(q) || r.email.toLowerCase().includes(q)
   );
 
+  // "Team size" only means something once a row can BE more than one person. A
+  // manager whose direct reports are individual contributors (SDE1s, SDE2s, ...) gets
+  // rows that are always size 1 -- the column would just repeat "1" down the whole
+  // table. It only earns its place once at least one direct report is themselves a
+  // manager, which is also when this reads more like "my managers" than "my team".
+  const showTeamSize = rows.some((r) => r.teamSize > 1);
+  const tableLabel = showTeamSize ? "Managers" : "My team";
+
   return (
     <div className="p-8 max-w-5xl">
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">My team</h1>
@@ -2117,7 +2126,7 @@ function ManagerTeam({ team }) {
       <div style={{ borderColor: C.line }} className="border rounded-xl bg-white overflow-hidden mb-6">
         <div style={{ borderColor: C.line }} className="border-b px-5 py-4 flex items-center justify-between gap-4 flex-wrap">
           <h2 style={{ ...display, color: C.ink }} className="font-bold">
-            My team <span style={{ color: C.sub }} className="font-normal">({rows.length})</span>
+            {tableLabel} <span style={{ color: C.sub }} className="font-normal">({rows.length})</span>
           </h2>
           <div className="flex items-center gap-3">
             <div style={{ borderColor: C.line }} className="border rounded-xl px-3 py-1.5 flex items-center gap-2">
@@ -2129,7 +2138,7 @@ function ManagerTeam({ team }) {
                 className="text-sm outline-none w-32 bg-transparent"
               />
             </div>
-            <button onClick={() => downloadTeamCsv(rows)} style={{ color: C.violet700 }}
+            <button onClick={() => downloadTeamCsv(rows, showTeamSize)} style={{ color: C.violet700 }}
               className="text-sm font-semibold flex items-center gap-1.5 whitespace-nowrap">
               <Download size={14} /> CSV file
             </button>
@@ -2140,7 +2149,7 @@ function ManagerTeam({ team }) {
           <thead>
             <tr style={{ background: C.lavender, color: C.violet700 }} className="text-left text-xs uppercase tracking-wide">
               <th className="px-5 py-3 font-semibold whitespace-nowrap">Name</th>
-              <th className="px-5 py-3 font-semibold whitespace-nowrap">Team size</th>
+              {showTeamSize && <th className="px-5 py-3 font-semibold whitespace-nowrap">Team size</th>}
               <th className="px-5 py-3 font-semibold whitespace-nowrap">Incomplete</th>
               <th className="px-5 py-3 font-semibold whitespace-nowrap">Within deadline</th>
               <th className="px-5 py-3 font-semibold whitespace-nowrap">Completion</th>
@@ -2154,7 +2163,7 @@ function ManagerTeam({ team }) {
                   <p style={{ color: C.ink }} className="font-semibold">{r.name}</p>
                   <p style={{ color: C.sub }} className="text-xs">{r.email}</p>
                 </td>
-                <td className="px-5 py-3.5" style={{ color: C.ink }}>{r.teamSize}</td>
+                {showTeamSize && <td className="px-5 py-3.5" style={{ color: C.ink }}>{r.teamSize}</td>}
                 <td className="px-5 py-3.5" style={{ color: C.ink }}>
                   {completionLoading && !r.statsKnown ? "…" : r.incomplete}
                 </td>
