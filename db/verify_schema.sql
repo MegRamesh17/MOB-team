@@ -59,6 +59,10 @@ FROM (VALUES
     ('EmployeeTrainingProgress',       '026'),
     ('EmployeeModuleProgress',         '026'),
     ('GeneratedGradingEvents',         '027'),
+    ('TrainingModuleRoles',            '030'),
+    ('ModuleLearningPoints',           '030'),
+    ('LessonPages',                    '030'),
+    ('EmployeeLessonPageProgress',     '030'),
     ('SchemaMigrations',               'migrate-database.yml')
 ) AS v(name, added_by)
 WHERE OBJECT_ID('dbo.' + v.name, 'U') IS NULL;
@@ -98,7 +102,14 @@ FROM (VALUES
     ('GeneratedQuestions',     'rubric_json',      '027'),
     ('GeneratedQuestions',     'fallback_json',    '027'),
     ('GeneratedQuestions',     'grading_version',  '027'),
-    ('GeneratedQuizAttemptQuestions', 'fallback_active', '027')
+    ('GeneratedQuizAttemptQuestions', 'fallback_active', '027'),
+    ('TrainingModules',       'status',               '030'),
+    ('TrainingModules',       'active_generation_id', '030'),
+    ('TrainingModules',       'lesson_word_count',    '030'),
+    ('TrainingModules',       'learning_point_count', '030'),
+    ('GeneratedQuestions',    'module_id',            '030'),
+    ('GeneratedQuestions',    'lesson_page_id',       '030'),
+    ('GeneratedQuestions',    'learning_point_id',    '030')
 ) AS v(tbl, col, added_by)
 WHERE OBJECT_ID('dbo.' + v.tbl, 'U') IS NOT NULL     -- the table itself is reported above
   AND COL_LENGTH('dbo.' + v.tbl, v.col) IS NULL;

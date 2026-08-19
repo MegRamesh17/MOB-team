@@ -273,6 +273,19 @@ class Config:
     # contradiction flags) — what is lost is a person reading each question.
     auto_approve: bool = (_first("QUIZGEN_AUTO_APPROVE", default="true").lower() == "true")
 
+    # --- instructional course generation ---
+    # A module that cannot meet these floors is merged or withheld. Question count is
+    # derived from validated learning points later; chunks never set assessment volume.
+    course_min_words: int = _int("QUIZGEN_COURSE_MIN_MODULE_WORDS", 600)
+    course_min_learning_points: int = _int("QUIZGEN_COURSE_MIN_LEARNING_POINTS", 5)
+    course_min_pages: int = _int("QUIZGEN_COURSE_MIN_PAGES", 3)
+    course_max_pages: int = _int("QUIZGEN_COURSE_MAX_PAGES", 8)
+    course_max_modules: int = _int("QUIZGEN_COURSE_MAX_MODULES", 10)
+    course_max_web_sources: int = _int("QUIZGEN_COURSE_MAX_WEB_SOURCES", 6)
+    web_enrichment: bool = (
+        _first("QUIZGEN_WEB_ENRICHMENT", default="true").lower() == "true"
+    )
+
     # --- quiz assembly / adaptivity ---
     quiz_length: int = _int("QUIZGEN_QUIZ_LENGTH", 8)
     passing_score: float = _float("QUIZGEN_PASSING_SCORE", 80.0)
