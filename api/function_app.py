@@ -2203,6 +2203,194 @@ def _certificates_for(cur, employee_id: int, company_id: int) -> List[Dict[str, 
     ]
 
 
+@app.route(route="team/completion", methods=["GET"])
+def get_team_completion(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Real coverage numbers for everyone in the caller's reporting subtree, batched.
+
+    Powers the My Team roster: team size, how many people are missing required
+    training, how many have something expiring soon, and completion -- computed the
+    same way GET /qscore computes one person's (same qscore.standing call, same
+    definition of "missing" and "expired"), just for the whole subtree in one request
+    instead of one per row. No number here is invented; a person with nothing required
+    counts as fully covered, the same rule qscore.standing already applies.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """WITH subtree AS (
+                       SELECT e.id, e.role_id
+                         FROM dbo.Employees e WHERE e.manager_id = ?
+                       UNION ALL
+                       SELECT e.id, e.role_id
+                         FROM dbo.Employees e
+                         JOIN subtree s ON e.manager_id = s.id
+                   )
+                   SELECT s.id, r.role_code
+                     FROM subtree s
+                     LEFT JOIN dbo.Roles r ON r.id = s.role_id
+                   OPTION (MAXRECURSION 32)""",
+                identity.employee_id,
+            )
+            subtree = _rows(cur)
+
+            req_cache: Dict[str, List[Dict[str, Any]]] = {}
+            rows = []
+            for person in subtree:
+                role = (person.get("role_code") or "ALL").upper()
+                if role not in req_cache:
+                    req_cache[role] = _role_requirements(cur, role, identity.company_id)
+                held = _certificates_for(cur, person["id"], identity.company_id)
+                overall = qscore.standing(req_cache[role], held)["overall"]
+                renewal_due = [r for r in qscore.renewal_candidates(held) if not r["expired"]]
+                rows.append({
+                    "employeeId": person["id"],
+                    **overall.to_dict(),
+                    "renewalDueCount": len(renewal_due),
+                })
+
+        return _json({"people": rows})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="team/remind", methods=["POST"])
+def send_team_reminder(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Manager-triggered nudge for one person in the caller's reporting subtree.
+
+    What the email says is computed here from that person's actual missing/expired
+    requirements -- never passed by the client -- so this cannot be used to send an
+    arbitrary message, and the target must resolve inside the caller's own subtree, the
+    same check GET /qscore?employee= makes. A 404 rather than 403 for someone outside
+    it: whether a given employee exists is not something to confirm to someone with no
+    business asking.
+
+    Sending is real (shared.comms, the same module the daily expiry-reminder job uses),
+    but depends on RESEND_API_KEY being configured for this environment. Where it is
+    not, this still reports honestly what would have been sent rather than pretending
+    delivery succeeded.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+
+    target_id = body.get("employeeId")
+    if not isinstance(target_id, int):
+        return _error(400, "Bad request", "employeeId is required.")
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """WITH subtree AS (
+                       SELECT e.id, e.name, e.email, e.role_id
+                         FROM dbo.Employees e WHERE e.manager_id = ?
+                       UNION ALL
+                       SELECT e.id, e.name, e.email, e.role_id
+                         FROM dbo.Employees e
+                         JOIN subtree s ON e.manager_id = s.id
+                   )
+                   SELECT TOP 1 s.id, s.name, s.email, r.role_code
+                     FROM subtree s
+                     LEFT JOIN dbo.Roles r ON r.id = s.role_id
+                    WHERE s.id = ?
+                   OPTION (MAXRECURSION 32)""",
+                identity.employee_id, target_id,
+            )
+            person = cur.fetchone()
+            if person is None:
+                return _error(404, "Not found", "No such employee in your team.")
+
+            role = (person.role_code or "ALL").upper()
+            requirements = _role_requirements(cur, role, identity.company_id)
+            held = _certificates_for(cur, person.id, identity.company_id)
+            company_name = _company_name(identity.company_id)
+
+        overall = qscore.standing(requirements, held)["overall"]
+        if not overall.missing and not overall.expired:
+            return _json({
+                "sent": False, "reason": "Already compliant -- nothing outstanding.",
+                "missing": [], "expired": [],
+            })
+
+        from shared.comms import CommsNotConfigured, send_manager_reminder_email
+        try:
+            send_manager_reminder_email(
+                person.email, person.name, overall.missing, overall.expired, company_name,
+            )
+            return _json({"sent": True, "missing": overall.missing, "expired": overall.expired})
+        except CommsNotConfigured as exc:
+            return _json({
+                "sent": False, "reason": str(exc),
+                "missing": overall.missing, "expired": overall.expired,
+            })
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="settings", methods=["GET"])
+def get_settings(req: func.HttpRequest) -> func.HttpResponse:
+    """This employee's own preferences. One so far: whether they want the reminder/
+    notification email shared.comms already knows how to send."""
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT notifications_enabled FROM dbo.Employees WHERE id = ? AND company_id = ?",
+                identity.employee_id, identity.company_id,
+            )
+            row = cur.fetchone()
+        return _json({"notificationsEnabled": bool(row.notifications_enabled) if row else True})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="settings", methods=["POST"])
+def set_settings(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Update the caller's own preferences -- never someone else's: there is no
+    employeeId in the body, only what the token says about who is asking, the same
+    rule every other write in this file follows.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+
+    enabled = body.get("notificationsEnabled")
+    if not isinstance(enabled, bool):
+        return _error(400, "Bad request", "notificationsEnabled (boolean) is required.")
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "UPDATE dbo.Employees SET notifications_enabled = ? WHERE id = ? AND company_id = ?",
+                enabled, identity.employee_id, identity.company_id,
+            )
+            c.commit()
+        return _json({"notificationsEnabled": enabled})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
 @app.route(route="certificates", methods=["GET"])
 def list_certificates(req: func.HttpRequest) -> func.HttpResponse:
     """Certificates this learner holds, expired ones included and marked."""
@@ -2483,17 +2671,17 @@ def _employees_for_role(cur, company_id: int, role_code: str) -> List[tuple]:
     """
     if role_code == "ALL":
         cur.execute(
-            "SELECT email, name FROM dbo.Employees WHERE company_id = ?",
+            "SELECT email, name, notifications_enabled FROM dbo.Employees WHERE company_id = ?",
             company_id,
         )
     else:
         cur.execute(
-            """SELECT e.email, e.name FROM dbo.Employees e
+            """SELECT e.email, e.name, e.notifications_enabled FROM dbo.Employees e
                  JOIN dbo.Roles r ON r.id = e.role_id
                 WHERE e.company_id = ? AND r.role_code = ?""",
             company_id, role_code,
         )
-    return [(r.email, r.name) for r in cur.fetchall()]
+    return [(r.email, r.name) for r in cur.fetchall() if r.notifications_enabled]
 
 
 def _company_name(company_id: int) -> str:
@@ -3101,7 +3289,7 @@ def send_expiry_reminders(mytimer: func.TimerRequest) -> None:
     references its own recipient's own certificate.
     """
     warning_days = int(os.getenv("EXPIRY_WARNING_DAYS", "30"))
-    sent, failed, skipped_unconfigured = 0, 0, 0
+    sent, failed, skipped_unconfigured, skipped_disabled = 0, 0, 0, 0
 
     from shared.comms import CommsNotConfigured, send_expiry_email
 
@@ -3110,7 +3298,8 @@ def send_expiry_reminders(mytimer: func.TimerRequest) -> None:
             cur = c.cursor()
             cur.execute(
                 """SELECT cert.id, cert.doc_title, cert.expires_at,
-                          e.email, e.name AS employee_name, comp.name AS company_name
+                          e.email, e.name AS employee_name, e.notifications_enabled,
+                          comp.name AS company_name
                      FROM dbo.Certificates cert
                      JOIN dbo.Employees e   ON e.id = cert.employee_id
                      JOIN dbo.Companies comp ON comp.id = e.company_id
@@ -3123,6 +3312,13 @@ def send_expiry_reminders(mytimer: func.TimerRequest) -> None:
             rows = cur.fetchall()
 
             for row in rows:
+                if not row.notifications_enabled:
+                    # Left unstamped, deliberately: this person is still genuinely due,
+                    # just opted out today. Re-checking them tomorrow is a cheap no-op,
+                    # and stamping reminder_sent_at would mean re-enabling notifications
+                    # later gets them silently skipped for the rest of this cert's life.
+                    skipped_disabled += 1
+                    continue
                 try:
                     send_expiry_email(
                         row.email, row.employee_name, row.doc_title,
@@ -3133,7 +3329,7 @@ def send_expiry_reminders(mytimer: func.TimerRequest) -> None:
                     # Every remaining row would fail the identical way, so stop the
                     # loop rather than log the same cause N times, but this run is not
                     # an error: it is expected until Resend is configured.
-                    skipped_unconfigured = len(rows) - sent - failed
+                    skipped_unconfigured = len(rows) - sent - failed - skipped_disabled
                     break
                 except Exception:  # noqa: BLE001
                     failed += 1
@@ -3151,7 +3347,7 @@ def send_expiry_reminders(mytimer: func.TimerRequest) -> None:
                 sent += 1
 
         logging.info(
-            "send_expiry_reminders: sent=%d failed=%d skipped_unconfigured=%d",
-            sent, failed, skipped_unconfigured)
+            "send_expiry_reminders: sent=%d failed=%d skipped_unconfigured=%d skipped_disabled=%d",
+            sent, failed, skipped_unconfigured, skipped_disabled)
     except Exception:  # noqa: BLE001
         logging.exception("send_expiry_reminders: run failed")
