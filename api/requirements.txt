@@ -12,3 +12,10 @@ openai==2.53.0
 pypdf==6.1.1
 python-dotenv==1.2.2
 azure-ai-documentintelligence==1.0.2
+# quizgen.web.fetch() (POST /links/add) needs this -- without it, the endpoint deploys
+# fine (the import is lazy, inside fetch()) and then 500s on the first real call.
+httpx==0.28.1
+# api/shared/comms.py (send_expiry_reminders timer function). Pure Python, single
+# py2.py3-none-any wheel -- confirmed on PyPI before adding, unlike bcrypt earlier this
+# project, which taught the lesson to actually check rather than assume.
+resend==2.37.0

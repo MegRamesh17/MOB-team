@@ -29,6 +29,7 @@ review/decide additionally requires manager tier or above.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -260,16 +261,44 @@ def get_me(req: func.HttpRequest) -> func.HttpResponse:
             )
             stats = _rows(cur)[0]
 
+            # For the streak and the two one-time badges, which need each attempt's
+            # own date and score rather than just the totals above.
+            cur.execute(
+                """SELECT submitted_at, score_percent
+                   FROM dbo.GeneratedQuizAttempts
+                   WHERE learner_id = ? AND submitted_at IS NOT NULL""",
+                learner,
+            )
+            # str()'d here, same as _certificates_for's issued_at/expires_at: pyodbc
+            # returns a datetime, and qscore.py's _parse expects an ISO string like
+            # every other caller gives it.
+            submitted_attempts = [
+                {"submitted_at": str(r["submitted_at"]), "score_percent": r["score_percent"]}
+                for r in _rows(cur)
+            ]
+
+            requirements = _role_requirements(cur, identity.role_code, identity.company_id)
+            held = _certificates_for(cur, identity.employee_id, identity.company_id)
+
         weak = [
             m for m in mastery
             if m["answered"] >= MIN_ANSWERS
             and float(m["accuracy_percent"]) < WEAK_THRESHOLD * 100
         ]
+
+        streak = qscore.training_streak(
+            [a["submitted_at"] for a in submitted_attempts])
+        overall_q_score = qscore.standing(requirements, held)["overall"].q_score
+        badges = qscore.earned_badges(
+            attempts=submitted_attempts, streak=streak, q_score=overall_q_score)
+
         return _json(
             {
                 "learnerId": learner,
                 "attempts": stats.get("attempts") or 0,
                 "passed": stats.get("passed") or 0,
+                "streak": streak,
+                "badges": badges,
                 "masteryByTopic": mastery,
                 "weakTopics": [m["topic"] for m in weak],
             }
@@ -1269,7 +1298,11 @@ def _pathway_state(cur, identity, learner: str, training: str) -> Optional[Dict[
     module_progress = {row["module_id"]: row for row in _rows(cur)}
 
     cur.execute(
-        """SELECT m.module_id, q.difficulty, COUNT(DISTINCT q.question_id) AS n
+        """SELECT m.module_id, q.difficulty,
+                  COUNT(DISTINCT q.question_id) AS n,
+                  COUNT(DISTINCT CASE
+                      WHEN q.question_type = 'MultipleChoice'
+                      THEN q.question_id END) AS choice_n
              FROM dbo.TrainingModules m
              JOIN dbo.SourceChunks c
                ON c.company_id = m.company_id AND c.doc_id = m.doc_id AND c.topic = m.topic
@@ -1280,8 +1313,11 @@ def _pathway_state(cur, identity, learner: str, training: str) -> Optional[Dict[
         identity.company_id, doc_id,
     )
     counts: Dict[str, Dict[str, int]] = {}
+    choice_counts: Dict[str, Dict[str, int]] = {}
     for row in _rows(cur):
         counts.setdefault(row["module_id"], {})[row["difficulty"]] = int(row["n"] or 0)
+        choice_counts.setdefault(row["module_id"], {})[row["difficulty"]] = int(
+            row["choice_n"] or 0)
 
     first_incomplete = next(
         (module["module_id"] for module in modules
@@ -1302,6 +1338,7 @@ def _pathway_state(cur, identity, learner: str, training: str) -> Optional[Dict[
         except (TypeError, ValueError):
             weak_sections = []
         difficulty_counts = counts.get(module["module_id"], {})
+        choice_difficulty_counts = choice_counts.get(module["module_id"], {})
         output_modules.append({
             "moduleId": module["module_id"],
             "title": module["heading"] or module["topic"],
@@ -1317,12 +1354,17 @@ def _pathway_state(cur, identity, learner: str, training: str) -> Optional[Dict[
                 difficulty: difficulty_counts.get(difficulty, 0)
                 for difficulty in DIFFICULTIES
             },
+            "choiceDifficultyCounts": {
+                difficulty: choice_difficulty_counts.get(difficulty, 0)
+                for difficulty in DIFFICULTIES
+            },
             "diagnosticScore": scores.get(module["module_id"]),
         })
 
     all_passed = diagnostic_done and all(module["status"] == "passed" for module in output_modules)
     diagnostic_ready = all(
-        all(module["difficultyCounts"].get(difficulty, 0) > 0 for difficulty in DIFFICULTIES)
+        all(module["choiceDifficultyCounts"].get(difficulty, 0) > 0
+            for difficulty in DIFFICULTIES)
         for module in output_modules
     )
     return {
@@ -1456,7 +1498,7 @@ def start_pathway_assessment(req: func.HttpRequest) -> func.HttpResponse:
                     labels = ["{} {}".format(mid, difficulty) for mid, difficulty in missing[:6]]
                     return _error(
                         409, "Diagnostic question bank is incomplete",
-                        "Generate an Easy, Medium and Hard question for every module. Missing: "
+                        "Generate a MultipleChoice Easy, Medium and Hard question for every module. Missing: "
                         + ", ".join(labels),
                     )
                 target, pass_mark = len(selected), None
@@ -1468,10 +1510,14 @@ def start_pathway_assessment(req: func.HttpRequest) -> func.HttpResponse:
                     return _error(404, "Unknown module", module_id)
                 if module["status"] not in ("available", "needs-review", "in-progress"):
                     return _error(409, "Module is locked", "Complete the previous module first.")
-                module_pool = [q for q in pool if q["topic"] == module["topic"]]
+                module_pool = [
+                    q for q in pool
+                    if q["topic"] == module["topic"]
+                    and q["question_type"] in pathway.FAST_MODULE_TYPES
+                ]
                 if len(module_pool) < 10:
                     return _error(409, "Module question bank is incomplete",
-                                  "This module needs at least 10 approved questions.")
+                                  "This module needs at least 10 quick-response approved questions.")
                 diagnostic = module.get("diagnosticScore") or {}
                 wanted = pathway.initial_module_difficulty(
                     int(diagnostic.get("correct") or 0), int(diagnostic.get("possible") or 3))
@@ -1766,8 +1812,11 @@ def answer_pathway_question(req: func.HttpRequest) -> func.HttpResponse:
                     module_rows = _rows(cur)
                     if not module_rows:
                         return _error(409, "Module is unavailable", attempt["module_id"])
-                    pool = _pathway_question_pool(
-                        cur, identity, attempt["training_doc_id"], module_rows[0]["topic"])
+                    pool = [
+                        q for q in _pathway_question_pool(
+                            cur, identity, attempt["training_doc_id"], module_rows[0]["topic"])
+                        if q["question_type"] in pathway.FAST_MODULE_TYPES
+                    ]
                     cur.execute(
                         "SELECT question_id FROM dbo.GeneratedQuizAttemptQuestions WHERE attempt_id = ?",
                         attempt_id,
@@ -2167,6 +2216,44 @@ def get_team(req: func.HttpRequest) -> func.HttpResponse:
             )
             people = _rows(cur)
 
+            # Peers: everyone else who shares my manager. Available to everyone, not
+            # only people who manage someone -- an SDE1 has SDE2/SDE3 as teammates
+            # because they share a manager, even though nobody reports to the SDE1
+            # themselves. ISNULL sentinel rather than a plain "=" comparison: NULL =
+            # NULL is never true in SQL, so someone at the top of the chain with no
+            # manager_id at all would otherwise match nobody, including other people
+            # also at the top with no manager.
+            cur.execute(
+                """SELECT e.id, e.name, e.email, r.title, r.role_code
+                     FROM dbo.Employees e
+                     LEFT JOIN dbo.Roles r ON r.id = e.role_id
+                    WHERE e.company_id = ?
+                      AND e.id <> ?
+                      AND ISNULL(e.manager_id, -1) = ISNULL(?, -1)
+                    ORDER BY e.name""",
+                identity.company_id, identity.employee_id, identity.manager_id,
+            )
+            peers = _rows(cur)
+
+            # Who I report to -- shown alongside "people below you" on My Team, so a
+            # manager sees both directions of the chain, not just downward.
+            manager = None
+            if identity.manager_id:
+                cur.execute(
+                    """SELECT e.id, e.name, e.email, r.title, r.role_code
+                         FROM dbo.Employees e
+                         LEFT JOIN dbo.Roles r ON r.id = e.role_id
+                        WHERE e.id = ? AND e.company_id = ?""",
+                    identity.manager_id, identity.company_id,
+                )
+                row = cur.fetchone()
+                if row:
+                    manager = {
+                        "employeeId": row.id, "name": row.name, "email": row.email,
+                        "title": row.title,
+                        "roleCode": (row.role_code or "ALL").upper(),
+                    }
+
         # ALL is company-wide, not a role anyone "controls", so it is not an upload
         # target for a manager — only for admin and executive. A subtree member whose
         # role_code is unmapped surfaces as ALL and must not smuggle it in.
@@ -2204,6 +2291,17 @@ def get_team(req: func.HttpRequest) -> func.HttpResponse:
                 }
                 for p in people
             ],
+            "peers": [
+                {
+                    "employeeId": p["id"],
+                    "name": p["name"],
+                    "email": p["email"],
+                    "title": p.get("title"),
+                    "roleCode": (p.get("role_code") or "ALL").upper(),
+                }
+                for p in peers
+            ],
+            "manager": manager,
             "uploadTargets": sorted(
                 targets.values(), key=lambda t: (not t["direct"], t["title"])),
         })
@@ -2496,18 +2594,10 @@ def set_requirements(req: func.HttpRequest) -> func.HttpResponse:
 # scripts/devserver.py's local equivalents -- the UI hides these controls too, but a
 # hidden button is not a permission check.
 #
-# Generation runs INLINE, in the same request that confirms the upload, rather than on
-# a background thread the way the local dev server does it. A thread survives for the
-# life of one Python process; an Azure Functions instance can recycle or scale to a
-# second one between the request that starts generation and the next /jobs/{id} poll,
-# and an in-memory job record on the first instance is invisible to the second. Running
-# a few dozen chunks against gpt-5 inline is a matter of minutes, and mob-functions-dev
-# is provisioned on a Basic (B1) Dedicated plan (infra/modules/functions/main.tf), which
-# has no Consumption-plan-style 5/10 minute HTTP timeout -- see host.json's
-# functionTimeout for the explicit ceiling this relies on. The job row this writes to
-# dbo.GenerationJobs is what actually makes /jobs/{id} correct across instances; running
-# inline just means it is written as "done" already by the time confirm() returns,
-# rather than updated incrementally by a worker only that request's instance can see.
+# Generation is handed to an Azure Storage Queue trigger. A Python background thread is
+# not durable across Function instance recycling, while doing the model calls inline can
+# exceed Azure's HTTP front-end timeout even on a Dedicated plan. GenerationJobs remains
+# the durable status record the browser polls; the queue is only the work handoff.
 
 
 def _permitted_upload_roles(cur, identity) -> set:
@@ -2538,6 +2628,122 @@ def _permitted_upload_roles(cur, identity) -> set:
     if (identity.access_role or "") in ("admin", "executive"):
         allowed.add("ALL")
     return allowed
+
+
+def _employees_for_role(cur, company_id: int, role_code: str) -> List[tuple]:
+    """
+    (email, name) for everyone in this company holding role_code -- or the whole
+    company, when role_code is 'ALL' (a company-wide requirement, per the same
+    'ALL means company-wide, not a role anyone controls' rule _permitted_upload_roles
+    already enforces on the write side).
+
+    Used by confirm_document to find who to notify when a document becomes newly
+    required for a role. Read-only, so it doesn't need SqlBank -- a plain query is
+    clearer than routing a two-column SELECT through a class built for chunks/questions.
+    """
+    if role_code == "ALL":
+        cur.execute(
+            "SELECT email, name FROM dbo.Employees WHERE company_id = ?",
+            company_id,
+        )
+    else:
+        cur.execute(
+            """SELECT e.email, e.name FROM dbo.Employees e
+                 JOIN dbo.Roles r ON r.id = e.role_id
+                WHERE e.company_id = ? AND r.role_code = ?""",
+            company_id, role_code,
+        )
+    return [(r.email, r.name) for r in cur.fetchall()]
+
+
+def _company_name(company_id: int) -> str:
+    """For the email's greeting/sign-off. Falls back to a generic label rather than
+    failing the whole notification over a display string."""
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT name FROM dbo.Companies WHERE id = ?", company_id)
+            row = cur.fetchone()
+            return row.name if row else "Your company"
+    except Exception:  # noqa: BLE001
+        return "Your company"
+
+
+def _ingest_and_propose(chunks, identity, label: str, retitle_suffix: str) -> func.HttpResponse:
+    """
+    Save already-extracted chunks, seed the role catalog if empty, and ask the model to
+    propose a section->role mapping -- the part upload_document and add_trusted_link
+    share in full. Generation itself happens later, in /documents/confirm, once a
+    manager approves the mapping; nothing here writes a GeneratedQuestions row.
+
+    label is what the response's "file" field shows (a filename or a URL). retitle_suffix
+    is the parenthetical used only if doc_title collides with a different document
+    (Path(safe).stem for an upload, the URL's host for a link) -- kept separate from
+    label because a suffix built from a full URL would be unreadable.
+    """
+    if not chunks:
+        return _error(422, "No teachable content found",
+                      "Text was extracted but nothing usable was found in it.")
+
+    doc_title = chunks[0].doc_title
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            # Two different documents must never share a title -- they would merge
+            # into one training, mixing roles and letting set_chunk_roles tag the
+            # wrong sections.
+            cur.execute(
+                "SELECT DISTINCT doc_id FROM dbo.SourceChunks WHERE doc_title = ? AND company_id = ?",
+                doc_title, identity.company_id,
+            )
+            existing_ids = {r.doc_id for r in cur.fetchall()}
+            if existing_ids and chunks[0].doc_id not in existing_ids:
+                doc_title = "{} ({})".format(doc_title, retitle_suffix)
+                for ch in chunks:
+                    ch.doc_title = doc_title
+
+            from shared.sqlbank import SqlBank
+            bank = SqlBank(c, identity.company_id)
+            bank.save_chunks(chunks)
+
+            from quizgen.rolemap import seed_roles
+            seed_roles(bank)
+            known_roles = bank.roles()
+
+            permitted = _permitted_upload_roles(cur, identity)
+
+            topics = sorted({ch.topic for ch in chunks})
+            sections = {}
+            for ch in chunks:
+                sections.setdefault(ch.topic, ch.text)
+
+            from quizgen.rolemap import analyze_document
+            try:
+                mapping = analyze_document(doc_title, sections, known_roles)
+            except RuntimeError as exc:
+                # No model credentials. The chunks are already saved (committed by
+                # save_chunks/seed_roles above), so nothing is lost -- confirm can
+                # still be called once credentials exist.
+                return _error(503, "Role mapping needs the real model", str(exc)[:300])
+            except Exception as exc:  # noqa: BLE001
+                return _error(502, "Role analysis failed",
+                              "{}: {}".format(type(exc).__name__, str(exc)[:250]))
+
+        from quizgen.pipeline import generator_name
+        return _json({
+            "file": label, "title": doc_title, "chunks": len(chunks), "topics": topics,
+            "summary": mapping.summary,
+            "proposedRoles": mapping.assignments,
+            "permittedRoles": sorted(permitted),
+            "unknownRoles": mapping.unknown_roles,
+            "thinTopics": mapping.thin_topics,
+            "knownRoles": known_roles,
+            "generator": generator_name(),
+            "needsConfirmation": True,
+        }, 201)
+    except Exception as exc:  # noqa: BLE001
+        logging.exception("ingest/propose failed for %s", label)
+        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
 
 
 @app.route(route="documents", methods=["GET"])
@@ -2603,6 +2809,7 @@ def list_documents(req: func.HttpRequest) -> func.HttpResponse:
         return _json({"documents": docs, "files": [], "generator": generator_name(),
                       "uploadDir": ""})
     except Exception as exc:  # noqa: BLE001
+        logging.exception("GET /documents failed")
         return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
 
 
@@ -2650,72 +2857,15 @@ def upload_document(req: func.HttpRequest) -> func.HttpResponse:
             return _error(422, "Could not read this document",
                           "{}: {}".format(type(exc).__name__, str(exc)[:200]))
 
-    if not chunks:
-        return _error(422, "No teachable content found",
-                      "Text was extracted but nothing usable was found in it.")
-
-    doc_title = chunks[0].doc_title
-    try:
-        with _conn() as c:
-            cur = c.cursor()
-            # Two different documents must never share a title -- they would merge
-            # into one training, mixing roles and letting set_chunk_roles tag the
-            # wrong sections.
-            cur.execute(
-                "SELECT DISTINCT doc_id FROM dbo.SourceChunks WHERE doc_title = ? AND company_id = ?",
-                doc_title, identity.company_id,
-            )
-            existing_ids = {r.doc_id for r in cur.fetchall()}
-            if existing_ids and chunks[0].doc_id not in existing_ids:
-                doc_title = "{} ({})".format(doc_title, Path(safe).stem.replace("_", " "))
-                for ch in chunks:
-                    ch.doc_title = doc_title
-
-            from shared.sqlbank import SqlBank
-            bank = SqlBank(c, identity.company_id)
-            bank.save_chunks(chunks)
-
-            from quizgen.rolemap import seed_roles
-            seed_roles(bank)
-            known_roles = bank.roles()
-
-            permitted = _permitted_upload_roles(cur, identity)
-
-            topics = sorted({ch.topic for ch in chunks})
-            sections = {}
-            for ch in chunks:
-                sections.setdefault(ch.topic, ch.text)
-
-            from quizgen.rolemap import analyze_document
-            try:
-                mapping = analyze_document(doc_title, sections, known_roles)
-            except RuntimeError as exc:
-                # No model credentials. The chunks are already saved (committed by
-                # save_chunks/seed_roles above), so nothing is lost -- confirm can
-                # still be called once credentials exist.
-                return _error(503, "Role mapping needs the real model", str(exc)[:300])
-            except Exception as exc:  # noqa: BLE001
-                return _error(502, "Role analysis failed",
-                              "{}: {}".format(type(exc).__name__, str(exc)[:250]))
-
-        from quizgen.pipeline import generator_name
-        return _json({
-            "file": safe, "title": doc_title, "chunks": len(chunks), "topics": topics,
-            "summary": mapping.summary,
-            "proposedRoles": mapping.assignments,
-            "permittedRoles": sorted(permitted),
-            "unknownRoles": mapping.unknown_roles,
-            "thinTopics": mapping.thin_topics,
-            "knownRoles": known_roles,
-            "generator": generator_name(),
-            "needsConfirmation": True,
-        }, 201)
-    except Exception as exc:  # noqa: BLE001
-        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
+    return _ingest_and_propose(
+        chunks, identity, label=safe, retitle_suffix=Path(safe).stem.replace("_", " "))
 
 
 @app.route(route="documents/confirm", methods=["POST"])
-def confirm_document(req: func.HttpRequest) -> func.HttpResponse:
+@app.queue_output(
+    arg_name="generation_message", queue_name="generation-jobs",
+    connection="AzureWebJobsStorage")
+def confirm_document(req: func.HttpRequest, generation_message) -> func.HttpResponse:
     """
     The manager's confirmed section->role mapping. Tags chunks, creates any new roles
     they chose to add, retires a superseded document if named, then generates.
@@ -2733,10 +2883,19 @@ def confirm_document(req: func.HttpRequest) -> func.HttpResponse:
     assignments = body.get("assignments") or {}
     new_roles = body.get("newRoles") or []
     supersede = str(body.get("supersede", "")).strip()
+    # Default true: assigning a document to a role and having it count toward that
+    # role's Q Score are the same decision in the manager's head, and making them
+    # tick a second box to get the obvious outcome is friction with no upside. Still
+    # opt-out, and still a per-request choice a human made -- not inferred silently
+    # from role_scope after the fact, which is exactly what RoleRequirements' own
+    # migration comment (019_create_role_requirements.sql) warns against: a Q Score
+    # that moves because a document was uploaded or retired, not because anyone did
+    # any training.
+    make_required = bool(body.get("makeRequired", True))
     if not doc_title or not isinstance(assignments, dict):
         return _error(400, "Bad request", "title and assignments are required")
 
-    from shared.sqlbank import SqlBank, create_job, new_job_id, update_job
+    from shared.sqlbank import SqlBank, create_job, new_job_id
 
     try:
         with _conn() as c:
@@ -2761,6 +2920,27 @@ def confirm_document(req: func.HttpRequest) -> func.HttpResponse:
                 topic: str(code) for topic, code in assignments.items()
             })
 
+            # Deliberately gated by the same require_manager(...) check at the top of
+            # this endpoint, not restricted to admin/executive like set_requirements
+            # below -- and that is safe rather than a loosening of that endpoint's
+            # "compliance decision, not a team one" rule, because the permitted-roles
+            # check just above already confines this to roles in the caller's own
+            # reporting subtree. A manager can only make required the exact thing
+            # they were already trusted to assign; they still cannot touch
+            # requirements for any role outside their own chain.
+            required_for: List[str] = []
+            # (email, name) pairs to notify once this transaction is committed --
+            # collected here, while cur is open, but the actual sends happen after the
+            # `with` block closes, so a slow or failing Resend call never holds the DB
+            # connection open.
+            to_notify: List[tuple] = []
+            if make_required:
+                for code in {(c or "ALL").upper() for c in assignments.values()}:
+                    newly_required = bank.add_role_requirement(code, doc_title)
+                    required_for.append(code)
+                    if newly_required:
+                        to_notify.extend(_employees_for_role(cur, identity.company_id, code))
+
             retired = 0
             if supersede and supersede != doc_title:
                 retired = bank.retire_document_questions(supersede)
@@ -2768,46 +2948,208 @@ def confirm_document(req: func.HttpRequest) -> func.HttpResponse:
             job_id = new_job_id()
             create_job(c, job_id, identity.company_id, doc_title)
 
-        from quizgen.pipeline import select_chunks, generate_questions
-        with _conn() as c2:
-            bank2 = SqlBank(c2, identity.company_id)
-            # Confirmation is also the explicit top-up action for an older upload.
-            # Before pathways existed a chunk stopped after two questions, which can
-            # never supply a three-level diagnostic plus ten-question checkpoint.
-            # Re-reading a confirmed document is intentional and billed; merely listing
-            # or opening the document never invokes the model.
-            to_generate, skipped = select_chunks(
-                bank2, doc_title=doc_title, regenerate=True)
-            update_job(c2, job_id, identity.company_id, total=len(to_generate),
-                       message="Reading {} section(s)…".format(len(to_generate))
-                       if to_generate else "Already generated for this document.")
+        generation_message.set(json.dumps({
+            "jobId": job_id,
+            "companyId": identity.company_id,
+            "docTitle": doc_title,
+        }))
 
-            if not to_generate:
-                update_job(c2, job_id, identity.company_id, state="done",
-                           message="Already generated.")
-            else:
+        if to_notify:
+            from shared.comms import send_new_training_email
+            company_name = _company_name(identity.company_id)
+            # Same email can appear twice if, say, a role holder's role_code happens
+            # to match two different assignments in this same confirm -- dict.fromkeys
+            # on the pair de-dupes without needing the pairs to be hashable-sorted.
+            for email, name in dict.fromkeys(to_notify):
                 try:
-                    # Six candidates at each difficulty gives every module a real
-                    # diagnostic ladder and enough inventory for a ten-question
-                    # adaptive checkpoint. The manager confirmation remains the cost
-                    # boundary: no billed generation happens merely from viewing a PDF.
-                    result = generate_questions(
-                        bank2, to_generate, per_chunk=6, difficulty_ladder=True)
-                    update_job(
-                        c2, job_id, identity.company_id, state="done",
-                        done_count=len(to_generate), kept=len(result.kept),
-                        written=result.written, rejected=len(result.rejected),
-                        message="Generated {} question(s).".format(result.written),
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    update_job(c2, job_id, identity.company_id, state="error",
-                               message="{}: {}".format(type(exc).__name__, str(exc)[:200]))
+                    send_new_training_email(email, name, doc_title, company_name)
+                except Exception:  # noqa: BLE001
+                    # A notification failure must never fail the confirm itself -- the
+                    # document is already saved and generating either way.
+                    logging.exception(
+                        "confirm_document: failed to notify %s of new training %s",
+                        email, doc_title)
 
         return _json({
             "title": doc_title, "taggedChunks": tagged, "retired": retired,
-            "jobId": job_id,
-        }, 201)
+            "requiredFor": sorted(required_for), "jobId": job_id,
+        }, 202)
     except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
+
+
+def _run_generation_job(job_id: str, company_id: int, doc_title: str) -> None:
+    """Generate a document's question bank outside the request that queued it."""
+    from shared.sqlbank import SqlBank, get_job, update_job
+    from quizgen.pipeline import generate_questions, select_chunks
+
+    try:
+        with _conn() as c:
+            existing = get_job(c, job_id, company_id)
+            if existing is None or existing["state"] == "done":
+                return
+
+            bank = SqlBank(c, company_id)
+            # Confirmation is the explicit billed top-up action for older uploads.
+            to_generate, _ = select_chunks(
+                bank, doc_title=doc_title, regenerate=True)
+            update_job(
+                c, job_id, company_id, total=len(to_generate),
+                message="Reading {} section(s)...".format(len(to_generate))
+                if to_generate else "Already generated for this document.",
+            )
+            if not to_generate:
+                update_job(c, job_id, company_id, state="done",
+                           message="Already generated.")
+                return
+
+            def report(progress):
+                update_job(
+                    c, job_id, company_id, done_count=progress.index,
+                    message="Generating {} ({}/{})".format(
+                        progress.chunk.topic[:80], progress.index, progress.total),
+                )
+
+            # Six candidates at each difficulty supplies the diagnostic ladder and
+            # enough inventory for a ten-question adaptive checkpoint.
+            result = generate_questions(
+                bank, to_generate, per_chunk=6, difficulty_ladder=True,
+                on_progress=report,
+            )
+            update_job(
+                c, job_id, company_id, state="done",
+                done_count=len(to_generate), kept=len(result.kept),
+                written=result.written, rejected=len(result.rejected),
+                message="Generated {} question(s).".format(result.written),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logging.exception("Generation job %s failed", job_id)
+        try:
+            with _conn() as failed:
+                update_job(
+                    failed, job_id, company_id, state="error",
+                    message="{}: {}".format(type(exc).__name__, str(exc)[:200]),
+                )
+        except Exception:  # noqa: BLE001
+            logging.exception("Could not record failure for generation job %s", job_id)
+
+
+@app.queue_trigger(
+    arg_name="message", queue_name="generation-jobs",
+    connection="AzureWebJobsStorage")
+def generate_document_questions(message: func.QueueMessage) -> None:
+    """Durable worker for the generation message emitted by /documents/confirm."""
+    try:
+        payload = json.loads(message.get_body().decode("utf-8"))
+        job_id = str(payload["jobId"])
+        company_id = int(payload["companyId"])
+        doc_title = str(payload["docTitle"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        logging.exception("Discarding malformed generation queue message")
+        return
+    _run_generation_job(job_id, company_id, doc_title)
+
+
+@app.route(route="links/add", methods=["POST"])
+def add_trusted_link(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Manager submits a trusted reference URL. Same targeting rule as an upload (own
+    reporting subtree, or company-wide for admin/executive only), and the fetched page
+    goes through the exact same extraction/grounding/confirm-before-generate pipeline as
+    an uploaded PDF -- see _ingest_and_propose. The only thing that differs from
+    upload_document is where the text comes from.
+    """
+    identity = get_current_employee(req)
+    forbidden = require_manager(identity)
+    if forbidden:
+        return forbidden
+
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+
+    url = str(body.get("url", "")).strip()
+    scope = str(body.get("scope", "")).strip().lower()
+    role_code = str(body.get("roleCode", "")).strip().upper()
+
+    if not url or not (url.startswith("http://") or url.startswith("https://")):
+        return _error(400, "Bad request", "A valid http(s) url is required.")
+    if scope not in ("team", "company_wide"):
+        return _error(400, "Bad request", "scope must be 'team' or 'company_wide'.")
+
+    if scope == "company_wide":
+        # Same tier _permitted_upload_roles grants "ALL" to for uploads -- a company-wide
+        # link reaches every role the same way an ALL-scoped upload does.
+        if (identity.access_role or "") not in ("admin", "executive"):
+            return _error(403, "Forbidden",
+                          "Only admin/executive may add a company-wide trusted link.")
+        role_code = "ALL"
+    else:
+        if not role_code:
+            return _error(400, "Bad request", "roleCode is required for a team-scoped link.")
+        with _conn() as c:
+            permitted = _permitted_upload_roles(c.cursor(), identity)
+        if role_code not in permitted:
+            return _error(403, "Forbidden",
+                          "You may only target roles within your own reporting chain.")
+
+    from quizgen.web import fetch
+    try:
+        title, text, fetched_at = fetch(url)
+    except Exception as exc:  # noqa: BLE001
+        return _error(422, "Could not fetch this URL",
+                      "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+
+    if not text or not text.strip():
+        return _error(422, "No teachable content found",
+                      "The page was reachable but had no readable text.")
+
+    from urllib.parse import urlparse
+    host = urlparse(url).netloc or url[:40]
+
+    from quizgen.ingest import chunks_from_text
+    display_title = title or host
+    chunks = chunks_from_text(text, source_name=display_title)
+    for ch in chunks:
+        # Matches the ProvenanceClass.EXTERNAL contract validators.py already enforces:
+        # a web-sourced chunk carries a URL and a retrieval date, and any question drawn
+        # from it may not speak with the company's own authority.
+        ch.source_type = "web"
+        ch.source_url = url
+        ch.fetched_at = fetched_at
+        ch.role_scope = role_code
+
+    # Recorded once the page has actually yielded something teachable, same point
+    # upload_document's chunks are considered "saved" -- before the AI role-mapping step,
+    # so a manager can still see and re-confirm this link even if that step fails for
+    # lack of model credentials.
+    try:
+        with _conn() as c:
+            from shared.sqlbank import SqlBank
+            bank = SqlBank(c, identity.company_id)
+            bank.add_trusted_link(identity.employee_id, scope, role_code, url)
+    except Exception as exc:  # noqa: BLE001
+        logging.exception("Failed to record trusted link row for %s", url)
+        return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
+
+    return _ingest_and_propose(chunks, identity, label=url, retitle_suffix=host)
+
+
+@app.route(route="links", methods=["GET"])
+def list_trusted_links(req: func.HttpRequest) -> func.HttpResponse:
+    """A manager's company's trusted links, active and retired."""
+    identity = get_current_employee(req)
+    forbidden = require_manager(identity)
+    if forbidden:
+        return forbidden
+    try:
+        with _conn() as c:
+            from shared.sqlbank import SqlBank
+            bank = SqlBank(c, identity.company_id)
+            return _json({"links": bank.trusted_links()})
+    except Exception as exc:  # noqa: BLE001
+        logging.exception("GET /links failed")
         return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
 
 
@@ -2847,9 +3189,33 @@ def list_roles(req: func.HttpRequest) -> func.HttpResponse:
             for r in cur.fetchall():
                 counts[(r.role_code or "ALL").upper()] = r.n
 
+            # For grouping the upload screen's role picker by org-chart team, so
+            # someone whose reporting subtree spans several teams (a CTO over
+            # Cybersecurity, Software Engineering and DevOps, say) sees three groups
+            # instead of one flat list of every role_code mixed together. Best-effort:
+            # QuizgenRoles.role_code is a training track, not an org-chart foreign key,
+            # so a code with no matching org-chart Roles row (a manually-added role
+            # that was never mapped by role_codes.sql) just gets no team, and the
+            # picker falls back to showing it ungrouped rather than erroring.
+            cur.execute(
+                """SELECT r.role_code, t.name AS team_name
+                     FROM dbo.Roles r
+                     JOIN dbo.Teams t ON t.id = r.team_id
+                     JOIN dbo.Departments d ON d.id = t.department_id
+                    WHERE d.company_id = ? AND r.role_code IS NOT NULL""",
+                identity.company_id,
+            )
+            team_by_code: Dict[str, str] = {}
+            for r in cur.fetchall():
+                team_by_code.setdefault(r.role_code, r.team_name)
+
         return _json({
             "roles": [
-                {**r, "questionCount": counts.get(r["role_code"], 0) + counts.get("ALL", 0)}
+                {
+                    **r,
+                    "questionCount": counts.get(r["role_code"], 0) + counts.get("ALL", 0),
+                    "team": team_by_code.get(r["role_code"]),
+                }
                 for r in roles
             ],
         })
@@ -2892,3 +3258,85 @@ def remove_role(req: func.HttpRequest) -> func.HttpResponse:
     if not removed:
         return _error(404, "No such role", code)
     return _json({"removed": code})
+
+
+# --------------------------------------------------------------------------
+# Track E: daily certificate-expiry reminders
+# --------------------------------------------------------------------------
+
+@app.timer_trigger(schedule="0 0 8 * * *", arg_name="mytimer",
+                    run_on_startup=False, use_monitor=True)
+def send_expiry_reminders(mytimer: func.TimerRequest) -> None:
+    """
+    Daily at 08:00 UTC (NCRONTAB "0 0 8 * * *"). Finds Certificates rows expiring
+    within EXPIRY_WARNING_DAYS days that have not already been reminded about, emails
+    the holder via Resend, then stamps reminder_sent_at so the same certificate is
+    never reminded twice.
+
+    Reads dbo.Certificates, not dbo.Completions -- Completions has had its own
+    reminder_sent_at column since 004_create_completions.sql, but nothing writes to
+    Completions any more. POST /quiz/submit issues real certificates into
+    dbo.Certificates (018_extend_certificates.sql). A job built against Completions
+    would run daily against a table nothing populates and silently do nothing.
+
+    A cross-tenant scan, deliberately: this runs once for every company, not once per
+    company_id, the same way the quarterly regeneration job (Track B, not yet built)
+    will need to. Every row already carries its own company via the Employees/Companies
+    join, so there is nothing to leak between tenants -- each email only ever
+    references its own recipient's own certificate.
+    """
+    warning_days = int(os.getenv("EXPIRY_WARNING_DAYS", "30"))
+    sent, failed, skipped_unconfigured = 0, 0, 0
+
+    from shared.comms import CommsNotConfigured, send_expiry_email
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """SELECT cert.id, cert.doc_title, cert.expires_at,
+                          e.email, e.name AS employee_name, comp.name AS company_name
+                     FROM dbo.Certificates cert
+                     JOIN dbo.Employees e   ON e.id = cert.employee_id
+                     JOIN dbo.Companies comp ON comp.id = e.company_id
+                    WHERE cert.status = 'Active'
+                      AND cert.reminder_sent_at IS NULL
+                      AND cert.expires_at BETWEEN SYSUTCDATETIME()
+                          AND DATEADD(DAY, ?, SYSUTCDATETIME())""",
+                warning_days,
+            )
+            rows = cur.fetchall()
+
+            for row in rows:
+                try:
+                    send_expiry_email(
+                        row.email, row.employee_name, row.doc_title,
+                        row.expires_at, row.company_name,
+                    )
+                except CommsNotConfigured:
+                    # Not a per-recipient failure -- nobody has set RESEND_API_KEY yet.
+                    # Every remaining row would fail the identical way, so stop the
+                    # loop rather than log the same cause N times, but this run is not
+                    # an error: it is expected until Resend is configured.
+                    skipped_unconfigured = len(rows) - sent - failed
+                    break
+                except Exception:  # noqa: BLE001
+                    failed += 1
+                    logging.exception(
+                        "send_expiry_reminders: failed to email certificate %s (%s)",
+                        row.id, row.email)
+                    continue
+
+                cur.execute(
+                    "UPDATE dbo.Certificates SET reminder_sent_at = SYSUTCDATETIME() "
+                    "WHERE id = ?",
+                    row.id,
+                )
+                c.commit()
+                sent += 1
+
+        logging.info(
+            "send_expiry_reminders: sent=%d failed=%d skipped_unconfigured=%d",
+            sent, failed, skipped_unconfigured)
+    except Exception:  # noqa: BLE001
+        logging.exception("send_expiry_reminders: run failed")

@@ -216,13 +216,28 @@ export const addRole = ({ roleCode, title, description }) =>
 export const removeRole = (roleCode) =>
   call(`/roles/${encodeURIComponent(roleCode)}/delete`, { method: "POST" });
 
+export const trustedLinks = () => call("/links");
+/**
+ * Submits a trusted URL. Response shape matches uploadDocument's exactly (file, title,
+ * proposedRoles, permittedRoles, ...) -- the server runs it through the same
+ * extraction/grounding/confirm-before-generate pipeline, so the same MappingReview
+ * component that handles an upload's response handles this one unchanged.
+ */
+export const addTrustedLink = ({ url, scope, roleCode }) =>
+  call("/links/add", { method: "POST", body: { url, scope, roleCode } });
+
 /**
  * The manager's decision on an upload: the confirmed section->role mapping, any
  * roles they chose to create, and (if the AI judged this an update) which existing
  * module it supersedes. Generation starts only after this call.
  */
-export const confirmDocument = ({ title, assignments, newRoles, supersede }) =>
+export const confirmDocument = ({ title, assignments, newRoles, supersede, makeRequired }) =>
   call("/documents/confirm", {
     method: "POST",
-    body: { title, assignments, newRoles: newRoles || [], supersede: supersede || "" },
+    body: {
+      title, assignments, newRoles: newRoles || [], supersede: supersede || "",
+      // Defaults true server-side too if omitted; passed explicitly so the
+      // checkbox in the confirm screen is the actual source of truth.
+      makeRequired: makeRequired !== false,
+    },
   });

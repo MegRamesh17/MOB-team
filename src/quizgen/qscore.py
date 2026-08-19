@@ -203,6 +203,82 @@ def standing(
     return out
 
 
+def training_streak(attempt_dates: Sequence[str], *, now: Optional[datetime] = None) -> int:
+    """
+    Consecutive days of training activity, ending at the most recent day with a
+    submitted attempt.
+
+    `attempt_dates` is every GeneratedQuizAttempts.submitted_at for this learner (any
+    ISO date/datetime string; only the calendar date is used, duplicates within a day
+    collapse to one). Counts backward from the most recent day and stops at the first
+    gap.
+
+    A streak that stopped is not still "on": if the most recent activity is neither
+    today nor yesterday, this returns 0 rather than whatever count it once reached —
+    a number that still read "6" a month after the last quiz would say the opposite of
+    what a streak means. Yesterday is included as a grace day so the count does not
+    drop to 0 the moment midnight passes and before today's first attempt.
+    """
+    days = {d.date() for d in (_parse(v) for v in attempt_dates) if d is not None}
+    if not days:
+        return 0
+    today = (now or datetime.now(timezone.utc)).date()
+    most_recent = max(days)
+    if (today - most_recent).days > 1:
+        return 0
+    streak = 0
+    cursor = most_recent
+    while cursor in days:
+        streak += 1
+        cursor -= timedelta(days=1)
+    return streak
+
+
+# Badge ids match web-app/src/App.jsx's BADGES catalog. 2 ("Privacy Pro") and 6 ("Early
+# Bird") are deliberately absent below -- there is no "privacy" question category and no
+# assignment-due-date concept in the schema, so there is no real criterion to evaluate.
+# Leaving them out (rather than inventing one) means the UI shows them as permanently
+# unearned instead of lying about an achievement nothing backs.
+def earned_badges(
+    *,
+    attempts: Sequence[dict],
+    streak: int,
+    q_score: float,
+) -> Dict[int, Optional[str]]:
+    """
+    Which of the fixed badge catalog this person has actually earned.
+
+    `attempts` is every submitted GeneratedQuizAttempts row for this learner:
+    [{"submitted_at": ..., "score_percent": ...}, ...].
+
+    Returns {badge_id: earned_at_iso_or_None}. A badge id present in the result has
+    been earned; the value is the date it was first earned for the two one-time badges
+    (1 "First Steps", 4 "Sharpshooter"), and None for the two live badges (3 "On a
+    Roll", 5 "Top of the Class") that track current state and can go back to unearned
+    -- there is nothing true to date-stamp about a condition that is not permanent.
+    """
+    out: Dict[int, Optional[str]] = {}
+
+    submitted = sorted(
+        (a for a in attempts if a.get("submitted_at")),
+        key=lambda a: a["submitted_at"],
+    )
+    if submitted:
+        out[1] = submitted[0]["submitted_at"]
+
+    perfect = [a for a in submitted if float(a.get("score_percent") or 0) >= 100]
+    if perfect:
+        out[4] = perfect[0]["submitted_at"]
+
+    if streak >= 6:
+        out[3] = None
+
+    if q_score >= 90:
+        out[5] = None
+
+    return out
+
+
 def renewal_candidates(
     certificates: Sequence[dict],
     *,

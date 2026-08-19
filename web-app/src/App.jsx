@@ -3,7 +3,7 @@ import {
   LogOut, BookOpen, Award, Users, CheckCircle2, Circle, Lock,
   ChevronRight, X, AlertCircle, Clock, ArrowLeft, User, Star,
   Trophy, Flame, Target, Mail, Briefcase, Share2, Download, Copy,
-  Loader2, RefreshCw, Upload, FileText,
+  Loader2, RefreshCw, Upload, FileText, Link2,
 } from "lucide-react";
 import * as api from "./api";
 import { Logo } from "./logo.jsx";
@@ -45,8 +45,8 @@ const C = {
   dangerBg: "#FCEBEA",
 };
 
-const font = { fontFamily: "'Inter', system-ui, sans-serif" };
-const display = { fontFamily: "'Sora', system-ui, sans-serif" };
+const font = { fontFamily: "'IBM Plex Sans', system-ui, sans-serif" };
+const display = { fontFamily: "'Fraunces', Georgia, serif" };
 
 // ---------- static (design-only) data ----------
 const FOCUS_PRIORITIES = [
@@ -81,8 +81,8 @@ const ROSTER = [
 ];
 
 const PROFILES = {
-  employee: { name: "Daniel Cho", role: "Software Engineer I", email: "d.cho@quadranttechnologies.com", joined: "Feb 2025", streak: 6 },
-  manager: { name: "Priya Nair", role: "Engineering Manager", email: "p.nair@quadranttechnologies.com", joined: "Nov 2022", streak: 14 },
+  employee: { name: "Daniel Cho", role: "Software Engineer I", email: "d.cho@quadranttechnologies.com", joined: "Feb 2025" },
+  manager: { name: "Priya Nair", role: "Engineering Manager", email: "p.nair@quadranttechnologies.com", joined: "Nov 2022" },
 };
 
 const PET_STAGES = [
@@ -94,13 +94,17 @@ const PET_STAGES = [
   { level: 6, name: "Qrown", min: 12, size: 146 },
 ];
 
+// The catalog only -- title/description/icon. Whether each one is actually earned
+// comes from GET /api/me's badges field (see Profile below); ids 2 and 6 have no
+// server-side criterion yet (no "privacy" question category, no assignment due-date
+// concept) and so are always locked rather than showing a made-up earned date.
 const BADGES = [
-  { id: 1, title: "First Steps", desc: "Completed your first training", icon: Star, earned: true, date: "Feb 2025" },
-  { id: 2, title: "Privacy Pro", desc: "Scored 90%+ on a privacy quiz", icon: Award, earned: true, date: "Jul 2026" },
-  { id: 3, title: "On a Roll", desc: "6-training completion streak", icon: Flame, earned: true, date: "Aug 2026" },
-  { id: 4, title: "Sharpshooter", desc: "Passed a quiz with a perfect score", icon: Target, earned: false },
-  { id: 5, title: "Top of the Class", desc: "Reached a 90+ Q score", icon: Trophy, earned: false },
-  { id: 6, title: "Early Bird", desc: "Finished a training before its due date", icon: CheckCircle2, earned: true, date: "May 2026" },
+  { id: 1, title: "First Steps", desc: "Completed your first training", icon: Star },
+  { id: 2, title: "Privacy Pro", desc: "Scored 90%+ on a privacy quiz", icon: Award },
+  { id: 3, title: "On a Roll", desc: "6-training completion streak", icon: Flame },
+  { id: 4, title: "Sharpshooter", desc: "Passed a quiz with a perfect score", icon: Target },
+  { id: 5, title: "Top of the Class", desc: "Reached a 90+ Q score", icon: Trophy },
+  { id: 6, title: "Early Bird", desc: "Finished a training before its due date", icon: CheckCircle2 },
 ];
 
 // ---------- data loading ----------
@@ -211,19 +215,12 @@ function MasteryRing({ value, size = 64, stroke = 7 }) {
   const c = 2 * Math.PI * r;
   const pct = Math.max(0, Math.min(100, Math.round(value || 0)));
   const dash = (pct / 100) * c;
-  const id = `grad-${size}-${pct}`;
   return (
     <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-      <defs>
-        <linearGradient id={id} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor={C.violet500} />
-          <stop offset="100%" stopColor={C.violet900} />
-        </linearGradient>
-      </defs>
       <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={C.line} strokeWidth={stroke} />
       <circle
         cx={size / 2} cy={size / 2} r={r} fill="none"
-        stroke={`url(#${id})`} strokeWidth={stroke} strokeLinecap="round"
+        stroke={C.violet700} strokeWidth={stroke} strokeLinecap="round"
         strokeDasharray={`${dash} ${c - dash}`}
         transform={`rotate(-90 ${size / 2} ${size / 2})`}
       />
@@ -326,8 +323,9 @@ function Login({ onLogin }) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center" style={{ ...font, background: `linear-gradient(160deg, ${C.violet900} 0%, ${C.violet700} 45%, ${C.violet500} 100%)` }}>
-      <div className="w-full max-w-md mx-4 bg-white rounded-2xl shadow-2xl overflow-hidden">
+    <div className="min-h-screen flex items-center justify-center" style={{ ...font, background: "#F5F4F9" }}>
+      <div className="w-full max-w-md mx-4 bg-white rounded-2xl shadow-xl overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
+        <div style={{ background: C.violet700, height: 4 }} />
         <div className="px-8 pt-8 pb-6">
           <div className="flex items-center mb-8"><Logo size={30} /></div>
           <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Sign in</h1>
@@ -381,7 +379,7 @@ function Login({ onLogin }) {
 }
 
 // ---------- Shell ----------
-function Shell({ name, roleCode, manages, active, setActive, onLogout, children }) {
+function Shell({ name, department, title, manages, active, setActive, onLogout, children }) {
   // One nav for everyone. Managing people ADDS a tab; it does not replace the rest.
   //
   // This used to be two lists, with managerNav substituted for employeeNav — so a
@@ -399,8 +397,13 @@ function Shell({ name, roleCode, manages, active, setActive, onLogout, children 
   ];
 
   return (
-    <div style={{ ...font, background: C.paper, minHeight: "100vh" }} className="flex">
-      <aside style={{ borderColor: C.line }} className="w-60 border-r flex flex-col shrink-0">
+    <div style={{ ...font, background: C.paper, height: "100vh" }} className="flex overflow-hidden">
+      {/* Locked to the viewport height (not min-height) with overflow-hidden, so this
+          row never grows past 100vh: the sidebar -- profile chip and sign-out included
+          -- stays put while a long page like Profile scrolls inside <main> only.
+          min-height let the whole row grow with the page's content instead, which
+          dragged the sidebar along with it and buried sign-out below the fold. */}
+      <aside style={{ borderColor: C.line }} className="w-60 border-r flex flex-col shrink-0 h-full overflow-y-auto">
         <div className="px-5 py-5 flex items-center"><Logo size={26} /></div>
         <nav className="flex-1 px-3 py-4 space-y-1">
           {nav.map((n) => {
@@ -425,7 +428,8 @@ function Shell({ name, roleCode, manages, active, setActive, onLogout, children 
             </div>
             <div>
               <div style={{ color: C.ink }} className="text-sm font-semibold leading-tight">{name}</div>
-              <div style={{ color: C.sub }} className="text-xs">{roleCode}</div>
+              <div style={{ color: C.sub }} className="text-xs">{department || "—"}</div>
+              {title && <div style={{ color: C.sub }} className="text-[11px] opacity-80">{title}</div>}
             </div>
           </div>
           <button onClick={onLogout} style={{ color: C.sub }} className="flex items-center gap-2 text-xs font-semibold hover:opacity-80">
@@ -536,6 +540,37 @@ function FocusSession() {
 }
 
 // ---------- Dashboard ----------
+// A flat row of real numbers, not another card -- the roadmap one level down
+// (LearningPath) already renders per-course progress, so this only needs to answer
+// "how am I doing overall," aggregated from the same /trainings response Dashboard
+// already fetches.
+function DashboardStats({ trainings }) {
+  if (trainings.length === 0) return null;
+  const total = trainings.length;
+  const completed = trainings.filter((t) => t.status === "completed").length;
+  const inProgress = trainings.filter((t) => t.status === "in-progress").length;
+  const compliant = trainings.filter((t) => t.compliant && !t.expired).length;
+  const pct = Math.round((completed / total) * 100);
+
+  const stats = [
+    { value: `${pct}%`, label: "Complete" },
+    { value: `${completed}/${total}`, label: "Trainings finished" },
+    { value: compliant, label: "Compliant now" },
+    { value: inProgress, label: "In progress" },
+  ];
+
+  return (
+    <div style={{ borderColor: C.line }} className="border-y flex mb-8">
+      {stats.map((s, i) => (
+        <div key={s.label} style={{ borderColor: C.line }} className={`flex-1 px-5 py-4 ${i > 0 ? "border-l" : ""}`}>
+          <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-1">{s.value}</div>
+          <div style={{ color: C.sub }} className="text-xs font-semibold uppercase tracking-wide">{s.label}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Dashboard({ name, onOpenPath, onOpenTraining }) {
   const { data, loading, error, reload } = useAsync(() => api.trainings(), []);
   const trainings = data?.trainings || [];
@@ -552,8 +587,10 @@ function Dashboard({ name, onOpenPath, onOpenTraining }) {
       {loading && <Loading label="Loading your trainings…" />}
       {error && <ErrorBox error={error} onRetry={reload} />}
 
+      {!loading && !error && <DashboardStats trainings={trainings} />}
+
       {focus && (
-        <div style={{ background: `linear-gradient(120deg, ${C.violet900}, ${C.violet700})` }}
+        <div style={{ background: C.violet900 }}
           className="rounded-2xl p-6 flex items-center justify-between gap-6 mb-8 text-white">
           <div className="min-w-0">
             <p className="text-xs uppercase tracking-wide opacity-80 mb-1 font-semibold">
@@ -616,7 +653,7 @@ function Dashboard({ name, onOpenPath, onOpenTraining }) {
         <div style={{ borderColor: C.line }} className="border rounded-xl p-6 bg-white text-center">
           <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">No trainings yet</p>
           <p style={{ color: C.sub }} className="text-xs">
-            The question bank is empty. Run <code>quizgen ingest</code> then <code>quizgen generate</code>.
+            Nothing has been assigned to your role yet. Check back soon, or ask your manager if you think this is unexpected.
           </p>
         </div>
       )}
@@ -627,6 +664,97 @@ function Dashboard({ name, onOpenPath, onOpenTraining }) {
 }
 
 // ---------- Learning path ----------
+// Real course titles from db/seed/seed_data.sql, not invented ones -- shown only when
+// a role's real path is still empty (the question bank hasn't been generated for it
+// yet), so the roadmap has something to preview without pretending to be someone's
+// actual progress.
+const EXAMPLE_TRAININGS = [
+  { id: "ex-1", title: "Workplace Safety", modules: ["Emergency procedures", "Hazard reporting"], questionCount: 6, status: "completed" },
+  { id: "ex-2", title: "Data Privacy Basics", modules: ["PII handling", "Reporting a breach"], questionCount: 8, status: "in-progress" },
+  { id: "ex-3", title: "Cybersecurity Fundamentals", modules: ["Threat basics", "Safe practices"], questionCount: 10, status: "not-started" },
+  { id: "ex-4", title: "Advanced Secure Coding", modules: ["Prerequisite: Cybersecurity Fundamentals"], questionCount: 12, status: "locked" },
+];
+
+const ROADMAP_STATUS_STYLE = {
+  completed: { fg: C.success, bg: C.successBg, ring: C.success, Icon: CheckCircle2 },
+  "in-progress": { fg: C.amber, bg: C.amberBg, ring: C.amber, Icon: BookOpen },
+  "not-started": { fg: C.violet700, bg: C.lavender, ring: C.violet500, Icon: Circle },
+  locked: { fg: "#9A93A8", bg: "#F1F0F3", ring: "#C7C2D6", Icon: Lock },
+};
+
+// A smooth S-curve through each waypoint, control points offset only in x (so the
+// tangent is flat exactly at every point) -- that is what lets a pin's stem meet the
+// road straight-on instead of at an angle.
+function roadPathD(points) {
+  if (points.length < 2) return "";
+  let d = `M ${points[0][0]} ${points[0][1]}`;
+  for (let i = 1; i < points.length; i++) {
+    const [x0, y0] = points[i - 1];
+    const [x1, y1] = points[i];
+    const midX = (x0 + x1) / 2;
+    d += ` C ${midX} ${y0}, ${midX} ${y1}, ${x1} ${y1}`;
+  }
+  return d;
+}
+
+function TrainingRoadmap({ trainings, onOpenTraining }) {
+  const stepX = 190, ampY = 60, stemLen = 36, cardW = 172, cardH = 126;
+  const midY = ampY + stemLen + cardH;
+  const padX = cardW / 2 + 20;
+
+  const points = trainings.map((_, i) => [
+    padX + i * stepX,
+    midY + (i % 2 === 0 ? -ampY : ampY),
+  ]);
+  const width = padX * 2 + Math.max(0, trainings.length - 1) * stepX;
+  const height = midY + ampY + stemLen + cardH + 20;
+  const d = roadPathD(points);
+
+  return (
+    <div className="overflow-x-auto pb-2">
+      <svg width={width} height={height} style={{ minWidth: "100%", display: "block" }}>
+        <path d={d} fill="none" stroke={C.line} strokeWidth={10} strokeLinecap="round" />
+        <path d={d} fill="none" stroke="#fff" strokeWidth={2} strokeDasharray="9 9" strokeLinecap="round" />
+        {points.map(([x, y], i) => {
+          const t = trainings[i];
+          const style = ROADMAP_STATUS_STYLE[t.status] || ROADMAP_STATUS_STYLE["not-started"];
+          const above = i % 2 === 0;
+          const Icon = style.Icon;
+          const cardY = above ? y - stemLen - cardH : y + stemLen;
+          const clickable = t.status !== "locked" && onOpenTraining;
+          return (
+            <g key={t.id}>
+              <line x1={x} y1={y} x2={x} y2={above ? y - stemLen : y + stemLen}
+                stroke={style.ring} strokeWidth={3} />
+              <circle cx={x} cy={y} r={9} fill={style.ring} stroke="#fff" strokeWidth={3} />
+              <foreignObject x={x - cardW / 2} y={cardY} width={cardW} height={cardH}>
+                <button
+                  onClick={clickable ? () => onOpenTraining(t) : undefined}
+                  disabled={!clickable}
+                  style={{ borderColor: C.line, cursor: clickable ? "pointer" : "default" }}
+                  className="w-full h-full border rounded-xl bg-white p-3 text-left flex flex-col gap-1 shadow-sm hover:shadow-md transition-shadow disabled:hover:shadow-sm"
+                >
+                  <div style={{ background: style.bg }} className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0">
+                    <Icon size={14} color={style.fg} />
+                  </div>
+                  <p style={{
+                    color: C.ink,
+                    display: "-webkit-box",
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: "vertical",
+                    overflow: "hidden",
+                  }} className="text-xs font-semibold leading-tight">{t.title}</p>
+                  <StatusPill status={t.status} />
+                </button>
+              </foreignObject>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
 const PATH_TABS = [
   { id: "required", label: "Required", test: (t) => t.required },
   { id: "recommended", label: "Recommended", test: (t) => t.recommended },
@@ -636,7 +764,9 @@ const PATH_TABS = [
 
 function LearningPath({ onBack, onOpenTraining }) {
   const { data, loading, error, reload } = useAsync(() => api.trainings(), []);
-  const trainings = data?.trainings || [];
+  const real = data?.trainings || [];
+  const showExample = !loading && !error && real.length === 0;
+
   // Required is the default: it's the one tab that answers "what do I actually owe" --
   // the question someone opening this page is most often here to answer. Falls
   // through to All only once trainings have loaded and nothing is actually required,
@@ -644,46 +774,54 @@ function LearningPath({ onBack, onOpenTraining }) {
   // specifically (as opposed to genuinely having nothing at all).
   const [tabId, setTabId] = useState("required");
   useEffect(() => {
-    if (!loading && trainings.length > 0 && !trainings.some((t) => t.required) && tabId === "required") {
+    if (!loading && real.length > 0 && !real.some((t) => t.required) && tabId === "required") {
       setTabId("all");
     }
-  }, [loading, trainings, tabId]);
+  }, [loading, real, tabId]);
 
   const activeTab = PATH_TABS.find((tab) => tab.id === tabId) || PATH_TABS[0];
-  const visible = trainings.filter(activeTab.test);
+  // Tabs only apply to real data -- EXAMPLE_TRAININGS has no required/recommended
+  // fields, so filtering it the same way would just make every tab but "All" look
+  // silently broken over fake preview content that was never meant to be filtered.
+  const visible = real.filter(activeTab.test);
 
   return (
-    <div className="p-8 max-w-3xl">
+    <div className="p-8 max-w-4xl">
       <button onClick={onBack} style={{ color: C.sub }} className="flex items-center gap-1 text-sm font-semibold mb-4">
         <ArrowLeft size={14} /> Back to dashboard
       </button>
-      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-6">My training path</h1>
-
-      <div className="flex gap-2 mb-6 flex-wrap">
-        {PATH_TABS.map((tab) => {
-          const count = trainings.filter(tab.test).length;
-          const isActive = tab.id === tabId;
-          return (
-            <button key={tab.id} onClick={() => setTabId(tab.id)}
-              style={{
-                background: isActive ? C.violet700 : "#fff",
-                color: isActive ? "#fff" : C.sub,
-                borderColor: isActive ? C.violet700 : C.line,
-              }}
-              className="border px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-colors">
-              {tab.label}
-              {!loading && (
-                <span style={{ opacity: isActive ? 0.85 : 0.6 }}>{count}</span>
-              )}
-            </button>
-          );
-        })}
+      <div className="flex items-center gap-2 mb-6">
+        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold">My training path</h1>
+        {showExample && <MockNote>example path</MockNote>}
       </div>
+
+      {!showExample && (
+        <div className="flex gap-2 mb-6 flex-wrap">
+          {PATH_TABS.map((tab) => {
+            const count = real.filter(tab.test).length;
+            const isActive = tab.id === tabId;
+            return (
+              <button key={tab.id} onClick={() => setTabId(tab.id)}
+                style={{
+                  background: isActive ? C.violet700 : "#fff",
+                  color: isActive ? "#fff" : C.sub,
+                  borderColor: isActive ? C.violet700 : C.line,
+                }}
+                className="border px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-colors">
+                {tab.label}
+                {!loading && (
+                  <span style={{ opacity: isActive ? 0.85 : 0.6 }}>{count}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {loading && <Loading />}
       {error && <ErrorBox error={error} onRetry={reload} />}
 
-      {!loading && !error && visible.length === 0 && (
+      {!loading && !error && real.length > 0 && visible.length === 0 && (
         <div style={{ borderColor: C.line }} className="border rounded-xl p-6 bg-white text-center">
           <p style={{ color: C.sub }} className="text-sm">
             {tabId === "required" ? "Nothing required right now."
@@ -694,23 +832,19 @@ function LearningPath({ onBack, onOpenTraining }) {
         </div>
       )}
 
-      <div className="relative pl-8">
-        {visible.length > 0 && <div style={{ background: C.line }} className="absolute left-[15px] top-2 bottom-2 w-0.5" />}
-        {visible.map((t) => (
-          <div key={t.id} className="relative mb-6 last:mb-0">
-            <div style={{ background: t.status === "completed" ? C.success : C.violet700 }}
-              className="absolute -left-8 top-1 w-4 h-4 rounded-full border-2 border-white ring-2" />
-            <button onClick={() => onOpenTraining(t)} style={{ borderColor: C.line }}
-              className="w-full text-left border rounded-xl p-4 bg-white flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p style={{ color: C.ink }} className="text-sm font-semibold truncate">{t.title}</p>
-                <p style={{ color: C.sub }} className="text-xs mt-0.5">{t.modules.length} modules · {t.questionCount} questions</p>
-              </div>
-              <StatusPill status={t.status} />
-            </button>
-          </div>
-        ))}
-      </div>
+      {!loading && !error && visible.length > 0 && (
+        <TrainingRoadmap trainings={visible} onOpenTraining={onOpenTraining} />
+      )}
+
+      {showExample && (
+        <>
+          <p style={{ color: C.sub }} className="text-sm mb-4">
+            Nothing has been assigned to your role yet, so here's what your path will look
+            like once it has — these four are not your real trainings.
+          </p>
+          <TrainingRoadmap trainings={EXAMPLE_TRAININGS} />
+        </>
+      )}
     </div>
   );
 }
@@ -1124,7 +1258,7 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
                 </p>
               )}
               {verdict.sourceQuote && (
-                <p style={{ color: C.sub }} className="text-xs italic mt-1.5">“{verdict.sourceQuote}”</p>
+                <p style={{ color: C.sub }} className="text-xs italic mt-1.5">"{verdict.sourceQuote}"</p>
               )}
             </div>
           </div>
@@ -1223,7 +1357,7 @@ function QuizResults({ result, onRetake, onDone }) {
             {r.sourceQuote && (
               <div style={{ borderLeft: `3px solid ${C.line}`, background: C.paper }} className="rounded-r-lg px-3 py-2 mt-2">
                 <p style={{ color: C.sub }} className="text-xs">
-                  {r.sourceTitle && <span className="font-semibold">{r.sourceTitle}: </span>}“{r.sourceQuote}”
+                  {r.sourceTitle && <span className="font-semibold">{r.sourceTitle}: </span>}"{r.sourceQuote}"
                 </p>
               </div>
             )}
@@ -1401,6 +1535,78 @@ function RoleManager({ roles, onChanged }) {
   );
 }
 
+/**
+ * Manager-only. Submits a vetted URL through the exact same pipeline an upload goes
+ * through server-side (POST /links/add returns the same shape uploadDocument's response
+ * does), so onSubmitted just hands the result to the same MappingReview the dropzone
+ * already uses -- no separate confirmation flow to build.
+ */
+function TrustedLinkForm({ roles, canPublishCompanyWide, onSubmitted }) {
+  const [open, setOpen] = useState(false);
+  const [url, setUrl] = useState("");
+  const [scope, setScope] = useState("team");
+  const [roleCode, setRoleCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const canSubmit = url.trim() && (scope === "company_wide" || roleCode) && !busy;
+
+  const submit = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const res = await api.addTrustedLink({
+        url: url.trim(), scope, roleCode: scope === "company_wide" ? "ALL" : roleCode,
+      });
+      setUrl(""); setRoleCode("");
+      onSubmitted(res);
+    } catch (e) { setErr(e); } finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ borderColor: C.line }} className="border rounded-xl bg-white mb-5">
+      <button onClick={() => setOpen(!open)} className="w-full flex items-center justify-between p-4">
+        <span style={{ ...display, color: C.ink }} className="font-bold text-sm">Add a trusted link</span>
+        <ChevronRight size={15} color={C.sub} style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 120ms" }} />
+      </button>
+      {open && (
+        <div className="px-4 pb-4">
+          <p style={{ color: C.sub }} className="text-xs mb-3">
+            A vetted reference URL — vendor docs, a standards body, your own compliance page.
+            Goes through the same extraction and verbatim-quote check as an uploaded PDF.
+          </p>
+          <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…"
+            style={{ borderColor: C.line, color: C.ink }}
+            className="border rounded-lg px-3 py-2 text-xs w-full mb-2" />
+          <div className="flex gap-2 flex-wrap items-center">
+            <select value={scope} onChange={(e) => { setScope(e.target.value); setRoleCode(""); }}
+              style={{ borderColor: C.line, color: C.ink }} className="border rounded-lg px-3 py-2 text-xs">
+              <option value="team">My team</option>
+              {canPublishCompanyWide && <option value="company_wide">Company-wide</option>}
+            </select>
+            {scope === "team" && (
+              <select value={roleCode} onChange={(e) => setRoleCode(e.target.value)}
+                style={{ borderColor: C.line, color: C.ink }}
+                className="border rounded-lg px-3 py-2 text-xs flex-1 min-w-[160px]">
+                <option value="">Choose a role…</option>
+                {roles.map((r) => <option key={r.role_code} value={r.role_code}>{r.title}</option>)}
+              </select>
+            )}
+            <Button onClick={submit} disabled={!canSubmit} className="!py-2 text-xs">
+              {busy ? "Fetching…" : "Add link"}
+            </Button>
+          </div>
+          {scope === "company_wide" && (
+            <p style={{ color: C.sub }} className="text-xs mt-2">
+              Replaces the company's current active company-wide link — there is only ever one.
+            </p>
+          )}
+          {err && <ErrorBox error={err} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** The manager reviews the AI's proposed mapping before anything is generated. */
 function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
   // The AI proposes against every role the company has; this manager may only publish to
@@ -1410,6 +1616,21 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
   const permitted = new Set(analysis.permittedRoles || []);
   const selectable = roles.filter((r) => permitted.has(r.role_code));
   const canPublishCompanyWide = permitted.has("ALL");
+
+  // Grouped by org-chart team (r.team, from GET /roles — null for a role with no
+  // org-chart mapping, and always null in local dev, which has no Teams table to
+  // join against). Someone whose reporting subtree spans several teams -- a CTO
+  // over Cybersecurity, Software Engineering and DevOps, say -- would otherwise see
+  // every role_code across all of them mixed into one flat list. Falls back to that
+  // same flat list when no role in scope has team info, so this is a pure
+  // enhancement, not a dependency the picker breaks without.
+  const teamGroups = {};
+  const ungroupedRoles = [];
+  for (const r of selectable) {
+    if (r.team) (teamGroups[r.team] ||= []).push(r);
+    else ungroupedRoles.push(r);
+  }
+  const hasTeamGroups = Object.keys(teamGroups).length > 0;
 
   const knownCodes = new Set(selectable.map((r) => r.role_code));
   const [assignments, setAssignments] = useState(() => {
@@ -1425,6 +1646,10 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
   const [newRoles, setNewRoles] = useState([]); // roles the manager adds inline
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  // Checked by default: assigning training to a role and having it count toward
+  // that role's Q Score are the same decision in a manager's head. Still a real
+  // checkbox a human can uncheck, not something inferred silently after the fact.
+  const [makeRequired, setMakeRequired] = useState(true);
 
   const allCodes = [...selectable.map((r) => r.role_code), ...newRoles.map((r) => r.roleCode)];
   const unresolved = Object.entries(assignments).filter(([, v]) => !v);
@@ -1441,7 +1666,7 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
     setBusy(true); setErr(null);
     try {
       const result = await api.confirmDocument({
-        title: analysis.title, assignments, newRoles, supersede: "",
+        title: analysis.title, assignments, newRoles, supersede: "", makeRequired,
       });
       onConfirmed(result);
     } catch (e) { setErr(e); } finally { setBusy(false); }
@@ -1451,9 +1676,9 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
     <div style={{ borderColor: C.violet300 }} className="border-2 rounded-xl p-5 bg-white mb-5">
       <h3 style={{ ...display, color: C.ink }} className="font-bold mb-1">Confirm who trains on what</h3>
       <p style={{ color: C.sub }} className="text-xs mb-1">
-        The AI read “{analysis.title}” and proposed this. Nothing is generated until you confirm.
+        The AI read "{analysis.title}" and proposed this. Nothing is generated until you confirm.
       </p>
-      {analysis.summary && <p style={{ color: C.sub }} className="text-xs italic mb-4">“{analysis.summary}”</p>}
+      {analysis.summary && <p style={{ color: C.sub }} className="text-xs italic mb-4">"{analysis.summary}"</p>}
 
       {nobodyToPublishTo && (
         <div style={{ background: C.amberBg, color: C.amber }} className="rounded-lg px-3 py-2.5 text-xs mb-4">
@@ -1479,7 +1704,7 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
               <span style={{ color: C.ink }} className="text-sm font-medium flex-1 min-w-[200px]">{topic}</span>
               {isUnknown && !assignments[topic] && (
                 <span style={{ background: C.dangerBg, color: C.danger }} className="text-[11px] font-semibold px-2 py-0.5 rounded-full">
-                  document says “{proposed}” — not a company role
+                  document says "{proposed}" — not a company role
                 </span>
               )}
               <select
@@ -1501,7 +1726,22 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
               >
                 <option value="">— choose role —</option>
                 {canPublishCompanyWide && <option value="ALL">Everyone (company-wide)</option>}
-                {selectable.map((r) => <option key={r.role_code} value={r.role_code}>{r.title}</option>)}
+                {hasTeamGroups ? (
+                  <>
+                    {Object.keys(teamGroups).sort((a, b) => a.localeCompare(b)).map((team) => (
+                      <optgroup key={team} label={team}>
+                        {teamGroups[team].map((r) => <option key={r.role_code} value={r.role_code}>{r.title}</option>)}
+                      </optgroup>
+                    ))}
+                    {ungroupedRoles.length > 0 && (
+                      <optgroup label="Other roles">
+                        {ungroupedRoles.map((r) => <option key={r.role_code} value={r.role_code}>{r.title}</option>)}
+                      </optgroup>
+                    )}
+                  </>
+                ) : (
+                  selectable.map((r) => <option key={r.role_code} value={r.role_code}>{r.title}</option>)
+                )}
                 {newRoles.map((r) => <option key={r.roleCode} value={r.roleCode}>{r.title} (new)</option>)}
                 <option value="__new__">+ Add as new role…</option>
               </select>
@@ -1515,6 +1755,17 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
           Will be added to the company list: {newRoles.map((r) => r.title).join(", ")}
         </p>
       )}
+      <label className="flex items-start gap-2 mb-4 cursor-pointer">
+        <input type="checkbox" checked={makeRequired}
+          onChange={(e) => setMakeRequired(e.target.checked)}
+          className="mt-0.5" />
+        <span style={{ color: C.ink }} className="text-xs">
+          <span className="font-semibold">Also make this required</span>
+          <span style={{ color: C.sub }}> — counts toward Q Score for the roles above.
+            Leave checked unless this is optional reading.</span>
+        </span>
+      </label>
+
       {err && <ErrorBox error={err} />}
       <div className="flex gap-2">
         <Button onClick={confirm} disabled={busy || unresolved.length > 0}>
@@ -1527,9 +1778,10 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
   );
 }
 
-function DocumentsScreen({ team, onDone }) {
+function DocumentsScreen({ team, principal, onDone }) {
   const { data, loading, error, reload } = useAsync(() => api.documents(), []);
   const rolesQ = useAsync(() => api.roles(), []);
+  const linksQ = useAsync(() => api.trustedLinks(), []);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState(null);
   const [analysis, setAnalysis] = useState(null);   // awaiting manager confirmation
@@ -1541,6 +1793,9 @@ function DocumentsScreen({ team, onDone }) {
   const generator = data?.generator || "mock";
   const billed = generator !== "mock";
   const roles = rolesQ.data?.roles || [];
+  // Same tier POST /links/add itself checks server-side -- this only decides whether to
+  // offer the option at all, so nobody picks "Company-wide" only to have it 403.
+  const canPublishCompanyWide = ["admin", "executive"].includes(principal?.access_role);
 
   useEffect(() => {
     if (!job || job.state !== "running") return;
@@ -1579,6 +1834,15 @@ function DocumentsScreen({ team, onDone }) {
       setAnalysis(res);          // manager confirms before anything generates
       rolesQ.reload();
     } catch (e) { setUploadError(e); } finally { setUploading(false); }
+  };
+
+  // POST /links/add returns the exact same shape uploadDocument does (server runs both
+  // through the same _ingest_and_propose), so a submitted link joins the identical
+  // MappingReview flow below rather than needing its own confirmation UI.
+  const handleLinkSubmitted = (res) => {
+    setUploadError(null); setAnalysis(res); setJob(null);
+    rolesQ.reload();
+    linksQ.reload();
   };
 
   const pct = job && job.total ? Math.round((job.done / job.total) * 100) : 0;
@@ -1623,6 +1887,9 @@ function DocumentsScreen({ team, onDone }) {
         <p style={{ color: C.sub }} className="text-xs">PDF, TXT or MD · up to 25 MB</p>
       </div>
 
+      <TrustedLinkForm roles={roles} canPublishCompanyWide={canPublishCompanyWide}
+        onSubmitted={handleLinkSubmitted} />
+
       {uploadError && <ErrorBox error={uploadError} />}
 
       {analysis && (
@@ -1652,7 +1919,7 @@ function DocumentsScreen({ team, onDone }) {
           <div style={{ background: C.line }} className="w-full h-2 rounded-full overflow-hidden mb-2">
             <div style={{
               width: `${job.state === "done" ? 100 : pct}%`,
-              background: job.state === "error" ? C.danger : `linear-gradient(90deg, ${C.violet500}, ${C.violet700})`,
+              background: job.state === "error" ? C.danger : C.violet700,
             }} className="h-full rounded-full transition-all" />
           </div>
           <p style={{ color: job.state === "error" ? C.danger : C.sub }} className="text-xs">{job.message}</p>
@@ -1690,11 +1957,69 @@ function DocumentsScreen({ team, onDone }) {
           </div>
         ))}
       </div>
+
+      <div className="flex items-center justify-between mb-3 mt-8">
+        <h3 style={{ ...display, color: C.ink }} className="font-bold">Trusted links</h3>
+        <button onClick={linksQ.reload} style={{ color: C.violet700 }} className="text-xs font-semibold flex items-center gap-1">
+          <RefreshCw size={12} /> Refresh
+        </button>
+      </div>
+
+      {linksQ.loading && <Loading />}
+      {linksQ.error && <ErrorBox error={linksQ.error} onRetry={linksQ.reload} />}
+
+      <div className="space-y-2">
+        {(linksQ.data?.links || []).map((l) => (
+          <div key={l.id} style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div style={{ background: l.isActive ? C.successBg : "#F1F0F3" }} className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0">
+                <Link2 size={16} color={l.isActive ? C.success : "#9A93A8"} />
+              </div>
+              <div className="min-w-0">
+                <p style={{ color: C.ink }} className="text-sm font-semibold truncate">{l.url}</p>
+                <p style={{ color: C.sub }} className="text-xs">
+                  {l.scope === "company_wide" ? "Company-wide" : l.roleCode}
+                  {l.addedBy ? ` · added by ${l.addedBy}` : ""}
+                </p>
+              </div>
+            </div>
+            <span style={{ background: l.isActive ? C.successBg : "#F1F0F3", color: l.isActive ? C.success : "#9A93A8" }}
+              className="text-[11px] font-semibold px-2.5 py-1 rounded-full shrink-0">
+              {l.isActive ? "Active" : "Retired"}
+            </span>
+          </div>
+        ))}
+        {!linksQ.loading && !(linksQ.data?.links || []).length && (
+          <p style={{ color: C.sub }} className="text-xs">No trusted links yet.</p>
+        )}
+      </div>
     </div>
   );
 }
 
 // ---------- Manager team (design-only) ----------
+/** Who this person reports to — shown on My Team above the reports table, so the
+    chain reads both directions instead of only downward. Its own component: shown
+    whether or not there's anyone below you, so it can't get lost inside the
+    "nobody reports to you yet" early return below. */
+function ReportsToCard({ manager }) {
+  if (!manager) return null;
+  return (
+    <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white flex items-center gap-3 mb-6">
+      <div style={{ background: C.lavender, color: C.violet700 }}
+        className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold shrink-0">
+        {manager.name.split(" ").map((p) => p[0]).join("")}
+      </div>
+      <div className="min-w-0">
+        <p style={{ color: C.sub }} className="text-xs font-semibold">You report to</p>
+        <p style={{ color: C.ink }} className="text-sm font-semibold truncate">
+          {manager.name} <span style={{ color: C.sub }} className="font-normal">— {manager.title || manager.roleCode}</span>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function ManagerTeam({ team }) {
   const people = team?.people || [];
   const targets = team?.uploadTargets || [];
@@ -1705,6 +2030,7 @@ function ManagerTeam({ team }) {
     return (
       <div className="p-8 max-w-4xl">
         <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">My team</h1>
+        <ReportsToCard manager={team?.manager} />
         <p style={{ color: C.sub }} className="text-sm">Nobody reports to you yet.</p>
       </div>
     );
@@ -1729,6 +2055,8 @@ function ManagerTeam({ team }) {
       <p style={{ color: C.sub }} className="text-sm mb-6">
         Everyone who reports to you, and the roles you can upload training for.
       </p>
+
+      <ReportsToCard manager={team?.manager} />
 
       <div className="grid grid-cols-3 gap-4 mb-6">
         {[["Direct reports", direct.length],
@@ -1798,17 +2126,6 @@ function PetCreature({ stageIdx, size }) {
   const uid = `${size}-${stageIdx}`;
   return (
     <svg width={s} height={s} viewBox={`0 0 ${s} ${s}`}>
-      <defs>
-        <linearGradient id={`pet-grad-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor={C.violet500} />
-          <stop offset="100%" stopColor={C.violet700} />
-        </linearGradient>
-        <linearGradient id={`pet-crown-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor={C.violet300} />
-          <stop offset="100%" stopColor={C.violet700} />
-        </linearGradient>
-      </defs>
-
       {stageIdx >= 4 && (
         <ellipse cx={cx} cy={cy} rx={bodyR * 1.55} ry={bodyR * 0.5} fill="none" stroke={C.violet300} strokeWidth="2" opacity="0.7" />
       )}
@@ -1831,16 +2148,16 @@ function PetCreature({ stageIdx, size }) {
       {stageIdx >= 1 && (
         <>
           <ellipse cx={cx - bodyR * 0.72} cy={cy - bodyR * 0.85} rx={bodyR * 0.24} ry={bodyR * 0.34}
-            fill={`url(#pet-grad-${uid})`} transform={`rotate(-25 ${cx - bodyR * 0.72} ${cy - bodyR * 0.85})`} />
+            fill={C.violet600} transform={`rotate(-25 ${cx - bodyR * 0.72} ${cy - bodyR * 0.85})`} />
           <ellipse cx={cx + bodyR * 0.72} cy={cy - bodyR * 0.85} rx={bodyR * 0.24} ry={bodyR * 0.34}
-            fill={`url(#pet-grad-${uid})`} transform={`rotate(25 ${cx + bodyR * 0.72} ${cy - bodyR * 0.85})`} />
+            fill={C.violet600} transform={`rotate(25 ${cx + bodyR * 0.72} ${cy - bodyR * 0.85})`} />
         </>
       )}
 
       <path d={`M ${cx + bodyR * 0.48} ${cy + bodyR * 0.58} L ${cx + bodyR * 1.02} ${cy + bodyR * 1.12}`}
         stroke={C.violet900} strokeWidth={Math.max(2.5, bodyR * 0.16)} strokeLinecap="round" />
 
-      <circle cx={cx} cy={cy} r={bodyR} fill={`url(#pet-grad-${uid})`} />
+      <circle cx={cx} cy={cy} r={bodyR} fill={C.violet600} />
       <ellipse cx={cx} cy={cy + bodyR * 0.32} rx={bodyR * 0.62} ry={bodyR * 0.42} fill={C.lavender} opacity="0.85" />
 
       <circle cx={cx - bodyR * 0.32} cy={cy - bodyR * 0.05} r={bodyR * 0.15} fill="#fff" />
@@ -1857,7 +2174,7 @@ function PetCreature({ stageIdx, size }) {
       {stageIdx >= 5 && (
         <polygon
           points={`${cx - bodyR * 0.5},${cy - bodyR * 0.95} ${cx - bodyR * 0.28},${cy - bodyR * 1.25} ${cx},${cy - bodyR * 0.98} ${cx + bodyR * 0.28},${cy - bodyR * 1.25} ${cx + bodyR * 0.5},${cy - bodyR * 0.95}`}
-          fill={`url(#pet-crown-${uid})`} stroke={C.violet900} strokeWidth="1" strokeLinejoin="round" />
+          fill={C.violet500} stroke={C.violet900} strokeWidth="1" strokeLinejoin="round" />
       )}
     </svg>
   );
@@ -1888,7 +2205,7 @@ function TeamHabitat({ members, highlightName }) {
 
   return (
     <div>
-      <div style={{ borderColor: C.line, background: `linear-gradient(160deg, ${C.lavender}, #ffffff)` }} className="border rounded-2xl p-3 overflow-hidden">
+      <div style={{ borderColor: C.line, background: C.lavender }} className="border rounded-2xl p-3 overflow-hidden">
         <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ display: "block" }}>
           <style>{`
             @keyframes qhub-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 0.95; } }
@@ -1909,7 +2226,7 @@ function TeamHabitat({ members, highlightName }) {
 
           <circle cx={cx} cy={cy} r="28" fill={C.violet700} className="qhub-pulse" />
           <circle cx={cx} cy={cy} r="28" fill="none" stroke={C.violet300} strokeWidth="1.5" />
-          <text x={cx} y={cy + 6} textAnchor="middle" fill="#fff" fontSize="17" fontWeight="700" fontFamily="Sora, sans-serif">Q</text>
+          <text x={cx} y={cy + 6} textAnchor="middle" fill="#fff" fontSize="17" fontWeight="700" fontFamily="Fraunces, serif">Q</text>
 
           {nodes.map((nd) => {
             const isYou = nd.name === highlightName;
@@ -1922,10 +2239,10 @@ function TeamHabitat({ members, highlightName }) {
                 <svg x={nd.pos.x - nd.size / 2} y={nd.pos.y - nd.size / 2} width={nd.size} height={nd.size} viewBox={`0 0 ${nd.size} ${nd.size}`}>
                   <PetCreature stageIdx={nd.stageIdx} size={nd.size} />
                 </svg>
-                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 19} textAnchor="middle" fill={C.ink} fontSize="11" fontWeight="700" fontFamily="Inter, sans-serif">
+                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 19} textAnchor="middle" fill={C.ink} fontSize="11" fontWeight="700" fontFamily="'IBM Plex Sans', sans-serif">
                   {nd.name.split(" ")[0]}{isYou ? " (you)" : ""}
                 </text>
-                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 32} textAnchor="middle" fill={C.violet700} fontSize="9" fontWeight="600" fontFamily="Inter, sans-serif">
+                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 32} textAnchor="middle" fill={C.violet700} fontSize="9" fontWeight="600" fontFamily="'IBM Plex Sans', sans-serif">
                   Lv {nd.stage.level} · {nd.stage.name}
                 </text>
               </g>
@@ -1975,30 +2292,35 @@ function TeammatesGallery({ team, name }) {
     );
   }
 
-  const people = team.people || [];
+  // Peers, not the reporting subtree: teammates are the people who share YOUR
+  // manager (an SDE1 has SDE2/SDE3 as teammates this way), not people below you --
+  // that's My Team, a separate screen, and most people have nobody below them at
+  // all. Someone with direct reports still sees their own peers here, same as
+  // anyone else; who they manage stays on My Team.
+  const peers = team.peers || [];
 
-  // Nobody below you is a fact about the org chart, not an error — the endpoint returns
-  // 200 with empty lists rather than 403. TeamHabitat divides by members.length to place
-  // nodes on a circle, so it must not be handed an empty list either way.
-  if (people.length === 0) {
+  // Nobody sharing your manager is a fact about the org chart, not an error -- the
+  // endpoint returns 200 with an empty list rather than 403. TeamHabitat divides by
+  // members.length to place nodes on a circle, so it must not be handed an empty
+  // list either way.
+  if (peers.length === 0) {
     return (
       <div className="p-8 max-w-4xl">
         <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Teammates</h1>
         <p style={{ color: C.sub }} className="text-sm">
-          Nobody reports to you, so there is no team to show. If that looks wrong, it means
-          reporting lines have not been set for your organisation yet.
+          Nobody else shares your manager, so there is no team to show. If that looks
+          wrong, it means reporting lines have not been set for your organisation yet.
         </p>
       </div>
     );
   }
 
-  const directs = people.filter((p) => p.direct).length;
   // trainingsCompleted drives the character stage. GET /team does not return it — it
-  // answers who reports to you, not how far along each of them is — so it is passed as 0
-  // rather than invented. Everyone renders at the first stage until there is a real
-  // per-person figure to use; a plausible-looking fake number is the one thing this
-  // screen must not go back to.
-  const members = people.map((p) => ({
+  // answers who your teammates are, not how far along each of them is — so it is
+  // passed as 0 rather than invented. Everyone renders at the first stage until
+  // there is a real per-person figure to use; a plausible-looking fake number is
+  // the one thing this screen must not go back to.
+  const members = peers.map((p) => ({
     name: p.name,
     role: p.title || p.roleCode,
     trainingsCompleted: 0,
@@ -2008,8 +2330,7 @@ function TeammatesGallery({ team, name }) {
     <div className="p-8 max-w-4xl">
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Teammates</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">
-        Everyone who reports to you — {people.length} {people.length === 1 ? "person" : "people"}
-        {directs > 0 && `, ${directs} directly`}.
+        People who share your manager — {peers.length} {peers.length === 1 ? "person" : "people"}.
       </p>
       <TeamHabitat members={members} highlightName={name} />
     </div>
@@ -2058,7 +2379,7 @@ function CompanionCard({ trainingsCompleted, name, qScore }) {
                 <span style={{ color: C.sub }} className="text-xs font-semibold">{progressPct}%</span>
               </div>
               <div style={{ background: C.line }} className="w-full h-2.5 rounded-full overflow-hidden">
-                <div style={{ width: `${progressPct}%`, background: `linear-gradient(90deg, ${C.violet500}, ${C.violet700})` }} className="h-full rounded-full transition-all" />
+                <div style={{ width: `${progressPct}%`, background: C.violet700 }} className="h-full rounded-full transition-all" />
               </div>
             </>
           ) : (
@@ -2140,25 +2461,19 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
 
         <div className="flex justify-center mb-4">
           <svg ref={svgRef} width="240" height="340" viewBox="0 0 240 340" xmlns="http://www.w3.org/2000/svg">
-            <defs>
-              <linearGradient id="share-bg" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stopColor={C.violet900} />
-                <stop offset="100%" stopColor={C.violet700} />
-              </linearGradient>
-            </defs>
-            <rect x="0" y="0" width="240" height="340" rx="20" fill="url(#share-bg)" />
-            <text x="20" y="32" fill="#fff" fontSize="13" fontWeight="700" fontFamily="Sora, sans-serif" letterSpacing="1">QUIZRANT</text>
+            <rect x="0" y="0" width="240" height="340" rx="20" fill={C.violet900} />
+            <text x="20" y="32" fill="#fff" fontSize="13" fontWeight="700" fontFamily="Fraunces, serif" letterSpacing="1">QUIZRANT</text>
             <svg x="45" y="52" width="150" height="150" viewBox="0 0 150 150">
               <PetCreature stageIdx={stageIdx} size={150} />
             </svg>
-            <text x="120" y="228" textAnchor="middle" fill="#fff" fontSize="20" fontWeight="700" fontFamily="Sora, sans-serif">{stage.name}</text>
-            <text x="120" y="250" textAnchor="middle" fill="#E4D7F7" fontSize="12" fontWeight="600" fontFamily="Inter, sans-serif">Level {stage.level} · {name}</text>
+            <text x="120" y="228" textAnchor="middle" fill="#fff" fontSize="20" fontWeight="700" fontFamily="Fraunces, serif">{stage.name}</text>
+            <text x="120" y="250" textAnchor="middle" fill="#E4D7F7" fontSize="12" fontWeight="600" fontFamily="'IBM Plex Sans', sans-serif">Level {stage.level} · {name}</text>
             <line x1="30" y1="268" x2="210" y2="268" stroke="rgba(255,255,255,0.2)" />
-            <text x="70" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="Sora, sans-serif">{qScore}</text>
-            <text x="70" y="308" textAnchor="middle" fill="#C9AEF5" fontSize="9" fontFamily="Inter, sans-serif">Q SCORE</text>
-            <text x="170" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="Sora, sans-serif">{trainingsCompleted}</text>
-            <text x="170" y="308" textAnchor="middle" fill="#C9AEF5" fontSize="9" fontFamily="Inter, sans-serif">TRAININGS</text>
-            <text x="120" y="325" textAnchor="middle" fill="rgba(255,255,255,0.5)" fontSize="9" fontFamily="Inter, sans-serif">quizrant.app</text>
+            <text x="70" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="Fraunces, serif">{qScore}</text>
+            <text x="70" y="308" textAnchor="middle" fill="#C9AEF5" fontSize="9" fontFamily="'IBM Plex Sans', sans-serif">Q SCORE</text>
+            <text x="170" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="Fraunces, serif">{trainingsCompleted}</text>
+            <text x="170" y="308" textAnchor="middle" fill="#C9AEF5" fontSize="9" fontFamily="'IBM Plex Sans', sans-serif">TRAININGS</text>
+            <text x="120" y="325" textAnchor="middle" fill="rgba(255,255,255,0.5)" fontSize="9" fontFamily="'IBM Plex Sans', sans-serif">quizrant.app</text>
           </svg>
         </div>
 
@@ -2178,13 +2493,13 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
 }
 
 // ---------- Skill interest popup ----------
-// Shown once, ever, per employee -- GET /skills/options reports `prompted` from
-// Employees.skills_prompted_at, which POST /skills/interest sets regardless of whether
-// anything was picked. Offers only trainings already visible to this person's role and
-// not already required for it (enforced server-side, not just hidden here) -- there is
-// deliberately no free-text option, so every choice maps to something that already
-// exists in the bank and can be recommended immediately, not something the AI has to go
-// build from nothing.
+// GET /skills/options reports `prompted` from Employees.skills_prompted_at against a
+// rolling cooldown, so this can show again -- but only when there's something new the
+// employee hasn't already been offered or picked. Offers only trainings already visible
+// to this person's role and not already required for it (enforced server-side, not just
+// hidden here) -- there is deliberately no free-text option, so every choice maps to
+// something that already exists in the bank and can be recommended immediately, not
+// something the AI has to go build from nothing.
 function SkillInterestPopup({ onRecorded }) {
   const [state, setState] = useState({ loading: true, options: null });
   const [selected, setSelected] = useState(new Set());
@@ -2275,14 +2590,15 @@ function SkillInterestPopup({ onRecorded }) {
 // ---------- Profile ----------
 function Profile({ principal }) {
   // Identity from the signed-in principal. PROFILES is a fallback ONLY for the fields
-  // that still have no backend (joined date, streak) — using it for name or email would
-  // show one hardcoded persona to whoever actually signed in.
+  // that still have no backend (joined date) — using it for name or email would show
+  // one hardcoded persona to whoever actually signed in.
   const persona = PROFILES.employee;
   const p = {
     ...persona,
     name: principal?.name || principal?.email || persona.name,
     email: principal?.email || persona.email,
-    role: principal?.role_code || persona.role,
+    role: principal?.department || persona.role,
+    title: principal?.title || "",
   };
   const { data: meData, loading, error, reload } = useAsync(() => api.me(), []);
   const { data: certData } = useAsync(() => api.certificates().catch(() => ({ certificates: [] })), []);
@@ -2302,7 +2618,22 @@ function Profile({ principal }) {
   const { data: qData } = useAsync(() => api.qscore().catch(() => null), []);
   const standing = qData?.overall;
   const qScore = standing ? Math.round(standing.qScore) : 0;
-  const earnedCount = BADGES.filter((b) => b.earned).length;
+
+  const streak = meData?.streak ?? 0;
+
+  // meData.badges is {badgeId: earnedAtIsoOrNull}, keyed by string over JSON. A badge
+  // id present has been earned (the value is the date for one-time badges, null for
+  // the two "live" ones that track current state); an id absent -- Privacy Pro and
+  // Early Bird, see quizgen.qscore.earned_badges -- has no real criterion behind it
+  // yet and stays permanently locked rather than showing a fake earned date.
+  const badgeStatus = meData?.badges || {};
+  const badges = BADGES.map((b) => {
+    const key = String(b.id);
+    const earned = Object.prototype.hasOwnProperty.call(badgeStatus, key);
+    const earnedAt = badgeStatus[key];
+    return { ...b, earned, date: earnedAt ? String(earnedAt).slice(0, 10) : null };
+  });
+  const earnedCount = badges.filter((b) => b.earned).length;
 
   return (
     <div className="p-8 max-w-4xl">
@@ -2312,7 +2643,7 @@ function Profile({ principal }) {
       {loading && <Loading />}
       {error && <ErrorBox error={error} onRetry={reload} />}
 
-      <div style={{ background: `linear-gradient(120deg, ${C.violet900}, ${C.violet700})` }}
+      <div style={{ background: C.violet700 }}
         className="rounded-2xl p-6 mb-6 text-white flex items-center justify-between gap-6 flex-wrap">
         <div className="flex items-center gap-4">
           <div style={{ background: "rgba(255,255,255,0.15)" }} className="w-16 h-16 rounded-2xl flex items-center justify-center text-xl font-bold shrink-0">
@@ -2321,6 +2652,7 @@ function Profile({ principal }) {
           <div>
             <h2 style={display} className="text-xl font-bold mb-1">{p.name}</h2>
             <p className="text-sm opacity-90 flex items-center gap-1.5 mb-0.5"><Briefcase size={13} /> {p.role}</p>
+            {p.title && <p className="text-sm opacity-90 mb-0.5 pl-[19px]">{p.title}</p>}
             <p className="text-sm opacity-90 flex items-center gap-1.5"><Mail size={13} /> {p.email}</p>
           </div>
         </div>
@@ -2372,10 +2704,7 @@ function Profile({ principal }) {
             <Flame size={16} color={C.violet700} />
           </div>
           <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <p style={{ ...display, color: C.ink }} className="text-lg font-bold leading-tight">{p.streak}</p>
-              <MockNote>mock</MockNote>
-            </div>
+            <p style={{ ...display, color: C.ink }} className="text-lg font-bold leading-tight">{streak}</p>
             <p style={{ color: C.sub }} className="text-xs">Training streak</p>
           </div>
         </div>
@@ -2393,10 +2722,7 @@ function Profile({ principal }) {
             <Star size={16} color={C.success} />
           </div>
           <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <p style={{ ...display, color: C.ink }} className="text-lg font-bold leading-tight">{earnedCount}/{BADGES.length}</p>
-              <MockNote>mock</MockNote>
-            </div>
+            <p style={{ ...display, color: C.ink }} className="text-lg font-bold leading-tight">{earnedCount}/{BADGES.length}</p>
             <p style={{ color: C.sub }} className="text-xs">Badges earned</p>
           </div>
         </div>
@@ -2416,21 +2742,18 @@ function Profile({ principal }) {
               </span>
             </div>
             <div style={{ background: C.line }} className="w-full h-2 rounded-full overflow-hidden">
-              <div style={{ width: `${b.accuracyPercent}%`, background: `linear-gradient(90deg, ${C.violet500}, ${C.violet700})` }} className="h-full rounded-full" />
+              <div style={{ width: `${b.accuracyPercent}%`, background: C.violet700 }} className="h-full rounded-full" />
             </div>
           </div>
         ))}
       </div>
 
       <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <h3 style={{ ...display, color: C.ink }} className="font-bold">Badges</h3>
-          <MockNote>sample data</MockNote>
-        </div>
+        <h3 style={{ ...display, color: C.ink }} className="font-bold">Badges</h3>
         <span style={{ color: C.sub }} className="text-xs">{earnedCount} of {BADGES.length} earned</span>
       </div>
       <div className="grid grid-cols-3 gap-4">
-        {BADGES.map((b) => {
+        {badges.map((b) => {
           const Icon = b.icon;
           return (
             <div key={b.id} style={{ borderColor: C.line, opacity: b.earned ? 1 : 0.55 }} className="border rounded-xl p-4 bg-white relative">
@@ -2445,7 +2768,9 @@ function Profile({ principal }) {
               <p style={{ color: C.ink }} className="text-sm font-semibold mb-0.5">{b.title}</p>
               <p style={{ color: C.sub }} className="text-xs mb-2">{b.desc}</p>
               {b.earned
-                ? <span style={{ color: C.success }} className="text-[11px] font-semibold">Earned {b.date}</span>
+                ? <span style={{ color: C.success }} className="text-[11px] font-semibold">
+                    {b.date ? `Earned ${b.date}` : "Currently active"}
+                  </span>
                 : <span style={{ color: C.sub }} className="text-[11px] font-semibold">Locked</span>}
             </div>
           );
@@ -2495,7 +2820,7 @@ export default function App() {
   if (restoring) {
     return (
       <div className="min-h-screen flex items-center justify-center"
-           style={{ ...font, background: `linear-gradient(160deg, ${C.violet900} 0%, ${C.violet700} 45%, ${C.violet500} 100%)` }}>
+           style={{ ...font, background: "#F5F4F9" }}>
         <Logo size={36} />
       </div>
     );
@@ -2545,7 +2870,7 @@ export default function App() {
   if (view === "profile") {
     content = <Profile principal={auth} />;
   } else if (view === "documents") {
-    content = <DocumentsScreen team={team} onDone={() => goto("dashboard")} />;
+    content = <DocumentsScreen team={team} principal={auth} onDone={() => goto("dashboard")} />;
   } else if (view === "team") {
     content = <ManagerTeam team={team} />;
   } else if (view === "dashboard") {
@@ -2604,7 +2929,8 @@ export default function App() {
     <>
       <Shell
         name={auth.name || auth.email}
-        roleCode={auth.role_code}
+        department={auth.department}
+        title={auth.title}
         manages={manages}
         active={quizViews.includes(view) ? "dashboard" : view}
         setActive={goto}

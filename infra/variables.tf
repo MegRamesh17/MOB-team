@@ -71,6 +71,21 @@ variable "azure_openai_endpoint" {
   default     = ""
 }
 
+variable "resend_api_key" {
+  description = <<-EOT
+    API key from resend.com, used by the daily certificate-expiry-reminder timer
+    function. Empty by default, same reason openai_api_key/doc_intelligence_key are:
+    terraform.yml's plan/apply don't pass it yet, so a required variable with no default
+    would fail every plan on every PR until someone adds it as a GitHub secret. Empty
+    means the Key Vault secret and the Function App setting are simply not created --
+    see infra/modules/comms and RESEND_API_KEY below -- and the timer function logs and
+    skips rather than crashing.
+  EOT
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "quizgen_provider" {
   description = <<-EOT
     'mock' (free, deterministic, no credentials needed) or 'azure' (real gpt-5, roughly a

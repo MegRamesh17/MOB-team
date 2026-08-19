@@ -15,11 +15,6 @@ variable "key_vault_uri" {
   type = string
 }
 
-variable "comms_connection_string" {
-  type      = string
-  sensitive = true
-}
-
 variable "app_integration_subnet_id" {
   type = string
 }
@@ -45,6 +40,15 @@ variable "azure_openai_endpoint" {
 variable "quizgen_provider" {
   type    = string
   default = "mock"
+}
+
+variable "resend_api_key" {
+  # Only checked for emptiness here (== "" gates the RESEND_API_KEY app setting below,
+  # same pattern as doc_intelligence_endpoint) -- the value itself lives in Key Vault,
+  # written by module.comms, and is never read through this module.
+  type      = string
+  sensitive = true
+  default   = ""
 }
 
 variable "allowed_origins" {

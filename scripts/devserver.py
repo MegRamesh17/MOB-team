@@ -418,6 +418,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._certificates()
             if route == "/api/documents":
                 return self._list_documents()
+            if route == "/api/links":
+                return self._list_links()
             if route == "/api/roles":
                 return self._list_roles()
             if route.startswith("/api/jobs/"):
@@ -442,6 +444,8 @@ class Handler(BaseHTTPRequestHandler):
                 if self._require("manager") is None:
                     return None
                 return self._upload()
+            if route == "/api/links/add":
+                return self._add_link()
             if route == "/api/documents/confirm":
                 if self._require("manager") is None:
                     return None
@@ -495,6 +499,28 @@ class Handler(BaseHTTPRequestHandler):
         direct_ids = {p["employee_id"] for p in
                       devauth.reports_of(identity.employee_id, direct_only=True)}
 
+        # Peers: everyone else who shares my manager, available to everyone -- an
+        # SDE1 has SDE2/SDE3 as teammates because they share a manager, even with
+        # nobody reporting to the SDE1 themselves. Plain Python "==" handles the
+        # top-of-chain case (manager_id None on both sides) correctly on its own,
+        # unlike SQL's "=" on NULL.
+        directory = devauth.directory()
+        by_id = {p["employee_id"]: p for p in directory}
+        peers = [
+            p for p in directory
+            if p["employee_id"] != identity.employee_id
+            and p.get("manager_id") == identity.manager_id
+        ]
+        manager = None
+        if identity.manager_id is not None:
+            m = by_id.get(identity.manager_id)
+            if m:
+                manager = {
+                    "employeeId": m["employee_id"], "name": m.get("name", ""),
+                    "email": m.get("email", ""), "title": m.get("title", ""),
+                    "roleCode": (m.get("role_code") or "ALL").upper(),
+                }
+
         # Role -> whether anyone directly reporting to me holds it. A role held by both
         # a direct report and someone deeper counts as direct: it is the closer
         # relationship that decides the default.
@@ -533,6 +559,17 @@ class Handler(BaseHTTPRequestHandler):
                 }
                 for p in subtree
             ],
+            "peers": [
+                {
+                    "employeeId": p["employee_id"],
+                    "name": p.get("name", ""),
+                    "email": p.get("email", ""),
+                    "title": p.get("title", ""),
+                    "roleCode": (p.get("role_code") or "ALL").upper(),
+                }
+                for p in peers
+            ],
+            "manager": manager,
             "uploadTargets": sorted(
                 targets.values(), key=lambda t: (not t["direct"], t["title"])),
         })
@@ -567,10 +604,20 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _me(self):
+        from quizgen import qscore
+
+        identity = self._require()
+        if identity is None:
+            return None
+
         learner = self._learner()
         with Bank(DB, self._company()) as bank:
             mastery = bank.mastery(learner)
             attempts = bank.attempt_count(learner)
+            submitted = bank.submitted_attempts(learner)
+            self._seed_requirements_if_empty(bank)
+            requirements = bank.role_requirements(identity.role_code)
+            held = bank.certificates(identity.email)
 
         topics = [
             {
@@ -587,9 +634,15 @@ class Handler(BaseHTTPRequestHandler):
         weak = [t for t in topics
                 if t["answered"] >= MIN_ANSWERS and t["accuracyPercent"] < WEAK_THRESHOLD * 100]
 
+        streak = qscore.training_streak([a["submitted_at"] for a in submitted])
+        overall_q_score = qscore.standing(requirements, held)["overall"].q_score
+        badges = qscore.earned_badges(attempts=submitted, streak=streak, q_score=overall_q_score)
+
         self._send({
             "learnerId": learner,
             "attempts": attempts,
+            "streak": streak,
+            "badges": badges,
             "topics": topics,
             "weakTopics": [t["topic"] for t in weak],
             "passingScore": PASSING_SCORE,
@@ -742,6 +795,21 @@ class Handler(BaseHTTPRequestHandler):
                 "Text was extracted but nothing usable was found in it.",
             )
 
+        return self._ingest_and_propose(
+            chunks, identity, label=safe, retitle_suffix=Path(safe).stem.replace("_", " "))
+
+    def _ingest_and_propose(self, chunks, identity, label: str, retitle_suffix: str):
+        """
+        Save already-extracted chunks, seed the role catalog if empty, and ask the
+        model to propose a section->role mapping -- the part _upload and _add_link
+        share in full. Generation itself happens later, in /api/documents/confirm, once
+        a manager approves the mapping. Mirrors api/function_app.py's
+        _ingest_and_propose exactly, so the two backends cannot drift apart on this.
+
+        label is what the response's "file" field shows (a filename or a URL).
+        retitle_suffix is the parenthetical used only if doc_title collides with a
+        different document (Path(safe).stem for an upload, the URL's host for a link).
+        """
         doc_title = chunks[0].doc_title
         # Two different documents must never share a title: they would merge into one
         # training, mixing roles and letting set_chunk_roles tag the wrong sections.
@@ -752,7 +820,7 @@ class Handler(BaseHTTPRequestHandler):
                 c.doc_title: c.doc_id for c in bank.all_chunks()
             }
         if doc_title in existing_ids and existing_ids[doc_title] != chunks[0].doc_id:
-            doc_title = "{} ({})".format(doc_title, Path(safe).stem.replace("_", " "))
+            doc_title = "{} ({})".format(doc_title, retitle_suffix)
             for c in chunks:
                 c.doc_title = doc_title
 
@@ -790,7 +858,7 @@ class Handler(BaseHTTPRequestHandler):
                 type(exc).__name__, str(exc)[:250]))
 
         return self._send({
-            "file": safe,
+            "file": label,
             "title": doc_title,
             "chunks": len(chunks),
             "topics": topics,
@@ -809,6 +877,83 @@ class Handler(BaseHTTPRequestHandler):
             "generator": _generator_label(),
             "needsConfirmation": True,
         }, 201)
+
+    def _add_link(self):
+        """
+        Manager submits a trusted reference URL. Same targeting rule as an upload
+        (own reporting subtree, or company-wide for admin/executive only), then the
+        fetched page goes through _ingest_and_propose exactly like an uploaded PDF
+        does. Mirrors api/function_app.py's add_trusted_link.
+        """
+        identity = self._require("manager")
+        if identity is None:
+            return None
+
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except ValueError:
+            return self._error(400, "Bad request", "Body must be JSON")
+
+        url = str(body.get("url", "")).strip()
+        scope = str(body.get("scope", "")).strip().lower()
+        role_code = str(body.get("roleCode", "")).strip().upper()
+
+        if not url or not (url.startswith("http://") or url.startswith("https://")):
+            return self._error(400, "Bad request", "A valid http(s) url is required.")
+        if scope not in ("team", "company_wide"):
+            return self._error(400, "Bad request", "scope must be 'team' or 'company_wide'.")
+
+        if scope == "company_wide":
+            if identity.access_role not in ("admin", "executive"):
+                return self._error(403, "Forbidden",
+                                   "Only admin/executive may add a company-wide trusted link.")
+            role_code = "ALL"
+        else:
+            if not role_code:
+                return self._error(400, "Bad request", "roleCode is required for a team-scoped link.")
+            permitted = self._permitted_upload_roles(identity)
+            if role_code not in permitted:
+                return self._error(403, "Forbidden",
+                                   "You may only target roles within your own reporting chain.")
+
+        sys.path.insert(0, str(REPO / "src"))
+        from quizgen.web import fetch
+        try:
+            title, text, fetched_at = fetch(url)
+        except Exception as exc:  # noqa: BLE001
+            return self._error(422, "Could not fetch this URL",
+                               "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+
+        if not text or not text.strip():
+            return self._error(422, "No teachable content found",
+                               "The page was reachable but had no readable text.")
+
+        from urllib.parse import urlparse as _urlparse
+        host = _urlparse(url).netloc or url[:40]
+
+        from quizgen.ingest import chunks_from_text
+        display_title = title or host
+        chunks = chunks_from_text(text, source_name=display_title)
+        for c in chunks:
+            c.source_type = "web"
+            c.source_url = url
+            c.fetched_at = fetched_at
+            c.role_scope = role_code
+
+        # Recorded once the page has actually yielded something teachable -- same point
+        # _upload's chunks are considered "saved" -- before the AI role-mapping step, so
+        # a manager can still see and re-confirm this link even if that step fails for
+        # lack of model credentials.
+        with Bank(DB, self._company()) as bank:
+            bank.add_trusted_link(identity.email, scope, role_code, url)
+
+        return self._ingest_and_propose(chunks, identity, label=url, retitle_suffix=host)
+
+    def _list_links(self):
+        """A company's trusted links, active and retired. Mirrors GET /links."""
+        with Bank(DB, self._company()) as bank:
+            return self._send({"links": bank.trusted_links()})
 
     def _permitted_upload_roles(self, identity, extra=()):
         """Thin wrapper — the rule lives in devauth so it can be tested directly."""
@@ -831,6 +976,10 @@ class Handler(BaseHTTPRequestHandler):
         body = self._body()
         doc_title = str(body.get("title", "")).strip()
         assignments = body.get("assignments") or {}
+        # See api/function_app.py's confirm_document for the full reasoning -- default
+        # true, still a per-request opt-out rather than inferring "required" silently
+        # from role_scope after the fact.
+        make_required = bool(body.get("makeRequired", True))
         if not doc_title or not isinstance(assignments, dict):
             return self._error(400, "Missing title or assignments")
 
@@ -878,6 +1027,26 @@ class Handler(BaseHTTPRequestHandler):
 
             tagged = bank.set_chunk_roles(doc_title, normalized)
 
+            # Same reasoning as function_app.py's confirm_document: gated by the
+            # "manager" tier already required above, not the admin/executive-only
+            # bar on set_role_requirements, because `permitted` just above already
+            # confines this to roles in the caller's own reporting subtree -- a
+            # manager can only make required the exact thing they were already
+            # trusted to assign.
+            required_for = []
+            # (email, name) pairs to notify, collected here but sent after the `with`
+            # block closes -- same reasoning as function_app.py's confirm_document:
+            # a slow or failing Resend call must not hold the Bank connection open.
+            to_notify = []
+            if make_required:
+                for role_code in set(normalized.values()):
+                    newly_required = bank.add_role_requirement(role_code, doc_title)
+                    required_for.append(role_code)
+                    if newly_required:
+                        to_notify.extend(
+                            (p["email"], p["name"])
+                            for p in devauth.employees_with_role_code(role_code))
+
             # Update-vs-add was decided by gpt-5 and shown to the manager before
             # this call; supersede arrives here already reviewed. Old questions stop
             # being served; passes already earned hold until their one-year expiry.
@@ -886,12 +1055,27 @@ class Handler(BaseHTTPRequestHandler):
             if supersede and supersede != doc_title:
                 retired = bank.retire_document_questions(supersede)
 
+        if to_notify:
+            sys.path.insert(0, str(REPO / "api"))
+            from shared.comms import send_new_training_email
+            for email, name in dict.fromkeys(to_notify):
+                try:
+                    send_new_training_email(email, name, doc_title, "Your company")
+                except Exception as exc:  # noqa: BLE001
+                    # A notification failure must never fail the confirm itself -- the
+                    # document is already saved and generating either way. print, not
+                    # logging -- this file never imports logging, only print, for
+                    # exactly this kind of "surface it, don't crash" diagnostic.
+                    print("    ! failed to notify {} of new training {!r}: {}".format(
+                        email, doc_title, exc))
+
         job_id = _start_generation_job(doc_title)
         return self._send({
             "title": doc_title,
             "taggedChunks": tagged,
             "retiredQuestions": retired,
             "superseded": supersede,
+            "requiredFor": sorted(required_for),
             "jobId": job_id,
         })
 
@@ -906,8 +1090,14 @@ class Handler(BaseHTTPRequestHandler):
                 for code in (q.role_code or "ALL").split(","):
                     counts[code.strip().upper()] = counts.get(code.strip().upper(), 0) + 1
         return self._send({
+            # team is always null here: there is no org-chart Teams table in the local
+            # SQLite schema to join against (see api/function_app.py's list_roles for
+            # the real lookup deployed uses). The upload screen's role picker already
+            # falls back to an ungrouped list when team is missing, so this is a
+            # shape-compatible no-op locally, not a bug.
             "roles": [
-                {**r, "questionCount": counts.get(r["role_code"], 0) + counts.get("ALL", 0)}
+                {**r, "questionCount": counts.get(r["role_code"], 0) + counts.get("ALL", 0),
+                 "team": None}
                 for r in roles
             ],
         })

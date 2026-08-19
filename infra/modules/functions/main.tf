@@ -53,9 +53,16 @@ resource "azurerm_linux_function_app" "mob_functions" {
     "JWT_SIGNING_SECRET"             = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/jwt-signing-secret/)"
     # Both empty until the endpoint variable is set. Extraction falls back to
     # pypdf when they are, so the app runs either way.
-    "DOCUMENT_INTELLIGENCE_ENDPOINT"  = var.doc_intelligence_endpoint
-    "DOCUMENT_INTELLIGENCE_KEY"       = var.doc_intelligence_endpoint == "" ? "" : "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/doc-intelligence-key/)"
-    "COMMS_CONNECTION_STRING"         = var.comms_connection_string
+    "DOCUMENT_INTELLIGENCE_ENDPOINT" = var.doc_intelligence_endpoint
+    "DOCUMENT_INTELLIGENCE_KEY"      = var.doc_intelligence_endpoint == "" ? "" : "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/doc-intelligence-key/)"
+    # Resend, not Azure Communication Services -- see infra/modules/comms. Empty until
+    # resend_api_key is configured, same conditional pattern as Document Intelligence
+    # above: module.comms's secret is count-based and simply doesn't exist yet when
+    # resend_api_key is "", and a @Microsoft.KeyVault(...) reference to a secret that
+    # doesn't exist would otherwise show as an unresolved app setting for no reason.
+    "RESEND_API_KEY"                  = var.resend_api_key == "" ? "" : "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/resend-api-key/)"
+    "RESEND_FROM_ADDRESS"             = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/resend-from-address/)"
+    "EXPIRY_WARNING_DAYS"             = "30"
     "AZURE_STORAGE_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/storage-connection-string/)"
     "QUIZGEN_PASSING_SCORE"           = "80"
     "QUIZGEN_QUIZ_LENGTH"             = "8"

@@ -87,22 +87,22 @@ class FakeCursor:
             chunk_id = p[0]
             existing = next((r for r in t["SourceChunks"] if r["chunk_id"] == chunk_id), None)
             (doc_id, doc_title, section, topic, page_start, page_end,
-             chunk_text, container, role_scope, company_id) = p[1:11]
+             chunk_text, container, role_scope, company_id, source_type, source_url,
+             fetched_at) = p[1:14]
             if company_id is None:
                 raise AssertionError(
                     "IntegrityError: NULL company_id on SourceChunks -- MERGE must "
                     "set it in both the UPDATE SET and INSERT VALUES branches")
+            fields = dict(
+                doc_id=doc_id, doc_title=doc_title, section=section, topic=topic,
+                page_start=page_start, page_end=page_end, chunk_text=chunk_text,
+                container=container, role_scope=role_scope, company_id=company_id,
+                source_type=source_type, source_url=source_url, fetched_at=fetched_at,
+            )
             if existing:
-                existing.update(doc_id=doc_id, doc_title=doc_title, section=section,
-                                 topic=topic, page_start=page_start, page_end=page_end,
-                                 chunk_text=chunk_text, container=container,
-                                 role_scope=role_scope, company_id=company_id)
+                existing.update(fields)
             else:
-                t["SourceChunks"].append(dict(
-                    chunk_id=chunk_id, doc_id=doc_id, doc_title=doc_title, section=section,
-                    topic=topic, page_start=page_start, page_end=page_end,
-                    chunk_text=chunk_text, container=container, role_scope=role_scope,
-                    company_id=company_id))
+                t["SourceChunks"].append(dict(chunk_id=chunk_id, **fields))
             self.rowcount = 1
 
         elif "SELECT chunk_id, doc_id, doc_title, topic, section, page_start" in s:
@@ -176,16 +176,60 @@ class FakeCursor:
             (company_id,) = p
             self._result = [r for r in t["QuizgenRoles"] if r["company_id"] == company_id]
 
-        elif "IF EXISTS (SELECT 1 FROM dbo.QuizgenRoles" in s:
-            code, cid1, title, desc, code2, cid2, code3, cid3, title2, desc2 = p
+        elif "IF NOT EXISTS (SELECT 1 FROM dbo.RoleRequirements" in s:
+            company_id, role_code, doc_title, cid2, code2, title2, category = p
+            exists = any(
+                r["company_id"] == company_id and r["role_code"] == role_code
+                and r["doc_title"] == doc_title
+                for r in t["RoleRequirements"])
+            if exists:
+                self.rowcount = 0
+            else:
+                t["RoleRequirements"].append({
+                    "company_id": cid2, "role_code": code2, "doc_title": title2,
+                    "category": category,
+                })
+                self.rowcount = 1
+
+        elif "MERGE dbo.QuizgenRoles" in s:
+            # MERGE, not the old IF EXISTS/ELSE INSERT -- see add_role's own comment:
+            # that two-step version let two near-simultaneous calls for an empty table
+            # both see "not found" and both try to INSERT, colliding on the primary key.
+            code, cid, title, desc, code2, cid2, title2, desc2 = p
             existing = next((r for r in t["QuizgenRoles"]
-                              if r["role_code"] == code and r["company_id"] == cid1), None)
+                              if r["role_code"] == code and r["company_id"] == cid), None)
             if existing:
                 existing.update(title=title, description=desc)
             else:
-                t["QuizgenRoles"].append({"role_code": code3, "company_id": cid3,
+                t["QuizgenRoles"].append({"role_code": code2, "company_id": cid2,
                                            "title": title2, "description": desc2})
             self.rowcount = 1
+
+        elif "INSERT INTO dbo.TrustedLinks" in s:
+            company_id, added_by, scope, role_code, url = p
+            new_id = len(t["TrustedLinks"]) + 1
+            t["TrustedLinks"].append({
+                "id": new_id, "company_id": company_id, "added_by": added_by,
+                "scope": scope, "role_code": role_code, "url": url, "is_active": 1,
+                "created_at": "2026-01-01T00:00:00", "added_by_name": "",
+            })
+            self._result = [{"id": new_id}]
+            self.rowcount = 1
+
+        elif "UPDATE dbo.TrustedLinks SET is_active = 0" in s:
+            (company_id,) = p
+            n = 0
+            for r in t["TrustedLinks"]:
+                if r["company_id"] == company_id and r["scope"] == "company_wide" and r["is_active"]:
+                    r["is_active"] = 0
+                    n += 1
+            self.rowcount = n
+
+        elif "FROM dbo.TrustedLinks tl" in s:
+            (company_id,) = p
+            self._result = sorted(
+                (r for r in t["TrustedLinks"] if r["company_id"] == company_id),
+                key=lambda r: r["created_at"], reverse=True)
 
         elif "DELETE FROM dbo.QuizgenRoles" in s:
             code, company_id = p
@@ -243,6 +287,7 @@ class FakeConn:
         self.tables = {
             "SourceChunks": [], "GeneratedQuestions": [], "GeneratedOptions": [],
             "GeneratedAnswerKeys": [], "QuizgenRoles": [], "GenerationJobs": [],
+            "TrustedLinks": [], "RoleRequirements": [],
         }
 
     def cursor(self):
@@ -270,7 +315,7 @@ def make_question(qid="q1", topic="Intro"):
 
 class TestChunks(unittest.TestCase):
     def test_save_then_all_chunks_round_trips(self):
-        # Every field checked, not just two -- the MERGE statement binds 20 parameters
+        # Every field checked, not just two -- the MERGE statement binds 28 parameters
         # across a USING clause, an UPDATE SET and an INSERT VALUES, and a single swapped
         # pair would only show up in whichever field it landed in.
         conn = FakeConn()
@@ -293,6 +338,25 @@ class TestChunks(unittest.TestCase):
         self.assertEqual(got.text, "the actual passage")
         self.assertEqual(got.container, "company-docs")
         self.assertEqual(got.role_scope, "ALL")
+        self.assertEqual(got.source_type, "document", "default source_type changed on the round trip")
+
+    def test_save_chunks_round_trips_web_provenance(self):
+        # A trusted-link chunk carries source_type/source_url/fetched_at instead of the
+        # PDF-upload defaults -- save_chunks previously hardcoded source_type='document'
+        # and never wrote source_url/fetched_at at all, which would have silently dropped
+        # a trusted link's citation the moment it was saved.
+        conn = FakeConn()
+        bank = SqlBank(conn, company_id=1)
+        chunk = Chunk(chunk_id="c1", doc_id="d1", doc_title="Vendor Docs", topic="Intro",
+                      section="Sec", page_start=1, page_end=1, text="passage",
+                      container="vetted-sources", role_scope="ALL", company_id="1",
+                      source_type="web", source_url="https://example.com/policy",
+                      fetched_at="2026-01-01T00:00:00+00:00")
+        bank.save_chunks([chunk])
+        got = bank.all_chunks()[0]
+        self.assertEqual(got.source_type, "web")
+        self.assertEqual(got.source_url, "https://example.com/policy")
+        self.assertTrue(got.fetched_at.startswith("2026-01-01"), got.fetched_at)
 
     def test_save_chunks_actually_writes_company_id(self):
         # The real bug: SourceChunks.company_id is NOT NULL, the MERGE didn't set it,
@@ -393,6 +457,32 @@ class TestRoles(unittest.TestCase):
         self.assertEqual(bank.remove_role("SDE2"), 0, "removing twice should be a no-op, not an error")
 
 
+class TestRoleRequirements(unittest.TestCase):
+    def test_first_assignment_returns_true(self):
+        conn = FakeConn()
+        bank = SqlBank(conn, company_id=1)
+        self.assertTrue(bank.add_role_requirement("SDE2", "Workplace Safety"))
+        self.assertEqual(len(conn.tables["RoleRequirements"]), 1)
+
+    def test_re_confirming_the_same_pair_returns_false(self):
+        # This is the notification gate: confirm_document only emails when this is
+        # True. If a re-confirm of an already-required document returned True again,
+        # every manager clicking "confirm" a second time would spam the whole role.
+        conn = FakeConn()
+        bank = SqlBank(conn, company_id=1)
+        bank.add_role_requirement("SDE2", "Workplace Safety")
+        again = bank.add_role_requirement("SDE2", "Workplace Safety")
+        self.assertFalse(again)
+        self.assertEqual(len(conn.tables["RoleRequirements"]), 1, "duplicated the row")
+
+    def test_different_company_same_pair_is_still_new(self):
+        conn = FakeConn()
+        SqlBank(conn, company_id=1).add_role_requirement("SDE2", "Workplace Safety")
+        self.assertTrue(
+            SqlBank(conn, company_id=2).add_role_requirement("SDE2", "Workplace Safety"),
+            "a requirement scoped to company 1 blocked the identical one for company 2")
+
+
 class TestGenerationJobs(unittest.TestCase):
     def test_create_update_get_round_trips(self):
         conn = FakeConn()
@@ -421,6 +511,45 @@ class TestGenerationJobs(unittest.TestCase):
     def test_get_unknown_job_is_none_not_an_error(self):
         conn = FakeConn()
         self.assertIsNone(get_job(conn, "job_doesnotexist", 1))
+
+
+class TestTrustedLinks(unittest.TestCase):
+    def test_add_then_list(self):
+        conn = FakeConn()
+        bank = SqlBank(conn, company_id=1)
+        link_id = bank.add_trusted_link(
+            added_by=5, scope="team", role_code="sde2", url="https://docs.example.com/a")
+        self.assertIsInstance(link_id, int)
+        links = bank.trusted_links()
+        self.assertEqual(len(links), 1)
+        self.assertEqual(links[0]["scope"], "team")
+        self.assertEqual(links[0]["roleCode"], "SDE2", "role_code should be upper-cased")
+        self.assertTrue(links[0]["isActive"])
+
+    def test_new_company_wide_link_retires_the_previous_one(self):
+        # Decisions Log #4: exactly one active company-wide link at a time.
+        conn = FakeConn()
+        bank = SqlBank(conn, company_id=1)
+        bank.add_trusted_link(1, "company_wide", "ALL", "https://old.example.com")
+        bank.add_trusted_link(1, "company_wide", "ALL", "https://new.example.com")
+        links = {l["url"]: l for l in bank.trusted_links()}
+        self.assertFalse(links["https://old.example.com"]["isActive"])
+        self.assertTrue(links["https://new.example.com"]["isActive"])
+
+    def test_company_wide_retirement_does_not_touch_team_links(self):
+        conn = FakeConn()
+        bank = SqlBank(conn, company_id=1)
+        bank.add_trusted_link(1, "team", "SDE2", "https://team.example.com")
+        bank.add_trusted_link(1, "company_wide", "ALL", "https://company.example.com")
+        links = {l["url"]: l for l in bank.trusted_links()}
+        self.assertTrue(links["https://team.example.com"]["isActive"],
+                         "adding a company-wide link retired an unrelated team link")
+
+    def test_scoped_by_company(self):
+        conn = FakeConn()
+        SqlBank(conn, company_id=1).add_trusted_link(1, "team", "SDE2", "https://a.example.com")
+        self.assertEqual(SqlBank(conn, company_id=2).trusted_links(), [],
+                          "a different company saw another company's trusted link")
 
 
 if __name__ == "__main__":
