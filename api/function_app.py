@@ -2056,6 +2056,44 @@ def get_team(req: func.HttpRequest) -> func.HttpResponse:
             )
             people = _rows(cur)
 
+            # Peers: everyone else who shares my manager. Available to everyone, not
+            # only people who manage someone -- an SDE1 has SDE2/SDE3 as teammates
+            # because they share a manager, even though nobody reports to the SDE1
+            # themselves. ISNULL sentinel rather than a plain "=" comparison: NULL =
+            # NULL is never true in SQL, so someone at the top of the chain with no
+            # manager_id at all would otherwise match nobody, including other people
+            # also at the top with no manager.
+            cur.execute(
+                """SELECT e.id, e.name, e.email, r.title, r.role_code
+                     FROM dbo.Employees e
+                     LEFT JOIN dbo.Roles r ON r.id = e.role_id
+                    WHERE e.company_id = ?
+                      AND e.id <> ?
+                      AND ISNULL(e.manager_id, -1) = ISNULL(?, -1)
+                    ORDER BY e.name""",
+                identity.company_id, identity.employee_id, identity.manager_id,
+            )
+            peers = _rows(cur)
+
+            # Who I report to -- shown alongside "people below you" on My Team, so a
+            # manager sees both directions of the chain, not just downward.
+            manager = None
+            if identity.manager_id:
+                cur.execute(
+                    """SELECT e.id, e.name, e.email, r.title, r.role_code
+                         FROM dbo.Employees e
+                         LEFT JOIN dbo.Roles r ON r.id = e.role_id
+                        WHERE e.id = ? AND e.company_id = ?""",
+                    identity.manager_id, identity.company_id,
+                )
+                row = cur.fetchone()
+                if row:
+                    manager = {
+                        "employeeId": row.id, "name": row.name, "email": row.email,
+                        "title": row.title,
+                        "roleCode": (row.role_code or "ALL").upper(),
+                    }
+
         # ALL is company-wide, not a role anyone "controls", so it is not an upload
         # target for a manager — only for admin and executive. A subtree member whose
         # role_code is unmapped surfaces as ALL and must not smuggle it in.
@@ -2093,6 +2131,17 @@ def get_team(req: func.HttpRequest) -> func.HttpResponse:
                 }
                 for p in people
             ],
+            "peers": [
+                {
+                    "employeeId": p["id"],
+                    "name": p["name"],
+                    "email": p["email"],
+                    "title": p.get("title"),
+                    "roleCode": (p.get("role_code") or "ALL").upper(),
+                }
+                for p in peers
+            ],
+            "manager": manager,
             "uploadTargets": sorted(
                 targets.values(), key=lambda t: (not t["direct"], t["title"])),
         })

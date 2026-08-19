@@ -1896,6 +1896,28 @@ function DocumentsScreen({ team, principal, onDone }) {
 }
 
 // ---------- Manager team (design-only) ----------
+/** Who this person reports to — shown on My Team above the reports table, so the
+    chain reads both directions instead of only downward. Its own component: shown
+    whether or not there's anyone below you, so it can't get lost inside the
+    "nobody reports to you yet" early return below. */
+function ReportsToCard({ manager }) {
+  if (!manager) return null;
+  return (
+    <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white flex items-center gap-3 mb-6">
+      <div style={{ background: C.lavender, color: C.violet700 }}
+        className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold shrink-0">
+        {manager.name.split(" ").map((p) => p[0]).join("")}
+      </div>
+      <div className="min-w-0">
+        <p style={{ color: C.sub }} className="text-xs font-semibold">You report to</p>
+        <p style={{ color: C.ink }} className="text-sm font-semibold truncate">
+          {manager.name} <span style={{ color: C.sub }} className="font-normal">— {manager.title || manager.roleCode}</span>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function ManagerTeam({ team }) {
   const people = team?.people || [];
   const targets = team?.uploadTargets || [];
@@ -1906,6 +1928,7 @@ function ManagerTeam({ team }) {
     return (
       <div className="p-8 max-w-4xl">
         <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">My team</h1>
+        <ReportsToCard manager={team?.manager} />
         <p style={{ color: C.sub }} className="text-sm">Nobody reports to you yet.</p>
       </div>
     );
@@ -1930,6 +1953,8 @@ function ManagerTeam({ team }) {
       <p style={{ color: C.sub }} className="text-sm mb-6">
         Everyone who reports to you, and the roles you can upload training for.
       </p>
+
+      <ReportsToCard manager={team?.manager} />
 
       <div className="grid grid-cols-3 gap-4 mb-6">
         {[["Direct reports", direct.length],
@@ -2176,30 +2201,35 @@ function TeammatesGallery({ team, name }) {
     );
   }
 
-  const people = team.people || [];
+  // Peers, not the reporting subtree: teammates are the people who share YOUR
+  // manager (an SDE1 has SDE2/SDE3 as teammates this way), not people below you --
+  // that's My Team, a separate screen, and most people have nobody below them at
+  // all. Someone with direct reports still sees their own peers here, same as
+  // anyone else; who they manage stays on My Team.
+  const peers = team.peers || [];
 
-  // Nobody below you is a fact about the org chart, not an error — the endpoint returns
-  // 200 with empty lists rather than 403. TeamHabitat divides by members.length to place
-  // nodes on a circle, so it must not be handed an empty list either way.
-  if (people.length === 0) {
+  // Nobody sharing your manager is a fact about the org chart, not an error -- the
+  // endpoint returns 200 with an empty list rather than 403. TeamHabitat divides by
+  // members.length to place nodes on a circle, so it must not be handed an empty
+  // list either way.
+  if (peers.length === 0) {
     return (
       <div className="p-8 max-w-4xl">
         <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Teammates</h1>
         <p style={{ color: C.sub }} className="text-sm">
-          Nobody reports to you, so there is no team to show. If that looks wrong, it means
-          reporting lines have not been set for your organisation yet.
+          Nobody else shares your manager, so there is no team to show. If that looks
+          wrong, it means reporting lines have not been set for your organisation yet.
         </p>
       </div>
     );
   }
 
-  const directs = people.filter((p) => p.direct).length;
   // trainingsCompleted drives the character stage. GET /team does not return it — it
-  // answers who reports to you, not how far along each of them is — so it is passed as 0
-  // rather than invented. Everyone renders at the first stage until there is a real
-  // per-person figure to use; a plausible-looking fake number is the one thing this
-  // screen must not go back to.
-  const members = people.map((p) => ({
+  // answers who your teammates are, not how far along each of them is — so it is
+  // passed as 0 rather than invented. Everyone renders at the first stage until
+  // there is a real per-person figure to use; a plausible-looking fake number is
+  // the one thing this screen must not go back to.
+  const members = peers.map((p) => ({
     name: p.name,
     role: p.title || p.roleCode,
     trainingsCompleted: 0,
@@ -2209,8 +2239,7 @@ function TeammatesGallery({ team, name }) {
     <div className="p-8 max-w-4xl">
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Teammates</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">
-        Everyone who reports to you — {people.length} {people.length === 1 ? "person" : "people"}
-        {directs > 0 && `, ${directs} directly`}.
+        People who share your manager — {peers.length} {peers.length === 1 ? "person" : "people"}.
       </p>
       <TeamHabitat members={members} highlightName={name} />
     </div>

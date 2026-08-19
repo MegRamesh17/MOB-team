@@ -499,6 +499,28 @@ class Handler(BaseHTTPRequestHandler):
         direct_ids = {p["employee_id"] for p in
                       devauth.reports_of(identity.employee_id, direct_only=True)}
 
+        # Peers: everyone else who shares my manager, available to everyone -- an
+        # SDE1 has SDE2/SDE3 as teammates because they share a manager, even with
+        # nobody reporting to the SDE1 themselves. Plain Python "==" handles the
+        # top-of-chain case (manager_id None on both sides) correctly on its own,
+        # unlike SQL's "=" on NULL.
+        directory = devauth.directory()
+        by_id = {p["employee_id"]: p for p in directory}
+        peers = [
+            p for p in directory
+            if p["employee_id"] != identity.employee_id
+            and p.get("manager_id") == identity.manager_id
+        ]
+        manager = None
+        if identity.manager_id is not None:
+            m = by_id.get(identity.manager_id)
+            if m:
+                manager = {
+                    "employeeId": m["employee_id"], "name": m.get("name", ""),
+                    "email": m.get("email", ""), "title": m.get("title", ""),
+                    "roleCode": (m.get("role_code") or "ALL").upper(),
+                }
+
         # Role -> whether anyone directly reporting to me holds it. A role held by both
         # a direct report and someone deeper counts as direct: it is the closer
         # relationship that decides the default.
@@ -537,6 +559,17 @@ class Handler(BaseHTTPRequestHandler):
                 }
                 for p in subtree
             ],
+            "peers": [
+                {
+                    "employeeId": p["employee_id"],
+                    "name": p.get("name", ""),
+                    "email": p.get("email", ""),
+                    "title": p.get("title", ""),
+                    "roleCode": (p.get("role_code") or "ALL").upper(),
+                }
+                for p in peers
+            ],
+            "manager": manager,
             "uploadTargets": sorted(
                 targets.values(), key=lambda t: (not t["direct"], t["title"])),
         })
