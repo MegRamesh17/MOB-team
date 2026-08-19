@@ -2203,6 +2203,142 @@ def _certificates_for(cur, employee_id: int, company_id: int) -> List[Dict[str, 
     ]
 
 
+@app.route(route="team/completion", methods=["GET"])
+def get_team_completion(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Real coverage numbers for everyone in the caller's reporting subtree, batched.
+
+    Powers the My Team roster: team size, how many people are missing required
+    training, how many have something expiring soon, and completion -- computed the
+    same way GET /qscore computes one person's (same qscore.standing call, same
+    definition of "missing" and "expired"), just for the whole subtree in one request
+    instead of one per row. No number here is invented; a person with nothing required
+    counts as fully covered, the same rule qscore.standing already applies.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """WITH subtree AS (
+                       SELECT e.id, e.role_id
+                         FROM dbo.Employees e WHERE e.manager_id = ?
+                       UNION ALL
+                       SELECT e.id, e.role_id
+                         FROM dbo.Employees e
+                         JOIN subtree s ON e.manager_id = s.id
+                   )
+                   SELECT s.id, r.role_code
+                     FROM subtree s
+                     LEFT JOIN dbo.Roles r ON r.id = s.role_id
+                   OPTION (MAXRECURSION 32)""",
+                identity.employee_id,
+            )
+            subtree = _rows(cur)
+
+            req_cache: Dict[str, List[Dict[str, Any]]] = {}
+            rows = []
+            for person in subtree:
+                role = (person.get("role_code") or "ALL").upper()
+                if role not in req_cache:
+                    req_cache[role] = _role_requirements(cur, role, identity.company_id)
+                held = _certificates_for(cur, person["id"], identity.company_id)
+                overall = qscore.standing(req_cache[role], held)["overall"]
+                renewal_due = [r for r in qscore.renewal_candidates(held) if not r["expired"]]
+                rows.append({
+                    "employeeId": person["id"],
+                    **overall.to_dict(),
+                    "renewalDueCount": len(renewal_due),
+                })
+
+        return _json({"people": rows})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="team/remind", methods=["POST"])
+def send_team_reminder(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Manager-triggered nudge for one person in the caller's reporting subtree.
+
+    What the email says is computed here from that person's actual missing/expired
+    requirements -- never passed by the client -- so this cannot be used to send an
+    arbitrary message, and the target must resolve inside the caller's own subtree, the
+    same check GET /qscore?employee= makes. A 404 rather than 403 for someone outside
+    it: whether a given employee exists is not something to confirm to someone with no
+    business asking.
+
+    Sending is real (shared.comms, the same module the daily expiry-reminder job uses),
+    but depends on RESEND_API_KEY being configured for this environment. Where it is
+    not, this still reports honestly what would have been sent rather than pretending
+    delivery succeeded.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+
+    target_id = body.get("employeeId")
+    if not isinstance(target_id, int):
+        return _error(400, "Bad request", "employeeId is required.")
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """WITH subtree AS (
+                       SELECT e.id, e.name, e.email, e.role_id
+                         FROM dbo.Employees e WHERE e.manager_id = ?
+                       UNION ALL
+                       SELECT e.id, e.name, e.email, e.role_id
+                         FROM dbo.Employees e
+                         JOIN subtree s ON e.manager_id = s.id
+                   )
+                   SELECT TOP 1 s.id, s.name, s.email, r.role_code
+                     FROM subtree s
+                     LEFT JOIN dbo.Roles r ON r.id = s.role_id
+                    WHERE s.id = ?
+                   OPTION (MAXRECURSION 32)""",
+                identity.employee_id, target_id,
+            )
+            person = cur.fetchone()
+            if person is None:
+                return _error(404, "Not found", "No such employee in your team.")
+
+            role = (person.role_code or "ALL").upper()
+            requirements = _role_requirements(cur, role, identity.company_id)
+            held = _certificates_for(cur, person.id, identity.company_id)
+            company_name = _company_name(identity.company_id)
+
+        overall = qscore.standing(requirements, held)["overall"]
+        if not overall.missing and not overall.expired:
+            return _json({
+                "sent": False, "reason": "Already compliant -- nothing outstanding.",
+                "missing": [], "expired": [],
+            })
+
+        from shared.comms import CommsNotConfigured, send_manager_reminder_email
+        try:
+            send_manager_reminder_email(
+                person.email, person.name, overall.missing, overall.expired, company_name,
+            )
+            return _json({"sent": True, "missing": overall.missing, "expired": overall.expired})
+        except CommsNotConfigured as exc:
+            return _json({
+                "sent": False, "reason": str(exc),
+                "missing": overall.missing, "expired": overall.expired,
+            })
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
 @app.route(route="certificates", methods=["GET"])
 def list_certificates(req: func.HttpRequest) -> func.HttpResponse:
     """Certificates this learner holds, expired ones included and marked."""

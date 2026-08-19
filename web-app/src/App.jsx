@@ -3,7 +3,7 @@ import {
   LogOut, BookOpen, Award, Users, CheckCircle2, Circle, Lock,
   ChevronRight, X, AlertCircle, Clock, ArrowLeft, User, Star,
   Trophy, Flame, Target, Mail, Briefcase, Share2, Download, Copy,
-  Loader2, RefreshCw, Upload, FileText, Link2,
+  Loader2, RefreshCw, Upload, FileText, Link2, Search, Send,
 } from "lucide-react";
 import * as api from "./api";
 import { Logo } from "./logo.jsx";
@@ -14,11 +14,14 @@ import { Logo } from "./logo.jsx";
  * Wired to the backend — these reflect the actual question bank and this learner's
  * actual answers:
  *   trainings, modules, lesson text, quiz questions, grading, scores,
- *   certificates, Q score, mastery breakdown
+ *   certificates, Q score, mastery breakdown, the manager's team roster and
+ *   completion numbers (api.teamCompletion(), the same qscore.standing() arithmetic
+ *   /qscore uses), and reminder sends (api.sendReminder() -- real, though whether it
+ *   actually delivers depends on RESEND_API_KEY being set for the environment)
  *
  * Still mock — no backend exists for them yet, and they are marked in the UI rather
  * than left to look real:
- *   badges, the companion pet, focus timer, teammates, the manager's team view
+ *   badges, the companion pet, focus timer, teammates
  *
  * The mock parts are kept because they are the product's design direction. They are
  * not kept quiet: pretending a number is measured when it is invented is how a demo
@@ -1945,11 +1948,141 @@ function ReportsToCard({ manager }) {
   );
 }
 
+/**
+ * One row per direct report, rolling up everyone who reports through them (their own
+ * subtree, however deep) into one line: team size, how many of that team are missing
+ * required training right now, how many are still compliant but have something expiring
+ * soon, and the team's average completion. Real numbers only -- every count here comes
+ * from api.teamCompletion(), which is qscore.standing() run for each person, the same
+ * arithmetic /qscore uses for one person's own score page.
+ */
+function buildTeamRows(people, completionByEmployeeId) {
+  const direct = people.filter((p) => p.direct);
+  const childrenByManager = new Map();
+  for (const p of people) {
+    const key = p.managerId;
+    if (!childrenByManager.has(key)) childrenByManager.set(key, []);
+    childrenByManager.get(key).push(p);
+  }
+  const subtreeOf = (root) => {
+    const out = [root];
+    const queue = [root];
+    while (queue.length) {
+      const current = queue.shift();
+      for (const kid of childrenByManager.get(current.employeeId) || []) {
+        out.push(kid);
+        queue.push(kid);
+      }
+    }
+    return out;
+  };
+
+  return direct.map((rep) => {
+    const members = subtreeOf(rep);
+    const stats = members
+      .map((m) => completionByEmployeeId.get(m.employeeId))
+      .filter(Boolean);
+    let incomplete = 0, withinDeadline = 0, coverageSum = 0;
+    for (const s of stats) {
+      const compliant = s.current >= s.required;
+      if (!compliant) incomplete += 1;
+      else if (s.renewalDueCount > 0) withinDeadline += 1;
+      coverageSum += s.coverage;
+    }
+    return {
+      employeeId: rep.employeeId,
+      name: rep.name,
+      email: rep.email,
+      teamSize: members.length,
+      incomplete,
+      withinDeadline,
+      completionPercent: stats.length ? Math.round(coverageSum / stats.length) : null,
+      statsKnown: stats.length === members.length,
+    };
+  });
+}
+
+function downloadTeamCsv(rows) {
+  const header = ["Name", "Email", "Team size", "Incomplete", "Within deadline", "Completion %"];
+  const lines = [header, ...rows.map((r) => [
+    r.name, r.email, r.teamSize, r.incomplete, r.withinDeadline,
+    r.completionPercent == null ? "" : r.completionPercent,
+  ])];
+  const csv = lines
+    .map((line) => line.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+    .join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "my-team.csv";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function ReminderCell({ employeeId }) {
+  // "idle" -> "sending" -> a short-lived result string ("Sent" or the server's own
+  // reason, e.g. "Already compliant" or "Email isn't configured"). Never assumes
+  // success client-side -- the label always reflects what POST /team/remind actually
+  // returned.
+  const [state, setState] = useState("idle");
+  const [note, setNote] = useState({ label: "", full: "" });
+
+  // The server's `reason` is a full sentence (it has to be honest about exactly why
+  // nothing was delivered) but a table cell is not the place for one -- show a short
+  // label and put the whole thing in a tooltip rather than reflowing the row.
+  const shortLabel = (reason) => {
+    if (!reason) return "Not sent";
+    const r = reason.toLowerCase();
+    if (r.includes("already compliant")) return "Already compliant";
+    if (r.includes("does not send email") || r.includes("not configured") || r.includes("resend_api_key")) {
+      return "Email not configured";
+    }
+    return reason.length > 28 ? reason.slice(0, 27) + "…" : reason;
+  };
+
+  const send = async () => {
+    setState("sending");
+    try {
+      const res = await api.sendReminder(employeeId);
+      setNote(res.sent
+        ? { label: "Sent", full: "Reminder email sent." }
+        : { label: shortLabel(res.reason), full: res.reason || "Not sent." });
+      setState("done");
+    } catch (err) {
+      const msg = err.message || "Failed";
+      setNote({ label: shortLabel(msg), full: msg });
+      setState("done");
+    }
+  };
+
+  if (state === "sending") return <Loader2 size={14} className="animate-spin" color={C.violet700} />;
+  if (state === "done") {
+    return (
+      <span style={{ color: C.sub }} className="text-xs whitespace-nowrap" title={note.full}>
+        {note.label}
+      </span>
+    );
+  }
+  return (
+    <button
+      onClick={send}
+      style={{ background: C.violet700, color: "#fff" }}
+      className="opacity-0 group-hover:opacity-100 transition-opacity text-xs font-semibold px-3 py-1.5 rounded-full inline-flex items-center gap-1.5 whitespace-nowrap"
+    >
+      <Send size={12} /> Send reminder
+    </button>
+  );
+}
+
 function ManagerTeam({ team }) {
   const people = team?.people || [];
   const targets = team?.uploadTargets || [];
-  const direct = people.filter((p) => p.direct);
-  const indirect = people.filter((p) => !p.direct);
+  const { data: completion, loading: completionLoading, error: completionError } =
+    useAsync(() => api.teamCompletion(), []);
+  const [query, setQuery] = useState("");
 
   if (!people.length) {
     return (
@@ -1961,77 +2094,105 @@ function ManagerTeam({ team }) {
     );
   }
 
-  const Row = ({ p }) => (
-    <tr key={p.employeeId} style={{ borderTop: `1px solid ${C.line}` }}>
-      <td className="px-4 py-3" style={{ color: C.ink }}>{p.name}</td>
-      <td className="px-4 py-3" style={{ color: C.sub }}>{p.title || p.roleCode}</td>
-      <td className="px-4 py-3">
-        <span style={{ background: p.direct ? C.lavender : "#F1F0F3", color: p.direct ? C.violet700 : C.sub }}
-              className="text-[11px] font-semibold px-2 py-0.5 rounded-full">
-          {p.direct ? "direct report" : "reports to " + (people.find((x) => x.employeeId === p.managerId)?.name || "a manager")}
-        </span>
-      </td>
-    </tr>
+  const completionByEmployeeId = new Map(
+    (completion?.people || []).map((p) => [p.employeeId, p])
+  );
+  const rows = buildTeamRows(people, completionByEmployeeId);
+  const q = query.trim().toLowerCase();
+  const filteredRows = rows.filter(
+    (r) => !q || r.name.toLowerCase().includes(q) || r.email.toLowerCase().includes(q)
   );
 
   return (
-    <div className="p-8 max-w-4xl">
+    <div className="p-8 max-w-5xl">
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">My team</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">
-        Everyone who reports to you, and the roles you can upload training for.
+        Everyone who reports to you, and how their training is going.
       </p>
 
       <ReportsToCard manager={team?.manager} />
 
-      <div className="grid grid-cols-3 gap-4 mb-6">
-        {[["Direct reports", direct.length],
-          ["Further down", indirect.length],
-          ["Roles you can upload for", targets.length]].map(([label, value]) => (
-          <div key={label} style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white">
-            <p style={{ color: C.sub }} className="text-xs font-semibold mb-1">{label}</p>
-            <p style={{ ...display, color: C.ink }} className="text-2xl font-bold">{value}</p>
-          </div>
-        ))}
-      </div>
+      {completionError && <ErrorBox error={completionError} />}
 
       <div style={{ borderColor: C.line }} className="border rounded-xl bg-white overflow-hidden mb-6">
+        <div style={{ borderColor: C.line }} className="border-b px-5 py-4 flex items-center justify-between gap-4 flex-wrap">
+          <h2 style={{ ...display, color: C.ink }} className="font-bold">
+            My team <span style={{ color: C.sub }} className="font-normal">({rows.length})</span>
+          </h2>
+          <div className="flex items-center gap-3">
+            <div style={{ borderColor: C.line }} className="border rounded-xl px-3 py-1.5 flex items-center gap-2">
+              <Search size={14} color={C.sub} />
+              <input
+                value={query} onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search team"
+                style={{ color: C.ink }}
+                className="text-sm outline-none w-32 bg-transparent"
+              />
+            </div>
+            <button onClick={() => downloadTeamCsv(rows)} style={{ color: C.violet700 }}
+              className="text-sm font-semibold flex items-center gap-1.5 whitespace-nowrap">
+              <Download size={14} /> CSV file
+            </button>
+          </div>
+        </div>
+
         <table className="w-full text-sm">
           <thead>
             <tr style={{ background: C.lavender, color: C.violet700 }} className="text-left text-xs uppercase tracking-wide">
-              <th className="px-4 py-3 font-semibold">Name</th>
-              <th className="px-4 py-3 font-semibold">Role</th>
-              <th className="px-4 py-3 font-semibold">Reporting line</th>
+              <th className="px-5 py-3 font-semibold whitespace-nowrap">Name</th>
+              <th className="px-5 py-3 font-semibold whitespace-nowrap">Team size</th>
+              <th className="px-5 py-3 font-semibold whitespace-nowrap">Incomplete</th>
+              <th className="px-5 py-3 font-semibold whitespace-nowrap">Within deadline</th>
+              <th className="px-5 py-3 font-semibold whitespace-nowrap">Completion</th>
+              <th className="px-5 py-3 font-semibold text-right whitespace-nowrap min-w-[160px]">&nbsp;</th>
             </tr>
           </thead>
           <tbody>
-            {direct.map((p) => <Row key={p.employeeId} p={p} />)}
-            {indirect.map((p) => <Row key={p.employeeId} p={p} />)}
+            {filteredRows.map((r) => (
+              <tr key={r.employeeId} style={{ borderTop: `1px solid ${C.line}` }} className="group">
+                <td className="px-5 py-3.5">
+                  <p style={{ color: C.ink }} className="font-semibold">{r.name}</p>
+                  <p style={{ color: C.sub }} className="text-xs">{r.email}</p>
+                </td>
+                <td className="px-5 py-3.5" style={{ color: C.ink }}>{r.teamSize}</td>
+                <td className="px-5 py-3.5" style={{ color: C.ink }}>
+                  {completionLoading && !r.statsKnown ? "…" : r.incomplete}
+                </td>
+                <td className="px-5 py-3.5" style={{ color: C.ink }}>
+                  {completionLoading && !r.statsKnown ? "…" : r.withinDeadline}
+                </td>
+                <td className="px-5 py-3.5" style={{ color: C.ink }}>
+                  {r.completionPercent == null ? (completionLoading ? "…" : "—") : `${r.completionPercent}%`}
+                </td>
+                <td className="px-5 py-3.5 text-right">
+                  <ReminderCell employeeId={r.employeeId} />
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
 
-      {/* Progress and overdue counts are deliberately absent. There is no per-employee
-          completion model behind this yet, and the previous version filled the gap with
-          invented figures under a "sample data" label. An empty column is honest; a
-          fabricated percentage next to a real name is not. */}
-      <div style={{ borderColor: C.line }} className="border rounded-xl p-5 bg-white">
-        <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">Upload training for</p>
-        <p style={{ color: C.sub }} className="text-xs mb-3">
-          Roles held by your reports. The ones your direct reports hold are marked; you can
-          also upload for roles further down if you need to.
-        </p>
-        <div className="flex flex-wrap gap-2">
-          {targets.map((t) => (
-            <span key={t.roleCode}
-                  style={{ borderColor: t.direct ? C.violet700 : C.line,
-                           color: t.direct ? C.violet700 : C.sub,
-                           background: t.direct ? C.lavender : "#fff" }}
-                  className="border rounded-full px-3 py-1 text-xs font-semibold">
-              {t.title} · {t.headcount}
-            </span>
-          ))}
+      {targets.length > 0 && (
+        <div style={{ borderColor: C.line }} className="border rounded-xl p-5 bg-white">
+          <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">Upload training for</p>
+          <p style={{ color: C.sub }} className="text-xs mb-3">
+            Roles held by your reports. The ones your direct reports hold are marked; you can
+            also upload for roles further down if you need to.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {targets.map((t) => (
+              <span key={t.roleCode}
+                    style={{ borderColor: t.direct ? C.violet700 : C.line,
+                             color: t.direct ? C.violet700 : C.sub,
+                             background: t.direct ? C.lavender : "#fff" }}
+                    className="border rounded-full px-3 py-1 text-xs font-semibold">
+                {t.title} · {t.headcount}
+              </span>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

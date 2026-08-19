@@ -153,6 +153,22 @@ export const completePathwayAssessment = (attemptId) =>
 export const team = () => call("/team");
 
 /**
+ * Real coverage numbers (required/current/coverage/missing/expired/renewalDueCount) for
+ * everyone in your reporting subtree, keyed by employeeId. Join with team().people for
+ * name/email/reporting line -- this endpoint only knows completion, not identity.
+ */
+export const teamCompletion = () => call("/team/completion");
+
+/**
+ * Nudge one person in your reporting subtree about their outstanding training. Real
+ * endpoint, real computed missing/expired list -- whether it actually sends an email
+ * depends on RESEND_API_KEY being configured for this environment, reflected honestly
+ * in the response's `sent` flag rather than always claiming success.
+ */
+export const sendReminder = (employeeId) =>
+  call("/team/remind", { method: "POST", body: { employeeId } });
+
+/**
  * Q Score. Pass an email to read a report's — permitted only inside your reporting
  * subtree, and a 404 otherwise, so this cannot be used to discover who exists.
  */
