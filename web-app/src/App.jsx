@@ -45,8 +45,8 @@ const C = {
   dangerBg: "#FCEBEA",
 };
 
-const font = { fontFamily: "'Inter', system-ui, sans-serif" };
-const display = { fontFamily: "'Sora', system-ui, sans-serif" };
+const font = { fontFamily: "'IBM Plex Sans', system-ui, sans-serif" };
+const display = { fontFamily: "'Fraunces', Georgia, serif" };
 
 // ---------- static (design-only) data ----------
 const FOCUS_PRIORITIES = [
@@ -330,8 +330,9 @@ function Login({ onLogin }) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center" style={{ ...font, background: `linear-gradient(160deg, ${C.violet900} 0%, ${C.violet700} 45%, ${C.violet500} 100%)` }}>
-      <div className="w-full max-w-md mx-4 bg-white rounded-2xl shadow-2xl overflow-hidden">
+    <div className="min-h-screen flex items-center justify-center" style={{ ...font, background: "#F5F4F9" }}>
+      <div className="w-full max-w-md mx-4 bg-white rounded-2xl shadow-xl overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
+        <div style={{ background: C.violet700, height: 4 }} />
         <div className="px-8 pt-8 pb-6">
           <div className="flex items-center mb-8"><Logo size={30} /></div>
           <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Sign in</h1>
@@ -546,6 +547,37 @@ function FocusSession() {
 }
 
 // ---------- Dashboard ----------
+// A flat row of real numbers, not another card -- the roadmap one level down
+// (LearningPath) already renders per-course progress, so this only needs to answer
+// "how am I doing overall," aggregated from the same /trainings response Dashboard
+// already fetches.
+function DashboardStats({ trainings }) {
+  if (trainings.length === 0) return null;
+  const total = trainings.length;
+  const completed = trainings.filter((t) => t.status === "completed").length;
+  const inProgress = trainings.filter((t) => t.status === "in-progress").length;
+  const compliant = trainings.filter((t) => t.compliant && !t.expired).length;
+  const pct = Math.round((completed / total) * 100);
+
+  const stats = [
+    { value: `${pct}%`, label: "Complete" },
+    { value: `${completed}/${total}`, label: "Trainings finished" },
+    { value: compliant, label: "Compliant now" },
+    { value: inProgress, label: "In progress" },
+  ];
+
+  return (
+    <div style={{ borderColor: C.line }} className="border-y flex mb-8">
+      {stats.map((s, i) => (
+        <div key={s.label} style={{ borderColor: C.line }} className={`flex-1 px-5 py-4 ${i > 0 ? "border-l" : ""}`}>
+          <div style={{ ...display, color: C.ink }} className="text-2xl font-bold leading-none mb-1">{s.value}</div>
+          <div style={{ color: C.sub }} className="text-xs font-semibold uppercase tracking-wide">{s.label}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Dashboard({ name, onOpenPath, onOpenTraining }) {
   const { data, loading, error, reload } = useAsync(() => api.trainings(), []);
   const trainings = data?.trainings || [];
@@ -561,6 +593,8 @@ function Dashboard({ name, onOpenPath, onOpenTraining }) {
 
       {loading && <Loading label="Loading your trainings…" />}
       {error && <ErrorBox error={error} onRetry={reload} />}
+
+      {!loading && !error && <DashboardStats trainings={trainings} />}
 
       {focus && (
         <div style={{ background: `linear-gradient(120deg, ${C.violet900}, ${C.violet700})` }}
@@ -2135,7 +2169,7 @@ function TeamHabitat({ members, highlightName }) {
 
           <circle cx={cx} cy={cy} r="28" fill={C.violet700} className="qhub-pulse" />
           <circle cx={cx} cy={cy} r="28" fill="none" stroke={C.violet300} strokeWidth="1.5" />
-          <text x={cx} y={cy + 6} textAnchor="middle" fill="#fff" fontSize="17" fontWeight="700" fontFamily="Sora, sans-serif">Q</text>
+          <text x={cx} y={cy + 6} textAnchor="middle" fill="#fff" fontSize="17" fontWeight="700" fontFamily="Fraunces, serif">Q</text>
 
           {nodes.map((nd) => {
             const isYou = nd.name === highlightName;
@@ -2148,10 +2182,10 @@ function TeamHabitat({ members, highlightName }) {
                 <svg x={nd.pos.x - nd.size / 2} y={nd.pos.y - nd.size / 2} width={nd.size} height={nd.size} viewBox={`0 0 ${nd.size} ${nd.size}`}>
                   <PetCreature stageIdx={nd.stageIdx} size={nd.size} />
                 </svg>
-                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 19} textAnchor="middle" fill={C.ink} fontSize="11" fontWeight="700" fontFamily="Inter, sans-serif">
+                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 19} textAnchor="middle" fill={C.ink} fontSize="11" fontWeight="700" fontFamily="'IBM Plex Sans', sans-serif">
                   {nd.name.split(" ")[0]}{isYou ? " (you)" : ""}
                 </text>
-                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 32} textAnchor="middle" fill={C.violet700} fontSize="9" fontWeight="600" fontFamily="Inter, sans-serif">
+                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 32} textAnchor="middle" fill={C.violet700} fontSize="9" fontWeight="600" fontFamily="'IBM Plex Sans', sans-serif">
                   Lv {nd.stage.level} · {nd.stage.name}
                 </text>
               </g>
@@ -2377,18 +2411,18 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
               </linearGradient>
             </defs>
             <rect x="0" y="0" width="240" height="340" rx="20" fill="url(#share-bg)" />
-            <text x="20" y="32" fill="#fff" fontSize="13" fontWeight="700" fontFamily="Sora, sans-serif" letterSpacing="1">QUIZRANT</text>
+            <text x="20" y="32" fill="#fff" fontSize="13" fontWeight="700" fontFamily="Fraunces, serif" letterSpacing="1">QUIZRANT</text>
             <svg x="45" y="52" width="150" height="150" viewBox="0 0 150 150">
               <PetCreature stageIdx={stageIdx} size={150} />
             </svg>
-            <text x="120" y="228" textAnchor="middle" fill="#fff" fontSize="20" fontWeight="700" fontFamily="Sora, sans-serif">{stage.name}</text>
-            <text x="120" y="250" textAnchor="middle" fill="#E4D7F7" fontSize="12" fontWeight="600" fontFamily="Inter, sans-serif">Level {stage.level} · {name}</text>
+            <text x="120" y="228" textAnchor="middle" fill="#fff" fontSize="20" fontWeight="700" fontFamily="Fraunces, serif">{stage.name}</text>
+            <text x="120" y="250" textAnchor="middle" fill="#E4D7F7" fontSize="12" fontWeight="600" fontFamily="'IBM Plex Sans', sans-serif">Level {stage.level} · {name}</text>
             <line x1="30" y1="268" x2="210" y2="268" stroke="rgba(255,255,255,0.2)" />
-            <text x="70" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="Sora, sans-serif">{qScore}</text>
-            <text x="70" y="308" textAnchor="middle" fill="#C9AEF5" fontSize="9" fontFamily="Inter, sans-serif">Q SCORE</text>
-            <text x="170" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="Sora, sans-serif">{trainingsCompleted}</text>
-            <text x="170" y="308" textAnchor="middle" fill="#C9AEF5" fontSize="9" fontFamily="Inter, sans-serif">TRAININGS</text>
-            <text x="120" y="325" textAnchor="middle" fill="rgba(255,255,255,0.5)" fontSize="9" fontFamily="Inter, sans-serif">quizrant.app</text>
+            <text x="70" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="Fraunces, serif">{qScore}</text>
+            <text x="70" y="308" textAnchor="middle" fill="#C9AEF5" fontSize="9" fontFamily="'IBM Plex Sans', sans-serif">Q SCORE</text>
+            <text x="170" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="Fraunces, serif">{trainingsCompleted}</text>
+            <text x="170" y="308" textAnchor="middle" fill="#C9AEF5" fontSize="9" fontFamily="'IBM Plex Sans', sans-serif">TRAININGS</text>
+            <text x="120" y="325" textAnchor="middle" fill="rgba(255,255,255,0.5)" fontSize="9" fontFamily="'IBM Plex Sans', sans-serif">quizrant.app</text>
           </svg>
         </div>
 
