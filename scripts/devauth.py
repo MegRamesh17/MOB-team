@@ -214,6 +214,32 @@ def set_notifications_enabled(employee_id: int, enabled: bool) -> bool:
     return True
 
 
+def get_pet_visible(employee_id: int) -> bool:
+    """Whether this employee wants the floating desk pet shown at all. Mirrors
+    Employees.pet_visible (032_add_pet_visibility_pref.sql) -- defaults to on, same as
+    the column's default."""
+    for user in _load_users():
+        if int(user.get("employee_id", -1)) == employee_id:
+            return bool(user.get("pet_visible", True))
+    return True
+
+
+def set_pet_visible(employee_id: int, visible: bool) -> bool:
+    """Persist the toggle. Returns False if the employee has no credential record yet
+    (nothing seeded) rather than silently creating a partial one."""
+    users = _load_users()
+    found = False
+    for user in users:
+        if int(user.get("employee_id", -1)) == employee_id:
+            user["pet_visible"] = bool(visible)
+            found = True
+            break
+    if not found:
+        return False
+    USERS_FILE.write_text(json.dumps({"users": users}, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
 def authenticate(email: str, password: str) -> Optional[Identity]:
     email = (email or "").strip().lower()
     for user in _load_users():

@@ -66,6 +66,10 @@ resource "azurerm_linux_function_app" "mob_functions" {
     "AZURE_STORAGE_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${var.key_vault_uri}secrets/storage-connection-string/)"
     "QUIZGEN_PASSING_SCORE"           = "80"
     "QUIZGEN_QUIZ_LENGTH"             = "8"
+    # Recording-friendly generation: normal coverage, grounding, citations and lesson
+    # quality, with two concurrent authors, no redundant research for substantial source
+    # material, and one balanced assessment batch. False restores the sequential path.
+    "QUIZGEN_DEMO_FAST" = "true"
     # Names quizgen/config.py already reads (_first("...", "AZURE_OPENAI_ENDPOINT") /
     # _first("...", "AZURE_OPENAI_KEY", ...)) -- nothing to change on the application
     # side, this was purely a missing app setting. Same conditional pattern as Document

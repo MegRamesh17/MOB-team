@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
+from . import pet_shop
 from .config import CONFIG
 from .models import (
     Attempt,
@@ -186,6 +187,19 @@ CREATE TABLE IF NOT EXISTS certificates (
     company_id      TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_certificates_learner ON certificates(learner_id, doc_title);
+
+-- Pet shop. One row per item a learner owns; `equipped` marks which owned item (at most
+-- one per slot, enforced in Bank.pet_equip) is currently worn. Mirrors Azure SQL's
+-- dbo.PetPurchases (031_create_pet_purchases.sql).
+CREATE TABLE IF NOT EXISTS pet_purchases (
+    learner_id    TEXT NOT NULL,
+    item_id       TEXT NOT NULL,
+    equipped      INTEGER NOT NULL DEFAULT 0,
+    purchased_at  TEXT NOT NULL,
+    company_id    TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (learner_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS ix_pet_purchases_learner ON pet_purchases(learner_id);
 """
 
 
@@ -875,3 +889,75 @@ class Bank:
         return [dict(r) for r in self.conn.execute(
             "SELECT * FROM certificates WHERE learner_id = :learner" + self._where()
             + " ORDER BY issued_at DESC", self._params(learner=learner_id))]
+
+    def trainings_completed_count(self, learner_id: str) -> int:
+        """
+        Distinct trainings this learner has ever been certified on. The same signal
+        list_trainings uses to mark a card "completed" -- so pet points and the
+        dashboard's own idea of "done" can never disagree.
+        """
+        row = self.conn.execute(
+            "SELECT COUNT(DISTINCT doc_title) AS n FROM certificates "
+            "WHERE learner_id = :learner" + self._where(), self._params(learner=learner_id),
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def pet_purchases(self, learner_id: str) -> List[dict]:
+        """Every item this learner owns, purchase order, oldest first."""
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM pet_purchases WHERE learner_id = :learner" + self._where()
+            + " ORDER BY purchased_at", self._params(learner=learner_id))]
+
+    def pet_purchase(self, learner_id: str, item_id: str) -> bool:
+        """
+        Record a purchase. Returns False if already owned (INSERT OR IGNORE on the
+        (learner_id, item_id) primary key) rather than double-charging on a retried
+        request.
+        """
+        cur = self.conn.execute(
+            "INSERT OR IGNORE INTO pet_purchases "
+            "(learner_id, item_id, equipped, purchased_at, company_id) "
+            "VALUES (?,?,0,?,?)",
+            (learner_id, item_id, utcnow(), self.company_id),
+        )
+        bought = cur.rowcount > 0
+        self.conn.commit()
+        return bought
+
+    def pet_equip(self, learner_id: str, item_id: str) -> bool:
+        """
+        Toggle-wear an owned item. Equipping one item in a slot unequips whatever else
+        that learner had on in the same slot -- a robot does not wear two hats.
+        Returns False if the item is not owned (nothing to equip).
+        """
+        slot = pet_shop.slot_of(item_id)
+        if slot is None:
+            return False
+        owned_ids = {p["item_id"] for p in self.pet_purchases(learner_id)}
+        if item_id not in owned_ids:
+            return False
+        same_slot = [i for i in owned_ids if pet_shop.slot_of(i) == slot]
+        currently_equipped = {
+            p["item_id"] for p in self.pet_purchases(learner_id) if p["equipped"]
+        }
+        if item_id in currently_equipped:
+            # already worn -- take it off
+            self.conn.execute(
+                "UPDATE pet_purchases SET equipped = 0 "
+                "WHERE learner_id = :learner AND item_id = :item" + self._where(),
+                self._params(learner=learner_id, item=item_id),
+            )
+        else:
+            for other in same_slot:
+                self.conn.execute(
+                    "UPDATE pet_purchases SET equipped = 0 "
+                    "WHERE learner_id = :learner AND item_id = :item" + self._where(),
+                    self._params(learner=learner_id, item=other),
+                )
+            self.conn.execute(
+                "UPDATE pet_purchases SET equipped = 1 "
+                "WHERE learner_id = :learner AND item_id = :item" + self._where(),
+                self._params(learner=learner_id, item=item_id),
+            )
+        self.conn.commit()
+        return True

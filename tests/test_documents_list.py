@@ -25,7 +25,17 @@ from test_api_quiz_answer import _install_azure_stubs, _patch_db, _token  # noqa
 _install_azure_stubs()
 
 import function_app  # noqa: E402
-from azure.functions import HttpRequest  # noqa: E402
+
+
+class Request:
+    def __init__(self, token):
+        self.headers = {"Authorization": "Bearer " + token}
+        self.params = {}
+
+
+def response_json(response):
+    body = response.get_body() if hasattr(response, "get_body") else response.body
+    return json.loads(body)
 
 
 def _manager_token():
@@ -35,10 +45,11 @@ def _manager_token():
 class TestActiveJobSurfaced(unittest.TestCase):
     def test_a_running_job_is_attached_to_its_document(self):
         responses = {
-            "FROM dbo.SourceChunks AS source": [
-                {"doc_id": "doc_zts", "doc_title": "Zero-Trust Security", "chunks": 6,
-                 "uploaded_by": 7, "uploaded_by_name": "Priya Nair",
-                 "source_kind": "upload", "pending_analysis_json": None}],
+            "FROM dbo.SourceChunks AS source": [{
+                "doc_id": "doc_zero", "doc_title": "Zero-Trust Security", "chunks": 6,
+                "uploaded_by": 3, "uploaded_by_name": "Ethan Brooks",
+                "source_kind": "upload", "pending_analysis_json": None,
+            }],
             "FROM dbo.GeneratedQuestions": [],
             "FROM dbo.GenerationJobs": [{
                 "job_id": "job_abc123", "doc_title": "Zero-Trust Security",
@@ -48,36 +59,39 @@ class TestActiveJobSurfaced(unittest.TestCase):
         }
         _patch_db(self, responses)
 
-        req = HttpRequest(headers={"Authorization": "Bearer " + _manager_token()}, params={})
+        req = Request(_manager_token())
         res = function_app.list_documents(req)
 
         self.assertEqual(res.status_code, 200)
-        docs = json.loads(res.body)["documents"]
+        docs = response_json(res)["documents"]
         self.assertEqual(len(docs), 1)
         active = docs[0]["activeJob"]
         self.assertIsNotNone(active, "a running job in GenerationJobs was not surfaced")
         self.assertEqual(active["jobId"], "job_abc123")
         self.assertEqual(active["total"], 6)
         self.assertEqual(active["done"], 2)
+        self.assertTrue(docs[0]["canDelete"])
+        self.assertEqual(docs[0]["documentId"], "doc_zero")
 
     def test_a_document_with_no_job_reports_none(self):
         responses = {
-            "FROM dbo.SourceChunks AS source": [
-                {"doc_id": "doc_onb", "doc_title": "Onboarding", "chunks": 3,
-                 "uploaded_by": None, "uploaded_by_name": None,
-                 "source_kind": "legacy", "pending_analysis_json": None}],
+            "FROM dbo.SourceChunks AS source": [{
+                "doc_id": "doc_onboarding", "doc_title": "Onboarding", "chunks": 3,
+                "uploaded_by": 3, "uploaded_by_name": "Ethan Brooks",
+                "source_kind": "upload", "pending_analysis_json": None,
+            }],
             "FROM dbo.GeneratedQuestions": [],
             "FROM dbo.GenerationJobs": [],
         }
         _patch_db(self, responses)
 
-        req = HttpRequest(headers={"Authorization": "Bearer " + _manager_token()}, params={})
-        docs = json.loads(function_app.list_documents(req).body)["documents"]
+        req = Request(_manager_token())
+        docs = response_json(function_app.list_documents(req))["documents"]
         self.assertIsNone(docs[0]["activeJob"])
 
     def test_requires_manager(self):
         _patch_db(self, {})
-        req = HttpRequest(headers={"Authorization": "Bearer " + _token(role="employee")}, params={})
+        req = Request(_token(role="employee"))
         res = function_app.list_documents(req)
         self.assertEqual(res.status_code, 403)
 

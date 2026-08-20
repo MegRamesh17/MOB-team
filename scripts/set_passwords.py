@@ -10,8 +10,11 @@ comment anticipated this ("backfill via a one-off admin script"); this is that s
     # give every employee without a password a generated one, and print them once
     python scripts/set_passwords.py --all --generate
 
+    # intentionally simple presentation credentials: intern01 -> password1, etc.
+    python scripts/set_passwords.py --role-code INTERN --demo-intern-passwords
+
     # set one person's password, prompted for, never echoed
-    python scripts/set_passwords.py --email ethan.brooks@demo.com
+    python scripts/set_passwords.py --email ethan.brooks@quizrant.com
 
     # see who can and cannot sign in
     python scripts/set_passwords.py --status
@@ -20,6 +23,9 @@ WHAT THIS WILL NOT DO
 Take a password on the command line. A `--password` flag lands the plaintext in your
 shell history, in `ps` output, and — if anyone ever wires this into CI — in a workflow
 log. Passwords are either prompted for or generated here and printed once.
+
+The one intentionally insecure exception is `--demo-intern-passwords`. It is restricted
+to the INTERN role and creates numbered presentation credentials only.
 
 Generated passwords are printed to stdout exactly once and never stored. Redirecting
 that output to a file in the repo is the one way to turn a safe script into a committed
@@ -31,6 +37,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
+import re
 import secrets
 import string
 import sys
@@ -61,6 +68,13 @@ def _generate_password() -> str:
     alphabet = string.ascii_letters + string.digits
     tail = "".join(secrets.choice(alphabet) for _ in range(5))
     return "{}-{}".format(words, tail)
+
+
+def _demo_intern_password(email: str) -> str:
+    match = re.fullmatch(r"intern(\d{2})@quizrant\.com", email.lower())
+    if match is None:
+        raise ValueError("unexpected demo intern account: {}".format(email))
+    return "password{}".format(int(match.group(1)))
 
 
 def _connection_string() -> str:
@@ -153,6 +167,20 @@ def cmd_set(conn, args) -> int:
         if not targets:
             print("No employee with email {}".format(args.email), file=sys.stderr)
             return 1
+    elif args.role_code:
+        clause = (
+            "" if (args.force or args.demo_intern_passwords)
+            else " AND e.password_hash IS NULL"
+        )
+        targets = cursor.execute(
+            "SELECT e.email FROM dbo.Employees e JOIN dbo.Roles r ON r.id = e.role_id "
+            "WHERE r.role_code = ?" + clause + " ORDER BY e.email",
+            args.role_code.upper(),
+        ).fetchall()
+        if not targets:
+            print("No matching accounts need passwords for role {}.".format(
+                args.role_code.upper()))
+            return 0
     else:
         # --all means "everyone who cannot currently sign in", not "everyone". Resetting
         # a password someone is already using, as a side effect of running a backfill, is
@@ -166,7 +194,16 @@ def cmd_set(conn, args) -> int:
 
     emails = [t.email for t in targets]
 
-    if args.generate:
+    if args.demo_intern_passwords:
+        assigned = {}
+        for email in emails:
+            try:
+                assigned[email] = _demo_intern_password(email)
+            except ValueError:
+                print("Refusing demo password for unexpected account {}.".format(email),
+                      file=sys.stderr)
+                return 1
+    elif args.generate:
         assigned = {e: _generate_password() for e in emails}
     else:
         if len(emails) > 1:
@@ -191,12 +228,15 @@ def cmd_set(conn, args) -> int:
     conn.commit()
 
     print("\nSet {} password(s).".format(len(assigned)))
-    if args.generate:
+    if args.generate or args.demo_intern_passwords:
         print("\n  {:<30} {}".format("EMAIL", "PASSWORD"))
         for email in sorted(assigned):
             print("  {:<30} {}".format(email, assigned[email]))
-        print("\nPrinted once and not stored — only the bcrypt hash is in the database.")
-        print("Do not redirect this into a file in the repo.\n")
+        if args.generate:
+            print("\nPrinted once and not stored — only the bcrypt hash is in the database.")
+            print("Do not redirect this into a file in the repo.\n")
+        else:
+            print("\nThese intentionally public credentials are for the presentation only.\n")
     return 0
 
 
@@ -208,13 +248,23 @@ def main() -> int:
     parser.add_argument("--email", help="set the password for one employee")
     parser.add_argument("--all", action="store_true",
                         help="set passwords for everyone who has none")
+    parser.add_argument("--role-code",
+                        help="set passwords only for employees with this training role")
     parser.add_argument("--generate", action="store_true",
                         help="generate passwords and print them once, instead of prompting")
+    parser.add_argument("--demo-intern-passwords", action="store_true",
+                        help="set intern01..intern10 to password1..password10")
     parser.add_argument("--force", action="store_true",
                         help="with --all, also reset employees who already have a password")
     args = parser.parse_args()
 
-    if not (args.status or args.email or args.all):
+    if args.demo_intern_passwords:
+        if (args.role_code or "").upper() != "INTERN":
+            parser.error("--demo-intern-passwords requires --role-code INTERN")
+        if args.generate:
+            parser.error("--demo-intern-passwords cannot be combined with --generate")
+
+    if not (args.status or args.email or args.all or args.role_code):
         parser.print_help()
         return 1
 

@@ -103,6 +103,7 @@ FROM (VALUES
     ('Software Development', 'Software Engineering',   'SDE 3',                           3, 'employee'),
     ('Software Development', 'Software Engineering',   'SDE 2',                           4, 'employee'),
     ('Software Development', 'Software Engineering',   'SDE 1',                           5, 'employee'),
+    ('Software Development', 'Software Engineering',   'Engineering Intern',              6, 'employee'),
     ('Software Development', 'DevOps',                 'Director of DevOps',              1, 'director'),
     ('Software Development', 'DevOps',                 'Senior DevOps',                   2, 'employee'),
     ('Software Development', 'DevOps',                 'DevOps Engineer',                 3, 'employee'),

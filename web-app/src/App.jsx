@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import * as api from "./api";
 import { Logo } from "./logo.jsx";
+import FloatingPet, { cheerPet, PetRobotSVG, PetShopModal } from "./FloatingPet.jsx";
 
 /**
  * WHAT IS REAL AND WHAT IS NOT.
@@ -97,15 +98,6 @@ const PROFILES = {
   employee: { name: "Daniel Cho", role: "Software Engineer I", email: "d.cho@quadranttechnologies.com", joined: "Feb 2025" },
   manager: { name: "Priya Nair", role: "Engineering Manager", email: "p.nair@quadranttechnologies.com", joined: "Nov 2022" },
 };
-
-const PET_STAGES = [
-  { level: 1, name: "Qibble", min: 0, size: 56 },
-  { level: 2, name: "Qip", min: 1, size: 74 },
-  { level: 3, name: "Quill", min: 3, size: 92 },
-  { level: 4, name: "Quorra", min: 5, size: 110 },
-  { level: 5, name: "Quasar", min: 8, size: 128 },
-  { level: 6, name: "Qrown", min: 12, size: 146 },
-];
 
 // The catalog only -- title/description/icon. Whether each one is actually earned
 // comes from GET /api/me's badges field (see Profile below); ids 2 and 6 have no
@@ -399,7 +391,7 @@ function Login({ onLogin }) {
 }
 
 // ---------- Shell ----------
-function Shell({ name, department, title, manages, active, setActive, onLogout, children }) {
+function Shell({ name, department, title, manages, active, setActive, onLogout, petVisible, children }) {
   // One nav for everyone. Managing people ADDS a tab; it does not replace the rest.
   //
   // This used to be two lists, with managerNav substituted for employeeNav — so a
@@ -476,6 +468,7 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
         </div>
       </aside>
       <main className="flex-1 min-h-0 overflow-y-auto">{children}</main>
+      {petVisible !== false && <FloatingPet />}
     </div>
   );
 }
@@ -962,7 +955,7 @@ function TrainingDetail({ training, onBack, onStartDiagnostic, onOpenModule, onS
   const path = data?.training;
 
   return (
-    <div className="p-8 max-w-3xl">
+    <div className="p-8">
       <button onClick={onBack} style={{ color: C.sub }} className="flex items-center gap-1 text-sm font-semibold mb-4">
         <ArrowLeft size={14} /> Back
       </button>
@@ -1186,7 +1179,7 @@ function QuizPreScreen({ training, assessment, onStart, onBack, starting, error 
       ? "The next question becomes harder after a correct answer and easier after a mistake."
       : "Every form follows the same topic and difficulty blueprint for fairness.";
   return (
-    <div className="p-8 max-w-xl">
+    <div className="p-8">
       <button onClick={onBack} style={{ color: C.sub }} className="flex items-center gap-1 text-sm font-semibold mb-4">
         <ArrowLeft size={14} /> Back
       </button>
@@ -1301,7 +1294,7 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
   };
 
   return (
-    <div className="p-8 max-w-2xl">
+    <div className="p-8">
       <button onClick={onBack} style={{ color: C.sub }} className="flex items-center gap-1 text-sm font-semibold mb-4">
         <ArrowLeft size={14} /> Exit quiz
       </button>
@@ -1407,7 +1400,7 @@ function QuizResults({ result, onRetake, onDone }) {
   const diagnostic = result.kind === "diagnostic";
   const checkpoint = result.kind === "module";
   return (
-    <div className="p-8 max-w-2xl">
+    <div className="p-8">
       <div style={{ borderColor: C.line }} className="border rounded-2xl p-8 bg-white text-center mb-6">
         <div className="flex justify-center mb-4">
           <MasteryRing value={result.scorePercent} size={100} stroke={9} />
@@ -1437,7 +1430,7 @@ function QuizResults({ result, onRetake, onDone }) {
                 <Award size={16} /> Certificate earned
               </div>
             )}
-            <Button onClick={onDone}>View training pathway</Button>
+            <Button onClick={() => { cheerPet(); onDone(); }}>View training pathway</Button>
           </>
         ) : (
           <>
@@ -1522,7 +1515,7 @@ function Certificates() {
   };
 
   return (
-    <div className="p-8 max-w-3xl">
+    <div className="p-8">
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Certificates</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">Everything you've completed and passed.</p>
 
@@ -2046,8 +2039,8 @@ function DocumentsScreen({ team, principal, onDone }) {
   const [uploadError, setUploadError] = useState(null);
   const [analysis, setAnalysis] = useState(null);   // awaiting manager confirmation
   const [job, setJob] = useState(null);
-  const [dragging, setDragging] = useState(false);
   const [deletingDocumentId, setDeletingDocumentId] = useState(null);
+  const [dragging, setDragging] = useState(false);
   const fileRef = useRef(null);
   const pollRef = useRef(null);
 
@@ -2143,7 +2136,7 @@ function DocumentsScreen({ team, principal, onDone }) {
   const pct = job && job.total ? Math.round((job.done / job.total) * 100) : 0;
 
   return (
-    <div className="p-8 max-w-3xl">
+    <div className="p-8">
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Resources</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">
         Upload a training document. The AI maps each section to the role it trains,
@@ -2486,7 +2479,7 @@ function ManagerTeam({ team }) {
 
   if (!people.length) {
     return (
-      <div className="p-8 max-w-4xl">
+      <div className="p-8">
         <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Reports</h1>
         <ReportsToCard manager={team?.manager} />
         <p style={{ color: C.sub }} className="text-sm">Nobody reports to you yet.</p>
@@ -2512,7 +2505,7 @@ function ManagerTeam({ team }) {
   const tableLabel = showTeamSize ? "Managers" : "My team";
 
   return (
-    <div className="p-8 max-w-5xl">
+    <div className="p-8">
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Reports</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">
         Everyone who reports to you, and how their training is going.
@@ -2605,313 +2598,136 @@ function ManagerTeam({ team }) {
   );
 }
 
-function getPetStageIdx(trainingsCompleted) {
-  let idx = 0;
-  for (let i = 0; i < PET_STAGES.length; i++) {
-    if (trainingsCompleted >= PET_STAGES[i].min) idx = i;
-  }
-  return idx;
-}
-
-function PetCreature({ stageIdx, size }) {
-  const s = size;
-  const cx = s / 2, cy = s / 2 + s * 0.06;
-  const bodyR = s * 0.34;
-  const uid = `${size}-${stageIdx}`;
+// The department-wide leaderboard is the whole page now -- TeamLeaderboard fetches
+// its own data (GET /team/leaderboard), so this is just the page frame around it.
+function TeammatesGallery() {
   return (
-    <svg width={s} height={s} viewBox={`0 0 ${s} ${s}`}>
-      {stageIdx >= 4 && (
-        <ellipse cx={cx} cy={cy} rx={bodyR * 1.55} ry={bodyR * 0.5} fill="none" stroke={C.green300} strokeWidth="2" opacity="0.7" />
-      )}
-
-      {stageIdx >= 3 && (
-        <>
-          <ellipse cx={cx - bodyR * 1.05} cy={cy} rx={bodyR * 0.5} ry={bodyR * 0.72}
-            fill={C.mint} stroke={C.green500} strokeWidth="1.5" transform={`rotate(-18 ${cx - bodyR} ${cy})`} />
-          <ellipse cx={cx + bodyR * 1.05} cy={cy} rx={bodyR * 0.5} ry={bodyR * 0.72}
-            fill={C.mint} stroke={C.green500} strokeWidth="1.5" transform={`rotate(18 ${cx + bodyR} ${cy})`} />
-        </>
-      )}
-
-      {stageIdx >= 2 && [-1, 0, 1].map((i) => (
-        <polygon key={i}
-          points={`${cx + i * bodyR * 0.42},${cy - bodyR * 0.95} ${cx + i * bodyR * 0.42 - 5},${cy - bodyR * 0.55} ${cx + i * bodyR * 0.42 + 5},${cy - bodyR * 0.55}`}
-          fill={C.green500} />
-      ))}
-
-      {stageIdx >= 1 && (
-        <>
-          <ellipse cx={cx - bodyR * 0.72} cy={cy - bodyR * 0.85} rx={bodyR * 0.24} ry={bodyR * 0.34}
-            fill={C.green600} transform={`rotate(-25 ${cx - bodyR * 0.72} ${cy - bodyR * 0.85})`} />
-          <ellipse cx={cx + bodyR * 0.72} cy={cy - bodyR * 0.85} rx={bodyR * 0.24} ry={bodyR * 0.34}
-            fill={C.green600} transform={`rotate(25 ${cx + bodyR * 0.72} ${cy - bodyR * 0.85})`} />
-        </>
-      )}
-
-      <path d={`M ${cx + bodyR * 0.48} ${cy + bodyR * 0.58} L ${cx + bodyR * 1.02} ${cy + bodyR * 1.12}`}
-        stroke={C.green900} strokeWidth={Math.max(2.5, bodyR * 0.16)} strokeLinecap="round" />
-
-      <circle cx={cx} cy={cy} r={bodyR} fill={C.green600} />
-      <ellipse cx={cx} cy={cy + bodyR * 0.32} rx={bodyR * 0.62} ry={bodyR * 0.42} fill={C.mint} opacity="0.85" />
-
-      <circle cx={cx - bodyR * 0.32} cy={cy - bodyR * 0.05} r={bodyR * 0.15} fill="#fff" />
-      <circle cx={cx + bodyR * 0.32} cy={cy - bodyR * 0.05} r={bodyR * 0.15} fill="#fff" />
-      <circle cx={cx - bodyR * 0.29} cy={cy - bodyR * 0.02} r={bodyR * 0.07} fill={C.ink} />
-      <circle cx={cx + bodyR * 0.35} cy={cy - bodyR * 0.02} r={bodyR * 0.07} fill={C.ink} />
-
-      <path d={`M ${cx - bodyR * 0.2} ${cy + bodyR * 0.28} Q ${cx} ${cy + bodyR * 0.42} ${cx + bodyR * 0.2} ${cy + bodyR * 0.28}`}
-        fill="none" stroke={C.ink} strokeWidth={Math.max(1.5, bodyR * 0.05)} strokeLinecap="round" />
-
-      <circle cx={cx - bodyR * 0.55} cy={cy + bodyR * 0.15} r={bodyR * 0.12} fill={C.green300} opacity="0.6" />
-      <circle cx={cx + bodyR * 0.55} cy={cy + bodyR * 0.15} r={bodyR * 0.12} fill={C.green300} opacity="0.6" />
-
-      {stageIdx >= 5 && (
-        <polygon
-          points={`${cx - bodyR * 0.5},${cy - bodyR * 0.95} ${cx - bodyR * 0.28},${cy - bodyR * 1.25} ${cx},${cy - bodyR * 0.98} ${cx + bodyR * 0.28},${cy - bodyR * 1.25} ${cx + bodyR * 0.5},${cy - bodyR * 0.95}`}
-          fill={C.green500} stroke={C.green900} strokeWidth="1" strokeLinejoin="round" />
-      )}
-    </svg>
+    <div className="p-8">
+      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Team</h1>
+      <p style={{ color: C.sub }} className="text-sm mb-6">Ranked by points earned from trainings completed.</p>
+      <TeamLeaderboard />
+    </div>
   );
 }
 
-function polarPoint(cx, cy, r, angleDeg) {
-  const rad = (angleDeg * Math.PI) / 180;
-  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+function LeaderboardRankBadge({ rank }) {
+  const top = rank === 1;
+  const podium = rank <= 3;
+  return (
+    <div
+      style={{
+        background: top ? C.green700 : podium ? C.mint : "transparent",
+        color: top ? "#fff" : podium ? C.green700 : C.sub,
+        borderColor: podium ? "transparent" : C.line,
+      }}
+      className="w-7 h-7 rounded-full border flex items-center justify-center text-xs font-bold shrink-0"
+    >
+      {rank}
+    </div>
+  );
 }
 
-function TeamHabitat({ members, highlightName }) {
-  const [selected, setSelected] = useState(null);
-  const width = 720, height = 420;
-  const cx = width / 2, cy = height / 2 + 6;
-  const radius = Math.min(width, height) / 2 - 92;
-  const n = members.length;
-
-  const nodes = members.map((m, i) => {
-    const angle = -90 + (360 / n) * i;
-    const pos = polarPoint(cx, cy, radius, angle);
-    const stageIdx = getPetStageIdx(m.trainingsCompleted);
-    const stage = PET_STAGES[stageIdx];
-    const size = Math.min(88, Math.max(52, stage.size * 0.62));
-    return { ...m, pos, stageIdx, stage, size };
-  });
-
-  const selectedNode = nodes.find((nd) => nd.name === selected);
+function TeamLeaderboard() {
+  const { data, loading, error, reload } = useAsync(() => api.teamLeaderboard(), []);
 
   return (
     <div>
-      <div style={{ borderColor: C.line, background: C.mint }} className="border rounded-2xl p-3 overflow-hidden">
-        <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ display: "block" }}>
-          <style>{`
-            @keyframes qhub-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 0.95; } }
-            .qhub-pulse { animation: qhub-pulse 3s ease-in-out infinite; }
-          `}</style>
+      {loading && <Loading />}
+      {error && <ErrorBox error={error} onRetry={reload} />}
 
-          {n >= 3 && nodes.map((nd, i) => {
-            const nxt = nodes[(i + 1) % n];
-            return <line key={`edge-${i}`} x1={nd.pos.x} y1={nd.pos.y} x2={nxt.pos.x} y2={nxt.pos.y}
-              stroke={C.green300} strokeWidth="1.5" strokeDasharray="3 5" opacity="0.5" />;
-          })}
+      {data && data.leaderboard.length === 0 && (
+        <p style={{ color: C.sub }} className="text-sm">No department is set up for your role yet.</p>
+      )}
 
-          {nodes.map((nd, i) => {
-            const isSelected = selected === nd.name;
-            return <line key={`spoke-${i}`} x1={cx} y1={cy} x2={nd.pos.x} y2={nd.pos.y}
-              stroke={isSelected ? C.green700 : C.green300} strokeWidth={isSelected ? 2.5 : 1.5} opacity={isSelected ? 0.9 : 0.45} />;
-          })}
-
-          <circle cx={cx} cy={cy} r="28" fill={C.green700} className="qhub-pulse" />
-          <circle cx={cx} cy={cy} r="28" fill="none" stroke={C.green300} strokeWidth="1.5" />
-          <text x={cx} y={cy + 6} textAnchor="middle" fill="#fff" fontSize="17" fontWeight="700" fontFamily="'Playfair Display', serif">Q</text>
-
-          {nodes.map((nd) => {
-            const isYou = nd.name === highlightName;
-            const isSelected = selected === nd.name;
-            return (
-              <g key={nd.name} onClick={() => setSelected(isSelected ? null : nd.name)} style={{ cursor: "pointer" }}>
-                <circle cx={nd.pos.x} cy={nd.pos.y} r={nd.size / 2 + 9}
-                  fill="#fff" stroke={isYou ? C.green700 : isSelected ? C.green500 : C.line}
-                  strokeWidth={isYou || isSelected ? 2.5 : 1.5} />
-                <svg x={nd.pos.x - nd.size / 2} y={nd.pos.y - nd.size / 2} width={nd.size} height={nd.size} viewBox={`0 0 ${nd.size} ${nd.size}`}>
-                  <PetCreature stageIdx={nd.stageIdx} size={nd.size} />
-                </svg>
-                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 19} textAnchor="middle" fill={C.ink} fontSize="11" fontWeight="700" fontFamily="'Inter', sans-serif">
-                  {nd.name.split(" ")[0]}{isYou ? " (you)" : ""}
-                </text>
-                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 32} textAnchor="middle" fill={C.green700} fontSize="9" fontWeight="600" fontFamily="'Inter', sans-serif">
-                  Lv {nd.stage.level} · {nd.stage.name}
-                </text>
-              </g>
-            );
-          })}
-        </svg>
-      </div>
-
-      {selectedNode ? (
-        <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white mt-4 flex items-center gap-4">
-          <div className="rounded-xl flex items-center justify-center shrink-0" style={{ width: 60, height: 60, background: C.mint }}>
-            <PetCreature stageIdx={selectedNode.stageIdx} size={44} />
-          </div>
-          <div>
-            <p style={{ color: C.ink }} className="text-sm font-semibold">
-              {selectedNode.name}{selectedNode.name === highlightName ? " (you)" : ""}
-            </p>
-            <p style={{ color: C.sub }} className="text-xs">
-              {selectedNode.role} · {selectedNode.stage.name}, Level {selectedNode.stage.level} · {selectedNode.trainingsCompleted} training{selectedNode.trainingsCompleted === 1 ? "" : "s"} completed
-            </p>
-          </div>
+      {data && data.leaderboard.length > 0 && (
+        <div style={{ borderColor: C.line }} className="border rounded-xl bg-white overflow-hidden">
+          {data.leaderboard.map((row, i) => (
+            <div
+              key={row.employeeId}
+              style={{
+                borderColor: C.line,
+                background: row.isYou ? C.mint : "transparent",
+              }}
+              className={`flex items-center gap-4 px-5 py-3 ${i > 0 ? "border-t" : ""}`}
+            >
+              <LeaderboardRankBadge rank={i + 1} />
+              <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: C.mint }}>
+                <PetRobotSVG size={24} mood="idle" equippedItemIds={row.equippedItemIds} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p style={{ color: C.ink }} className="text-sm font-semibold truncate">
+                  {row.name}{row.isYou ? " (you)" : ""}
+                </p>
+                <p style={{ color: C.sub }} className="text-xs truncate">{row.title}</p>
+              </div>
+              <div className="text-right shrink-0">
+                <p style={{ ...display, color: C.ink }} className="text-sm font-bold">{row.pointsEarned}</p>
+                <p style={{ color: C.sub }} className="text-[10px] uppercase tracking-wide">points</p>
+              </div>
+            </div>
+          ))}
         </div>
-      ) : (
-        <p style={{ color: C.sub }} className="text-xs mt-3 text-center">Tap a character to see who they are.</p>
       )}
     </div>
   );
 }
 
-// Your reporting subtree, from GET /team — everyone below you in the Employees.manager_id
-// chain, however deep, so a director sees their managers' reports too. The server decides
-// who is in here; this only draws what it returns.
-//
-// It used to filter a hardcoded ROSTER by department and say "the backend has no org chart
-// yet". That was true when it was written and is not any more, which made it worse than a
-// blank screen: it showed invented colleagues to someone who reads them as real.
-function TeammatesGallery({ team, name }) {
-  // team is null while the fetch is in flight, and also if it failed — signIn() catches
-  // to null. Distinguishing the two would need a third state; "not loaded" covers both
-  // honestly and neither is worth a different screen.
-  if (!team) {
-    return (
-      <div className="p-8 max-w-4xl">
-        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Team</h1>
-        <p style={{ color: C.sub }} className="text-sm">Loading your team…</p>
-      </div>
-    );
-  }
-
-  // Peers, not the reporting subtree: teammates are the people who share YOUR
-  // manager (an SDE1 has SDE2/SDE3 as teammates this way), not people below you --
-  // that's My Team, a separate screen, and most people have nobody below them at
-  // all. Someone with direct reports still sees their own peers here, same as
-  // anyone else; who they manage stays on My Team.
-  const peers = team.peers || [];
-
-  // Nobody sharing your manager is a fact about the org chart, not an error -- the
-  // endpoint returns 200 with an empty list rather than 403. TeamHabitat divides by
-  // members.length to place nodes on a circle, so it must not be handed an empty
-  // list either way.
-  if (peers.length === 0) {
-    return (
-      <div className="p-8 max-w-4xl">
-        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Team</h1>
-        <p style={{ color: C.sub }} className="text-sm">
-          Nobody else shares your manager, so there is no team to show. If that looks
-          wrong, it means reporting lines have not been set for your organisation yet.
-        </p>
-      </div>
-    );
-  }
-
-  // trainingsCompleted drives the character stage. GET /team does not return it — it
-  // answers who your teammates are, not how far along each of them is — so it is
-  // passed as 0 rather than invented. Everyone renders at the first stage until
-  // there is a real per-person figure to use; a plausible-looking fake number is
-  // the one thing this screen must not go back to.
-  const members = peers.map((p) => ({
-    name: p.name,
-    role: p.title || p.roleCode,
-    trainingsCompleted: 0,
-  }));
-
-  return (
-    <div className="p-8 max-w-4xl">
-      <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Team</h1>
-      <p style={{ color: C.sub }} className="text-sm mb-6">
-        People who share your manager — {peers.length} {peers.length === 1 ? "person" : "people"}.
-      </p>
-      <TeamHabitat members={members} highlightName={name} />
-    </div>
-  );
-}
-
-function CompanionCard({ trainingsCompleted, name, qScore }) {
-  const stageIdx = getPetStageIdx(trainingsCompleted);
-  const stage = PET_STAGES[stageIdx];
-  const next = PET_STAGES[stageIdx + 1];
-  const progressPct = next
-    ? Math.round(((trainingsCompleted - stage.min) / (next.min - stage.min)) * 100)
-    : 100;
+function MyPetCard({ name, qScore }) {
+  const { data, loading, error, reload } = useAsync(() => api.getPet(), []);
+  const [showShop, setShowShop] = useState(false);
   const [showShare, setShowShare] = useState(false);
 
   return (
     <div style={{ borderColor: C.line }} className="border rounded-xl p-5 bg-white mb-8">
       <div className="flex items-center justify-between mb-4">
-        <h3 style={{ ...display, color: C.ink }} className="font-bold">Your Q character</h3>
-        <div className="flex items-center gap-2">
-          <button onClick={() => setShowShare(true)} style={{ borderColor: C.line, color: C.green700 }}
-            className="border text-xs font-semibold px-3 py-1.5 rounded-full flex items-center gap-1.5">
-            <Share2 size={12} /> Share
-          </button>
-          <span style={{ background: C.mint, color: C.green700 }} className="text-xs font-semibold px-2.5 py-1 rounded-full">
-            Level {stage.level}
-          </span>
-        </div>
+        <h3 style={{ ...display, color: C.ink }} className="font-bold">Your robot</h3>
+        {data && (
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowShare(true)} style={{ borderColor: C.line, color: C.green700 }}
+              className="border text-xs font-semibold px-3 py-1.5 rounded-full flex items-center gap-1.5">
+              <Share2 size={12} /> Share
+            </button>
+            <button onClick={() => setShowShop(true)} style={{ background: C.green700 }}
+              className="text-white text-xs font-semibold px-3 py-1.5 rounded-full">
+              Customize
+            </button>
+          </div>
+        )}
       </div>
 
-      <div className="flex items-center gap-6 mb-5 flex-wrap">
-        <div className="rounded-2xl flex items-center justify-center shrink-0" style={{ width: 160, height: 160, background: C.mint }}>
-          <PetCreature stageIdx={stageIdx} size={stage.size} />
-        </div>
-        <div className="flex-1 min-w-[200px]">
-          <p style={{ ...display, color: C.ink }} className="text-lg font-bold mb-0.5">{stage.name}</p>
-          <p style={{ color: C.sub }} className="text-sm mb-3">
-            {trainingsCompleted} training{trainingsCompleted === 1 ? "" : "s"} completed
-          </p>
-          {next ? (
-            <>
-              <div className="flex items-center justify-between mb-1.5">
-                <span style={{ color: C.sub }} className="text-xs font-semibold">
-                  {next.min - trainingsCompleted} more to reach {next.name}
-                </span>
-                <span style={{ color: C.sub }} className="text-xs font-semibold">{progressPct}%</span>
-              </div>
-              <div style={{ background: C.line }} className="w-full h-2.5 rounded-full overflow-hidden">
-                <div style={{ width: `${progressPct}%`, background: C.green700 }} className="h-full rounded-full transition-all" />
-              </div>
-            </>
-          ) : (
-            <p style={{ color: C.green700 }} className="text-xs font-semibold flex items-center gap-1.5">
-              <Trophy size={13} /> Max level reached — {stage.name} is fully grown
+      {loading && <Loading />}
+      {error && <ErrorBox error={error} onRetry={reload} />}
+
+      {data && (
+        <div className="flex items-center gap-6 flex-wrap">
+          <div className="rounded-2xl flex items-center justify-center shrink-0" style={{ width: 170, height: 190, background: C.mint }}>
+            <PetRobotSVG size={104} mood="idle" equippedItemIds={data.equippedItemIds} />
+          </div>
+          <div className="flex-1 min-w-[200px]">
+            <p style={{ ...display, color: C.ink }} className="text-lg font-bold mb-0.5">{data.pointsBalance} points</p>
+            <p style={{ color: C.sub }} className="text-sm mb-3">
+              {data.pointsEarned} earned from {data.trainingsCompleted} training{data.trainingsCompleted === 1 ? "" : "s"} completed
+              {data.ownedItemIds.length > 0 && ` · ${data.ownedItemIds.length} item${data.ownedItemIds.length === 1 ? "" : "s"} owned`}
             </p>
-          )}
+            <p style={{ color: C.sub }} className="text-xs">
+              Finish a training to earn 100 points, then spend them on the shop to dress up your robot.
+            </p>
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="flex items-center">
-        {PET_STAGES.map((st, i) => {
-          const reached = i <= stageIdx;
-          const isLast = i === PET_STAGES.length - 1;
-          return (
-            <React.Fragment key={st.level}>
-              <div className="flex flex-col items-center" style={{ width: 56 }}>
-                <div style={{ background: reached ? C.green700 : "#F1F0F3", color: reached ? "#fff" : "#9A93A8" }}
-                  className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0">
-                  {reached ? (i === stageIdx ? st.level : <CheckCircle2 size={14} />) : <Lock size={11} />}
-                </div>
-                <span style={{ color: reached ? C.ink : C.sub }} className="text-[10px] font-semibold mt-1 text-center leading-tight">{st.name}</span>
-              </div>
-              {!isLast && <div style={{ background: i < stageIdx ? C.green700 : C.line }} className="flex-1 h-0.5 -mt-4" />}
-            </React.Fragment>
-          );
-        })}
-      </div>
-
-      {showShare && (
-        <ShareCharacterModal stage={stage} stageIdx={stageIdx} name={name} qScore={qScore}
-          trainingsCompleted={trainingsCompleted} onClose={() => setShowShare(false)} />
+      {showShop && (
+        <PetShopModal onClose={() => setShowShop(false)} onChanged={() => reload()} />
+      )}
+      {showShare && data && (
+        <ShareCharacterModal equippedItemIds={data.equippedItemIds} name={name} qScore={qScore}
+          trainingsCompleted={data.trainingsCompleted} onClose={() => setShowShare(false)} />
       )}
     </div>
   );
 }
 
-function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted, onClose }) {
+function ShareCharacterModal({ equippedItemIds, name, qScore, trainingsCompleted, onClose }) {
   const svgRef = useRef(null);
   const [copied, setCopied] = useState(false);
 
@@ -2930,13 +2746,13 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
       URL.revokeObjectURL(url);
       const a = document.createElement("a");
       a.href = canvas.toDataURL("image/png");
-      a.download = `${stage.name.toLowerCase()}-ascend-card.png`;
+      a.download = "my-ascend-robot-card.png";
       a.click();
     };
     img.src = url;
   };
 
-  const caption = `I just reached Level ${stage.level} with ${stage.name} on Ascend! ${trainingsCompleted} trainings completed, Q Score ${qScore}.`;
+  const caption = `Meet my Ascend robot! ${trainingsCompleted} trainings completed, Q Score ${qScore}.`;
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(caption);
@@ -2949,7 +2765,7 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(30,27,46,0.6)" }} onClick={onClose}>
       <div style={font} className="bg-white rounded-2xl p-5 max-w-sm w-full" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
-          <h3 style={{ ...display, color: C.ink }} className="font-bold">Share your character</h3>
+          <h3 style={{ ...display, color: C.ink }} className="font-bold">Share your robot</h3>
           <button onClick={onClose} style={{ color: C.sub }}><X size={18} /></button>
         </div>
 
@@ -2957,11 +2773,10 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
           <svg ref={svgRef} width="240" height="340" viewBox="0 0 240 340" xmlns="http://www.w3.org/2000/svg">
             <rect x="0" y="0" width="240" height="340" rx="20" fill={C.green900} />
             <text x="20" y="32" fill="#fff" fontSize="13" fontWeight="700" fontFamily="'Playfair Display', serif" letterSpacing="1">ASCEND</text>
-            <svg x="45" y="52" width="150" height="150" viewBox="0 0 150 150">
-              <PetCreature stageIdx={stageIdx} size={150} />
-            </svg>
-            <text x="120" y="228" textAnchor="middle" fill="#fff" fontSize="20" fontWeight="700" fontFamily="'Playfair Display', serif">{stage.name}</text>
-            <text x="120" y="250" textAnchor="middle" fill="#CFE9D9" fontSize="12" fontWeight="600" fontFamily="'Inter', sans-serif">Level {stage.level} · {name}</text>
+            <g transform="translate(60, 50)">
+              <PetRobotSVG size={120} mood="happy" equippedItemIds={equippedItemIds} />
+            </g>
+            <text x="120" y="250" textAnchor="middle" fill="#CFE9D9" fontSize="12" fontWeight="600" fontFamily="'Inter', sans-serif">{name}</text>
             <line x1="30" y1="268" x2="210" y2="268" stroke="rgba(255,255,255,0.2)" />
             <text x="70" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="'Playfair Display', serif">{qScore}</text>
             <text x="70" y="308" textAnchor="middle" fill="#A9DFC0" fontSize="9" fontFamily="'Inter', sans-serif">Q SCORE</text>
@@ -3082,50 +2897,69 @@ function SkillInterestPopup({ onRecorded }) {
 }
 
 // ---------- Profile ----------
-function Settings() {
-  const { data, loading, error, reload } = useAsync(() => api.getSettings(), []);
-  const [saving, setSaving] = useState(false);
+function SettingsToggleRow({ title, description, value, saving, onToggle }) {
+  return (
+    <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 flex items-center justify-between gap-6">
+      <div className="min-w-0">
+        <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">{title}</p>
+        <p style={{ color: C.sub }} className="text-xs">{description}</p>
+      </div>
+      <button
+        onClick={onToggle} disabled={saving} aria-pressed={value}
+        style={{ background: value ? C.green700 : C.line }}
+        className="w-11 h-6 rounded-full relative shrink-0 transition-colors disabled:opacity-60"
+      >
+        <span
+          style={{ background: "#fff", left: value ? 22 : 2 }}
+          className="w-5 h-5 rounded-full absolute top-0.5 transition-all"
+        />
+      </button>
+    </div>
+  );
+}
+
+// settings/onSettingsChange are lifted to App rather than fetched here, so toggling
+// petVisible takes effect on the floating pet immediately -- Shell reads the same
+// state this page writes.
+function Settings({ settings, onSettingsChange }) {
+  const [saving, setSaving] = useState(null); // null | "notifications" | "pet"
   const [saveError, setSaveError] = useState(null);
 
-  const toggle = async () => {
-    setSaving(true);
+  const toggle = async (field, key) => {
+    setSaving(field);
     setSaveError(null);
     try {
-      await api.updateSettings(!data.notificationsEnabled);
-      await reload();
+      const next = await api.updateSettings({ [key]: !settings[key] });
+      onSettingsChange(next);
     } catch (err) {
       setSaveError(err.message || "Could not save.");
     }
-    setSaving(false);
+    setSaving(null);
   };
 
   return (
-    <div className="p-8 max-w-2xl">
+    <div className="p-8">
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Settings</h1>
       <p style={{ color: C.sub }} className="text-sm mb-8">Your account preferences.</p>
 
-      {loading && <Loading />}
-      {error && <ErrorBox error={error} onRetry={reload} />}
+      {!settings && <Loading />}
 
-      {data && (
-        <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 flex items-center justify-between gap-6">
-          <div className="min-w-0">
-            <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">Email notifications</p>
-            <p style={{ color: C.sub }} className="text-xs">
-              Reminders about training that's due soon, and a notice when something new is
-              assigned to your role.
-            </p>
-          </div>
-          <button
-            onClick={toggle} disabled={saving} aria-pressed={data.notificationsEnabled}
-            style={{ background: data.notificationsEnabled ? C.green700 : C.line }}
-            className="w-11 h-6 rounded-full relative shrink-0 transition-colors disabled:opacity-60"
-          >
-            <span
-              style={{ background: "#fff", left: data.notificationsEnabled ? 22 : 2 }}
-              className="w-5 h-5 rounded-full absolute top-0.5 transition-all"
-            />
-          </button>
+      {settings && (
+        <div className="space-y-4">
+          <SettingsToggleRow
+            title="Email notifications"
+            description="Reminders about training that's due soon, and a notice when something new is assigned to your role."
+            value={settings.notificationsEnabled}
+            saving={saving === "notifications"}
+            onToggle={() => toggle("notifications", "notificationsEnabled")}
+          />
+          <SettingsToggleRow
+            title="Desk pet"
+            description="The floating character in the corner of the screen. Turn this off if you'd rather it not be there -- while taking a quiz, or ever."
+            value={settings.petVisible}
+            saving={saving === "pet"}
+            onToggle={() => toggle("pet", "petVisible")}
+          />
         </div>
       )}
       {saveError && <p style={{ color: C.danger }} className="text-xs font-semibold mt-3">{saveError}</p>}
@@ -3181,7 +3015,7 @@ function Profile({ principal }) {
   const earnedCount = badges.filter((b) => b.earned).length;
 
   return (
-    <div className="p-8 max-w-4xl">
+    <div className="p-8">
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">My profile</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">Your progress and Q score at a glance.</p>
 
@@ -3241,7 +3075,7 @@ function Profile({ principal }) {
         </div>
       )}
 
-      <CompanionCard trainingsCompleted={completed} name={p.name} qScore={qScore} />
+      <MyPetCard name={p.name} qScore={qScore} />
 
       <div className="grid grid-cols-3 gap-4 mb-8">
         <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white flex items-center gap-3">
@@ -3336,6 +3170,10 @@ export default function App() {
   // access_role: the tier says what you may DO, the reporting line says whose training
   // you are responsible for, and they are not the same question.
   const [team, setTeam] = useState(null);
+  // Lifted here (not fetched inside Settings) so the floating pet's visibility can
+  // react the instant someone toggles it, without needing Shell and Settings to
+  // share state any other way.
+  const [settings, setSettings] = useState(null);
   const [view, setView] = useState("dashboard");
   const [training, setTraining] = useState(null);
   const [module, setModule] = useState(null);
@@ -3349,6 +3187,7 @@ export default function App() {
     setAuth(principal);
     setView("dashboard");
     api.team().then(setTeam).catch(() => setTeam(null));
+    api.getSettings().then(setSettings).catch(() => setSettings(null));
   }, []);
 
   // Restore a session from the stored token. api.currentUser() clears an expired token
@@ -3465,9 +3304,9 @@ export default function App() {
   } else if (view === "certificates") {
     content = <Certificates />;
   } else if (view === "teammates") {
-    content = <TeammatesGallery team={team} name={auth.name || auth.email} />;
+    content = <TeammatesGallery />;
   } else if (view === "settings") {
-    content = <Settings />;
+    content = <Settings settings={settings} onSettingsChange={setSettings} />;
   }
 
   const quizViews = ["trainingDetail", "lesson", "quizPre", "quizRunner", "quizResults"];
@@ -3481,6 +3320,7 @@ export default function App() {
         manages={manages}
         active={quizViews.includes(view) ? "dashboard" : view}
         setActive={goto}
+        petVisible={settings ? settings.petVisible : true}
         onLogout={async () => {
           await api.logout();
           setAuth(null);

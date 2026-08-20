@@ -42,6 +42,7 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 from auth.login import bp as auth_bp
 from shared.auth import get_current_employee, require_manager
 from shared import qscore
+from shared import pet_shop
 
 app.register_functions(auth_bp)
 
@@ -2516,6 +2517,22 @@ def get_team(req: func.HttpRequest) -> func.HttpResponse:
             )
             peers = _rows(cur)
 
+            # What each peer's robot is wearing -- cosmetic only, never points or
+            # trainings completed (peers' own progress is theirs, not something this
+            # screen exposes). One batched query rather than one per peer.
+            peer_equipped: Dict[int, List[str]] = {}
+            peer_ids = [p["id"] for p in peers]
+            if peer_ids:
+                placeholders = ",".join("?" for _ in peer_ids)
+                cur.execute(
+                    "SELECT employee_id, item_id FROM dbo.PetPurchases "
+                    "WHERE company_id = ? AND equipped = 1 "
+                    "AND employee_id IN ({})".format(placeholders),
+                    identity.company_id, *peer_ids,
+                )
+                for r in _rows(cur):
+                    peer_equipped.setdefault(r["employee_id"], []).append(r["item_id"])
+
             # Who I report to -- shown alongside "people below you" on My Team, so a
             # manager sees both directions of the chain, not just downward.
             manager = None
@@ -2579,6 +2596,7 @@ def get_team(req: func.HttpRequest) -> func.HttpResponse:
                     "email": p["email"],
                     "title": p.get("title"),
                     "roleCode": (p.get("role_code") or "ALL").upper(),
+                    "equippedItemIds": peer_equipped.get(p["id"], []),
                 }
                 for p in peers
             ],
@@ -2586,6 +2604,77 @@ def get_team(req: func.HttpRequest) -> func.HttpResponse:
             "uploadTargets": sorted(
                 targets.values(), key=lambda t: (not t["direct"], t["title"])),
         })
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="team/leaderboard", methods=["GET"])
+def get_team_leaderboard(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Everyone in the caller's department, ranked by points earned. Deliberately
+    department-wide rather than just the peers GET /team returns -- a leaderboard of
+    two or three people sharing one manager isn't much of a competition.
+
+    Ranked by pointsEarned (100 per training actually completed), not pointsBalance --
+    balance falls when someone spends it in the shop, and standing should reward
+    finishing training, not hoarding points.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """SELECT e.id, e.name, r.title
+                     FROM dbo.Employees e
+                     JOIN dbo.Roles r ON r.id = e.role_id
+                     JOIN dbo.Teams t ON t.id = r.team_id
+                     JOIN dbo.Departments d ON d.id = t.department_id
+                    WHERE e.company_id = ? AND d.name = ?
+                    ORDER BY e.name""",
+                identity.company_id, identity.department,
+            )
+            members = _rows(cur)
+            member_ids = [m["id"] for m in members]
+
+            completed_by_employee: Dict[int, int] = {}
+            equipped_by_employee: Dict[int, List[str]] = {}
+            if member_ids:
+                placeholders = ",".join("?" for _ in member_ids)
+                cur.execute(
+                    "SELECT employee_id, COUNT(DISTINCT doc_title) AS n FROM dbo.Certificates "
+                    "WHERE company_id = ? AND employee_id IN ({}) "
+                    "GROUP BY employee_id".format(placeholders),
+                    identity.company_id, *member_ids,
+                )
+                for r in _rows(cur):
+                    completed_by_employee[r["employee_id"]] = r["n"]
+
+                cur.execute(
+                    "SELECT employee_id, item_id FROM dbo.PetPurchases "
+                    "WHERE company_id = ? AND equipped = 1 AND employee_id IN ({})".format(
+                        placeholders),
+                    identity.company_id, *member_ids,
+                )
+                for r in _rows(cur):
+                    equipped_by_employee.setdefault(r["employee_id"], []).append(r["item_id"])
+
+        board = []
+        for m in members:
+            completed = completed_by_employee.get(m["id"], 0)
+            board.append({
+                "employeeId": m["id"],
+                "name": m["name"],
+                "title": m.get("title"),
+                "isYou": m["id"] == identity.employee_id,
+                "trainingsCompleted": completed,
+                "pointsEarned": pet_shop.points_earned(completed),
+                "equippedItemIds": equipped_by_employee.get(m["id"], []),
+            })
+        board.sort(key=lambda x: (-x["pointsEarned"], x["name"]))
+
+        return _json({"departmentName": identity.department, "leaderboard": board})
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
 
@@ -2782,8 +2871,9 @@ def send_team_reminder(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="settings", methods=["GET"])
 def get_settings(req: func.HttpRequest) -> func.HttpResponse:
-    """This employee's own preferences. One so far: whether they want the reminder/
-    notification email shared.comms already knows how to send."""
+    """This employee's own preferences: whether they want the reminder/notification
+    email shared.comms already knows how to send, and whether the floating desk pet
+    shows up on their screen at all."""
     identity = get_current_employee(req)
     if identity is None:
         return _unauthorized()
@@ -2791,11 +2881,15 @@ def get_settings(req: func.HttpRequest) -> func.HttpResponse:
         with _conn() as c:
             cur = c.cursor()
             cur.execute(
-                "SELECT notifications_enabled FROM dbo.Employees WHERE id = ? AND company_id = ?",
+                "SELECT notifications_enabled, pet_visible FROM dbo.Employees "
+                "WHERE id = ? AND company_id = ?",
                 identity.employee_id, identity.company_id,
             )
             row = cur.fetchone()
-        return _json({"notificationsEnabled": bool(row.notifications_enabled) if row else True})
+        return _json({
+            "notificationsEnabled": bool(row.notifications_enabled) if row else True,
+            "petVisible": bool(row.pet_visible) if row else True,
+        })
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
 
@@ -2806,6 +2900,11 @@ def set_settings(req: func.HttpRequest) -> func.HttpResponse:
     Update the caller's own preferences -- never someone else's: there is no
     employeeId in the body, only what the token says about who is asking, the same
     rule every other write in this file follows.
+
+    Each preference is independently optional in the body -- the caller sends only
+    the one it changed, and whichever it omits is left exactly as stored rather than
+    reset to a default. The response always reflects both, current, regardless of
+    which one (if either) the request actually touched.
     """
     identity = get_current_employee(req)
     if identity is None:
@@ -2815,19 +2914,184 @@ def set_settings(req: func.HttpRequest) -> func.HttpResponse:
     except ValueError:
         return _error(400, "Bad request", "Body must be JSON")
 
-    enabled = body.get("notificationsEnabled")
-    if not isinstance(enabled, bool):
-        return _error(400, "Bad request", "notificationsEnabled (boolean) is required.")
+    updates = []
+    params = []
+    if "notificationsEnabled" in body:
+        enabled = body.get("notificationsEnabled")
+        if not isinstance(enabled, bool):
+            return _error(400, "Bad request", "notificationsEnabled must be a boolean.")
+        updates.append("notifications_enabled = ?")
+        params.append(enabled)
+    if "petVisible" in body:
+        visible = body.get("petVisible")
+        if not isinstance(visible, bool):
+            return _error(400, "Bad request", "petVisible must be a boolean.")
+        updates.append("pet_visible = ?")
+        params.append(visible)
+    if not updates:
+        return _error(400, "Bad request",
+                       "Provide notificationsEnabled and/or petVisible (booleans).")
 
     try:
         with _conn() as c:
             cur = c.cursor()
             cur.execute(
-                "UPDATE dbo.Employees SET notifications_enabled = ? WHERE id = ? AND company_id = ?",
-                enabled, identity.employee_id, identity.company_id,
+                "UPDATE dbo.Employees SET {} WHERE id = ? AND company_id = ?".format(
+                    ", ".join(updates)),
+                *params, identity.employee_id, identity.company_id,
             )
             c.commit()
-        return _json({"notificationsEnabled": enabled})
+            cur.execute(
+                "SELECT notifications_enabled, pet_visible FROM dbo.Employees "
+                "WHERE id = ? AND company_id = ?",
+                identity.employee_id, identity.company_id,
+            )
+            row = cur.fetchone()
+        return _json({
+            "notificationsEnabled": bool(row.notifications_enabled),
+            "petVisible": bool(row.pet_visible),
+        })
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+def _pet_state(cur, identity) -> Dict[str, Any]:
+    """Shared by GET /pet and both mutating routes below, so a purchase or an equip
+    responds with the same freshly-computed numbers rather than the caller's stale copy."""
+    cur.execute(
+        "SELECT COUNT(DISTINCT doc_title) AS n FROM dbo.Certificates "
+        "WHERE employee_id = ? AND company_id = ?",
+        identity.employee_id, identity.company_id,
+    )
+    completed = int(cur.fetchone()[0] or 0)
+
+    cur.execute(
+        "SELECT item_id, equipped FROM dbo.PetPurchases WHERE employee_id = ? AND company_id = ?",
+        identity.employee_id, identity.company_id,
+    )
+    owned = _rows(cur)
+    owned_ids = [r["item_id"] for r in owned]
+    equipped_ids = [r["item_id"] for r in owned if r["equipped"]]
+
+    return {
+        "trainingsCompleted": completed,
+        "pointsEarned": pet_shop.points_earned(completed),
+        "pointsBalance": pet_shop.points_balance(completed, owned_ids),
+        "ownedItemIds": owned_ids,
+        "equippedItemIds": equipped_ids,
+        "catalog": pet_shop.catalog_public(),
+    }
+
+
+@app.route(route="pet", methods=["GET"])
+def get_pet(req: func.HttpRequest) -> func.HttpResponse:
+    """This employee's pet: points derived from certificates earned, items owned and
+    worn. Nothing here is stored as a mutable balance -- see api/shared/pet_shop.py."""
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    try:
+        with _conn() as c:
+            return _json(_pet_state(c.cursor(), identity))
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="pet/purchase", methods=["POST"])
+def purchase_pet_item(req: func.HttpRequest) -> func.HttpResponse:
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+
+    item_id = (body.get("itemId") or "").strip()
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT COUNT(DISTINCT doc_title) AS n FROM dbo.Certificates "
+                "WHERE employee_id = ? AND company_id = ?",
+                identity.employee_id, identity.company_id,
+            )
+            completed = int(cur.fetchone()[0] or 0)
+            cur.execute(
+                "SELECT item_id FROM dbo.PetPurchases WHERE employee_id = ? AND company_id = ?",
+                identity.employee_id, identity.company_id,
+            )
+            owned_ids = [r["item_id"] for r in _rows(cur)]
+
+            if not pet_shop.can_afford(completed, owned_ids, item_id):
+                return _error(400, "Bad request",
+                              "Cannot buy {!r} -- not enough points, already owned, or "
+                              "not a real item.".format(item_id))
+
+            cur.execute(
+                "INSERT INTO dbo.PetPurchases (employee_id, company_id, item_id, equipped) "
+                "VALUES (?, ?, ?, 0)",
+                identity.employee_id, identity.company_id, item_id,
+            )
+            c.commit()
+            return _json(_pet_state(cur, identity))
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="pet/equip", methods=["POST"])
+def equip_pet_item(req: func.HttpRequest) -> func.HttpResponse:
+    """Toggle-wear an owned item. Equipping one item in a slot unequips whatever else
+    was worn in that slot -- a robot does not wear two hats."""
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+
+    item_id = (body.get("itemId") or "").strip()
+    slot = pet_shop.slot_of(item_id)
+    if slot is None:
+        return _error(400, "Bad request", "{!r} is not a real item.".format(item_id))
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT item_id, equipped FROM dbo.PetPurchases "
+                "WHERE employee_id = ? AND company_id = ?",
+                identity.employee_id, identity.company_id,
+            )
+            owned = _rows(cur)
+            owned_ids = {r["item_id"] for r in owned}
+            if item_id not in owned_ids:
+                return _error(400, "Bad request", "{!r} is not owned.".format(item_id))
+
+            currently_equipped = {r["item_id"] for r in owned if r["equipped"]}
+            if item_id in currently_equipped:
+                cur.execute(
+                    "UPDATE dbo.PetPurchases SET equipped = 0 "
+                    "WHERE employee_id = ? AND company_id = ? AND item_id = ?",
+                    identity.employee_id, identity.company_id, item_id,
+                )
+            else:
+                same_slot = [i for i in owned_ids if pet_shop.slot_of(i) == slot]
+                for other in same_slot:
+                    cur.execute(
+                        "UPDATE dbo.PetPurchases SET equipped = 0 "
+                        "WHERE employee_id = ? AND company_id = ? AND item_id = ?",
+                        identity.employee_id, identity.company_id, other,
+                    )
+                cur.execute(
+                    "UPDATE dbo.PetPurchases SET equipped = 1 "
+                    "WHERE employee_id = ? AND company_id = ? AND item_id = ?",
+                    identity.employee_id, identity.company_id, item_id,
+                )
+            c.commit()
+            return _json(_pet_state(cur, identity))
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
 
@@ -3300,8 +3564,6 @@ def list_documents(req: func.HttpRequest) -> func.HttpResponse:
                 identity.company_id,
             )
             source_docs = list(cur.fetchall())
-            chunk_counts = {r.doc_title: r.chunks for r in source_docs}
-            by_title = {r.doc_title: r for r in source_docs}
             cur.execute(
                 "SELECT source_doc_title, COUNT(*) AS n FROM dbo.GeneratedQuestions "
                 "WHERE company_id = ? AND review_status = 'Approved' "
@@ -3336,8 +3598,7 @@ def list_documents(req: func.HttpRequest) -> func.HttpResponse:
 
         may_delete_any = (identity.access_role or "") in ("admin", "executive")
         docs = []
-        for title, count in sorted(chunk_counts.items()):
-            row = by_title[title]
+        for row in sorted(source_docs, key=lambda item: item.doc_title.lower()):
             pending = None
             if row.pending_analysis_json:
                 try:
@@ -3349,12 +3610,12 @@ def list_documents(req: func.HttpRequest) -> func.HttpResponse:
                     pending = None
             docs.append({
                 "documentId": row.doc_id,
-                "title": title,
-                "chunks": count,
-                "questions": q_counts.get(title, 0),
+                "title": row.doc_title,
+                "chunks": row.chunks,
+                "questions": q_counts.get(row.doc_title, 0),
                 # Read but not yet generated from -- the UI offers to generate for these.
-                "ready": q_counts.get(title, 0) > 0,
-                "activeJob": active_jobs.get(title),
+                "ready": q_counts.get(row.doc_title, 0) > 0,
+                "activeJob": active_jobs.get(row.doc_title),
                 # Set only while the AI's proposed mapping hasn't been confirmed yet --
                 # lets DocumentsScreen reopen MappingReview after a remount instead of
                 # the proposal just vanishing with whatever tab held it in memory.
@@ -3483,8 +3744,8 @@ def _delete_training_document(cur, company_id: int, document_id: str,
     )
     remove(
         # Deleting this row is also how a job that's still running finds out it should
-        # stop -- _run_generation_job's should_stop callback checks whether its own job
-        # row still exists. There's no separate "cancel" endpoint: cancelling a running
+        # stop -- _run_generation_job's per-chunk loop checks whether its own job row
+        # still exists. There's no separate "cancel" endpoint: cancelling a running
         # generation and deleting a finished document are the same action from here,
         # just with different timing. A best-effort stop, not an instant kill -- the
         # background worker notices between chunks (one chunk's worth of gpt-5 latency,
@@ -3772,6 +4033,7 @@ def _run_generation_job(
 ) -> None:
     """Author, validate and assess a course outside the request that queued it."""
     from shared.sqlbank import SqlBank, get_job, update_job
+    from quizgen.config import CONFIG
     from quizgen.coursegen import assessment_chunks, build_instructional_course
     from quizgen.pipeline import generate_questions
 
@@ -3836,7 +4098,10 @@ def _run_generation_job(
                     return
                 module = next(item for item in course.ready_modules
                               if item.module_id == getattr(chunk, "module_id", ""))
-                target = max(20, min(30, len(module.learning_points) * 3))
+                target = (
+                    CONFIG.demo_fast_question_count if CONFIG.demo_fast
+                    else max(20, min(30, len(module.learning_points) * 3))
+                )
                 per_difficulty = int((target + 2) // 3)
                 result = generate_questions(
                     bank, [chunk], per_chunk=per_difficulty,
@@ -4005,18 +4270,20 @@ def add_trusted_link(req: func.HttpRequest) -> func.HttpResponse:
     # upload_document's chunks are considered "saved" -- before the AI role-mapping step,
     # so a manager can still see and re-confirm this link even if that step fails for
     # lack of model credentials.
+    trusted_link_id = None
     try:
         with _conn() as c:
             from shared.sqlbank import SqlBank
             bank = SqlBank(c, identity.company_id)
-            link_id = bank.add_trusted_link(identity.employee_id, scope, role_code, url)
+            trusted_link_id = bank.add_trusted_link(
+                identity.employee_id, scope, role_code, url)
     except Exception as exc:  # noqa: BLE001
         logging.exception("Failed to record trusted link row for %s", url)
         return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
 
     return _ingest_and_propose(
         chunks, identity, label=url, retitle_suffix=host,
-        source_kind="trusted_link", trusted_link_id=link_id,
+        source_kind="trusted_link", trusted_link_id=trusted_link_id,
         extra_fields={"crawl": crawl_info},
     )
 

@@ -8,6 +8,7 @@
     "SQL_USER": "mobsqladmin",
     "SQL_PASSWORD": "",
     "QUIZGEN_PASSING_SCORE": "80",
-    "QUIZGEN_QUIZ_LENGTH": "8"
+    "QUIZGEN_QUIZ_LENGTH": "8",
+    "QUIZGEN_DEMO_FAST": "false"
   }
 }

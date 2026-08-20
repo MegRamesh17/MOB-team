@@ -54,7 +54,17 @@ FROM (VALUES
     ('Naomi Reyes',      'naomi.reyes@quizrant.com',     'Director of DevOps',              'Expert',   0, ''),
     ('Ben Novak',        'ben.novak@quizrant.com',       'Senior DevOps',                   'Expert',   0, ''),
     ('Grace Kim',        'grace.kim@quizrant.com',       'DevOps Engineer',                 'Mediocre', 0, 'Finish on-call onboarding'),
-    ('Diego Martins',    'diego.martins@quizrant.com',   'Junior DevOps',                   'Beginner', 0, 'Finish onboarding requirements')
+    ('Diego Martins',    'diego.martins@quizrant.com',   'Junior DevOps',                   'Beginner', 0, 'Finish onboarding requirements'),
+    ('Audience Intern 01', 'intern01@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training'),
+    ('Audience Intern 02', 'intern02@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training'),
+    ('Audience Intern 03', 'intern03@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training'),
+    ('Audience Intern 04', 'intern04@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training'),
+    ('Audience Intern 05', 'intern05@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training'),
+    ('Audience Intern 06', 'intern06@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training'),
+    ('Audience Intern 07', 'intern07@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training'),
+    ('Audience Intern 08', 'intern08@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training'),
+    ('Audience Intern 09', 'intern09@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training'),
+    ('Audience Intern 10', 'intern10@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training')
 ) AS v(name, email, role_title, mastery_level, mastery_override, goal)
 JOIN Roles r ON r.title = v.role_title
 WHERE NOT EXISTS (SELECT 1 FROM Employees e WHERE e.email = v.email);
@@ -88,6 +98,19 @@ JOIN (VALUES
     ('diego.martins@quizrant.com',  'naomi.reyes@quizrant.com'),
     ('naomi.reyes@quizrant.com',    'marcus.chen@quizrant.com'),
 
+    -- Audience demo accounts use one low-privilege training role and report to Dana,
+    -- so Dana can assign one INTERN course to all ten at once.
+    ('intern01@quizrant.com',       'dana.whitfield@quizrant.com'),
+    ('intern02@quizrant.com',       'dana.whitfield@quizrant.com'),
+    ('intern03@quizrant.com',       'dana.whitfield@quizrant.com'),
+    ('intern04@quizrant.com',       'dana.whitfield@quizrant.com'),
+    ('intern05@quizrant.com',       'dana.whitfield@quizrant.com'),
+    ('intern06@quizrant.com',       'dana.whitfield@quizrant.com'),
+    ('intern07@quizrant.com',       'dana.whitfield@quizrant.com'),
+    ('intern08@quizrant.com',       'dana.whitfield@quizrant.com'),
+    ('intern09@quizrant.com',       'dana.whitfield@quizrant.com'),
+    ('intern10@quizrant.com',       'dana.whitfield@quizrant.com'),
+
     -- Sales (unchanged)
     ('sofia.delgado@quizrant.com',  'priya.n@quizrant.com'),
     ('noah.whitaker@quizrant.com',  'priya.n@quizrant.com'),
@@ -95,6 +118,37 @@ JOIN (VALUES
 ) AS v(email, manager_email) ON v.email = e.email
 JOIN Employees m ON m.email = v.manager_email
 WHERE e.manager_id IS NULL OR e.manager_id <> m.id;
+
+-- These are presentation logins, not real inboxes. Do not spend time or provider quota
+-- attempting assignment and expiry emails for them.
+UPDATE Employees
+   SET notifications_enabled = 0
+ WHERE email IN
+       ('intern01@quizrant.com', 'intern02@quizrant.com', 'intern03@quizrant.com',
+        'intern04@quizrant.com', 'intern05@quizrant.com', 'intern06@quizrant.com',
+        'intern07@quizrant.com', 'intern08@quizrant.com', 'intern09@quizrant.com',
+        'intern10@quizrant.com');
+
+-- Intentionally public presentation credentials: intern01 uses password1 through
+-- intern10 using password10. Store only bcrypt hashes and scope the update to both the
+-- ten explicit emails and the low-privilege INTERN role so no real account can be reset.
+UPDATE employee
+   SET password_hash = credential.password_hash
+  FROM dbo.Employees AS employee
+  JOIN dbo.Roles AS role ON role.id = employee.role_id
+  JOIN (VALUES
+    ('intern01@quizrant.com', '$2b$12$TXbSHNi.JK3hYUtMMMuS0uxh4FbJWXlgaFb9tR7CjjLKA79JKV4xy'),
+    ('intern02@quizrant.com', '$2b$12$I32leJi/xUDP1v2SiO6b/e5fTVOnznEvWIAHJckBULWPmza6l1v8O'),
+    ('intern03@quizrant.com', '$2b$12$C0VolDjo68j/ed9EifFEv.Ie8NzwwJ.U7bv5s6hyVuEO/.7J7/hTK'),
+    ('intern04@quizrant.com', '$2b$12$bmaeWZ9j6LY8MLXIwfyuSeH4yUDbvgU7msOr0sm2qvBUCnppwMhwS'),
+    ('intern05@quizrant.com', '$2b$12$NlqMUi82bMGmJ1/dCDYl7OiC2aMy7bsxw69mObMuWYqSaNBeMA78G'),
+    ('intern06@quizrant.com', '$2b$12$sB5uw4sCHqzbQTF5qIT/n.ERGwZ.WOm6mrYUXrfrJB1Xy.Mg/pkk2'),
+    ('intern07@quizrant.com', '$2b$12$UlRoUoljfi.C4bf52A9x8OHQuYm.qTtmfSQ8bnEvBCxMqSoNYuFsK'),
+    ('intern08@quizrant.com', '$2b$12$vXjaYGEvIoZLwqlqrOcwK.56oPCyZsWJtQbNd8IBW4szMaUU0nFcq'),
+    ('intern09@quizrant.com', '$2b$12$vTjqw4kbVEd46iO1CHJ36e3JfI7IYqM3O8ObrW.wyyfO38bjiAchS'),
+    ('intern10@quizrant.com', '$2b$12$SvzVZSQH4K5LbrOIMtWRUuNU3YXmDraBQclNUZ5n872qK3UGJnfIq')
+  ) AS credential(email, password_hash) ON credential.email = employee.email
+ WHERE role.role_code = 'INTERN';
 
 -- =========================================================
 -- 2. COURSES

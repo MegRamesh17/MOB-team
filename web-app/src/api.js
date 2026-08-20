@@ -128,10 +128,24 @@ export const skillOptions = () => call("/skills/options");
 export const setSkillInterest = (skills) =>
   call("/skills/interest", { method: "POST", body: { skills } });
 
-/** This learner's own preferences. Real, persisted server-side -- not a local toggle. */
+/**
+ * The floating pet: points (derived from certificates earned, never a stored balance),
+ * the shop catalog, and what this employee owns/wears.
+ */
+export const getPet = () => call("/pet");
+export const purchasePetItem = (itemId) =>
+  call("/pet/purchase", { method: "POST", body: { itemId } });
+export const equipPetItem = (itemId) =>
+  call("/pet/equip", { method: "POST", body: { itemId } });
+
+/**
+ * This learner's own preferences. Real, persisted server-side -- not a local toggle.
+ * updateSettings takes a partial update ({ notificationsEnabled } and/or
+ * { petVisible }) -- whichever field is omitted is left exactly as stored.
+ */
 export const getSettings = () => call("/settings");
-export const updateSettings = (notificationsEnabled) =>
-  call("/settings", { method: "POST", body: { notificationsEnabled } });
+export const updateSettings = (updates) =>
+  call("/settings", { method: "POST", body: updates });
 
 export async function downloadCertificate(certificateUrl) {
   const url = certificateUrl.startsWith("http") ? certificateUrl : BASE + certificateUrl;
@@ -168,6 +182,13 @@ export const team = () => call("/team");
  * name/email/reporting line -- this endpoint only knows completion, not identity.
  */
 export const teamCompletion = () => call("/team/completion");
+
+/**
+ * Everyone in your department, ranked by points earned (real, derived from trainings
+ * actually completed -- see api/shared/pet_shop.py). Department-wide, not just the
+ * peers team() returns.
+ */
+export const teamLeaderboard = () => call("/team/leaderboard");
 
 /**
  * Nudge one person in your reporting subtree about their outstanding training. Real

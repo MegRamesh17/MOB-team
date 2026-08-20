@@ -152,7 +152,13 @@ class AzureOpenAIGenerator:
         count: int = 2,
         difficulty: Optional[Difficulty] = None,
     ) -> List[Question]:
+        balanced_demo = CONFIG.demo_fast and difficulty is None
         want = "" if difficulty is None else " Target difficulty: {}.".format(difficulty.value)
+        if balanced_demo:
+            want = (
+                " Use an even Easy, Medium and Hard distribution, with at least one "
+                "MultipleChoice question at every difficulty."
+            )
         augmented = (
             CONFIG.generation_mode == "augmented"
             and chunk.container != "generated-lessons"

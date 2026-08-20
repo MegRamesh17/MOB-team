@@ -400,6 +400,8 @@ class Handler(BaseHTTPRequestHandler):
 
             if route == "/api/team":
                 return self._team()
+            if route == "/api/team/leaderboard":
+                return self._team_leaderboard()
             if route == "/api/team/completion":
                 return self._team_completion()
             if route == "/api/settings":
@@ -420,6 +422,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._lesson(query)
             if route == "/api/certificates":
                 return self._certificates()
+            if route == "/api/pet":
+                return self._pet_get()
             if route == "/api/documents":
                 return self._list_documents()
             if route == "/api/links":
@@ -472,6 +476,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._team_remind()
             if route == "/api/settings":
                 return self._settings_set()
+            if route == "/api/pet/purchase":
+                return self._pet_purchase()
+            if route == "/api/pet/equip":
+                return self._pet_equip()
             if route == "/api/quiz/start":
                 return self._start()
             if route == "/api/quiz/answer":
@@ -519,6 +527,19 @@ class Handler(BaseHTTPRequestHandler):
             if p["employee_id"] != identity.employee_id
             and p.get("manager_id") == identity.manager_id
         ]
+
+        # What each peer's robot is wearing -- cosmetic only, never points or
+        # trainings completed (peers' own progress is theirs, not something this
+        # screen exposes).
+        with Bank(DB, self._company()) as bank:
+            peer_equipped = {
+                p["employee_id"]: [
+                    row["item_id"] for row in bank.pet_purchases(p.get("email", ""))
+                    if row["equipped"]
+                ]
+                for p in peers
+            }
+
         manager = None
         if identity.manager_id is not None:
             m = by_id.get(identity.manager_id)
@@ -574,6 +595,7 @@ class Handler(BaseHTTPRequestHandler):
                     "email": p.get("email", ""),
                     "title": p.get("title", ""),
                     "roleCode": (p.get("role_code") or "ALL").upper(),
+                    "equippedItemIds": peer_equipped.get(p["employee_id"], []),
                 }
                 for p in peers
             ],
@@ -581,6 +603,42 @@ class Handler(BaseHTTPRequestHandler):
             "uploadTargets": sorted(
                 targets.values(), key=lambda t: (not t["direct"], t["title"])),
         })
+
+    def _team_leaderboard(self):
+        """
+        Everyone in the caller's department, ranked by points earned. Deliberately
+        department-wide rather than just GET /team's peers -- a leaderboard of two or
+        three people sharing one manager isn't much of a competition.
+
+        Ranked by pointsEarned (100 per training actually completed), not
+        pointsBalance -- balance falls when someone spends it in the shop, and
+        standing should reward finishing training, not hoarding points.
+        """
+        from quizgen import pet_shop
+
+        identity = self._require()
+        if identity is None:
+            return None
+
+        members = [p for p in devauth.directory() if p.get("department") == identity.department]
+
+        with Bank(DB, self._company()) as bank:
+            board = []
+            for m in members:
+                completed = bank.trainings_completed_count(m.get("email", ""))
+                equipped = [row["item_id"] for row in bank.pet_purchases(m.get("email", ""))
+                            if row["equipped"]]
+                board.append({
+                    "employeeId": m["employee_id"],
+                    "name": m.get("name", ""),
+                    "title": m.get("title", ""),
+                    "isYou": m["employee_id"] == identity.employee_id,
+                    "trainingsCompleted": completed,
+                    "pointsEarned": pet_shop.points_earned(completed),
+                    "equippedItemIds": equipped,
+                })
+        board.sort(key=lambda x: (-x["pointsEarned"], x["name"]))
+        return self._send({"departmentName": identity.department, "leaderboard": board})
 
     def _team_completion(self):
         """
@@ -678,19 +736,38 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return self._send({
             "notificationsEnabled": devauth.get_notifications_enabled(identity.employee_id),
+            "petVisible": devauth.get_pet_visible(identity.employee_id),
         })
 
     def _settings_set(self):
+        """Each preference is independently optional in the body -- the caller sends
+        only the one it changed, and whichever it omits is left exactly as stored."""
         identity = self._require()
         if identity is None:
             return None
         body = self._body()
-        enabled = body.get("notificationsEnabled")
-        if not isinstance(enabled, bool):
-            return self._error(400, "Bad request", "notificationsEnabled (boolean) is required.")
-        if not devauth.set_notifications_enabled(identity.employee_id, enabled):
-            return self._error(404, "Not found", "No credential record for this account.")
-        return self._send({"notificationsEnabled": enabled})
+        touched = False
+        if "notificationsEnabled" in body:
+            enabled = body.get("notificationsEnabled")
+            if not isinstance(enabled, bool):
+                return self._error(400, "Bad request", "notificationsEnabled must be a boolean.")
+            if not devauth.set_notifications_enabled(identity.employee_id, enabled):
+                return self._error(404, "Not found", "No credential record for this account.")
+            touched = True
+        if "petVisible" in body:
+            visible = body.get("petVisible")
+            if not isinstance(visible, bool):
+                return self._error(400, "Bad request", "petVisible must be a boolean.")
+            if not devauth.set_pet_visible(identity.employee_id, visible):
+                return self._error(404, "Not found", "No credential record for this account.")
+            touched = True
+        if not touched:
+            return self._error(400, "Bad request",
+                                "Provide notificationsEnabled and/or petVisible (booleans).")
+        return self._send({
+            "notificationsEnabled": devauth.get_notifications_enabled(identity.employee_id),
+            "petVisible": devauth.get_pet_visible(identity.employee_id),
+        })
 
     def _static(self, relative: str):
         target = (WEB / relative).resolve()
@@ -1404,6 +1481,56 @@ class Handler(BaseHTTPRequestHandler):
             "certificates": out,
             "renewalsDue": qscore.renewal_candidates(held),
         })
+
+    def _pet_state(self, bank, learner):
+        """Shared by GET /api/pet and both mutating routes, so all three agree on the
+        same numbers right after a purchase or an equip instead of trusting the
+        caller's stale copy."""
+        from quizgen import pet_shop
+
+        completed = bank.trainings_completed_count(learner)
+        owned = bank.pet_purchases(learner)
+        owned_ids = [p["item_id"] for p in owned]
+        equipped_ids = [p["item_id"] for p in owned if p["equipped"]]
+        return {
+            "trainingsCompleted": completed,
+            "pointsEarned": pet_shop.points_earned(completed),
+            "pointsBalance": pet_shop.points_balance(completed, owned_ids),
+            "ownedItemIds": owned_ids,
+            "equippedItemIds": equipped_ids,
+            "catalog": pet_shop.catalog_public(),
+        }
+
+    def _pet_get(self):
+        learner = self._learner()
+        with Bank(DB, self._company()) as bank:
+            return self._send(self._pet_state(bank, learner))
+
+    def _pet_purchase(self):
+        from quizgen import pet_shop
+
+        learner = self._learner()
+        body = self._body()
+        item_id = (body.get("itemId") or "").strip()
+        with Bank(DB, self._company()) as bank:
+            completed = bank.trainings_completed_count(learner)
+            owned_ids = [p["item_id"] for p in bank.pet_purchases(learner)]
+            if not pet_shop.can_afford(completed, owned_ids, item_id):
+                return self._error(400, "Bad request",
+                                    "Cannot buy {!r} -- not enough points, already owned, "
+                                    "or not a real item.".format(item_id))
+            bank.pet_purchase(learner, item_id)
+            return self._send(self._pet_state(bank, learner))
+
+    def _pet_equip(self):
+        learner = self._learner()
+        body = self._body()
+        item_id = (body.get("itemId") or "").strip()
+        with Bank(DB, self._company()) as bank:
+            if not bank.pet_equip(learner, item_id):
+                return self._error(400, "Bad request",
+                                    "{!r} is not owned.".format(item_id))
+            return self._send(self._pet_state(bank, learner))
 
     def _qscore(self, query):
         """
