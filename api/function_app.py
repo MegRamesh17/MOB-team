@@ -2826,7 +2826,7 @@ def _pet_state(cur, identity) -> Dict[str, Any]:
         "WHERE employee_id = ? AND company_id = ?",
         identity.employee_id, identity.company_id,
     )
-    completed = int(cur.fetchone()["n"] or 0)
+    completed = int(cur.fetchone()[0] or 0)
 
     cur.execute(
         "SELECT item_id, equipped FROM dbo.PetPurchases WHERE employee_id = ? AND company_id = ?",
@@ -2880,7 +2880,7 @@ def purchase_pet_item(req: func.HttpRequest) -> func.HttpResponse:
                 "WHERE employee_id = ? AND company_id = ?",
                 identity.employee_id, identity.company_id,
             )
-            completed = int(cur.fetchone()["n"] or 0)
+            completed = int(cur.fetchone()[0] or 0)
             cur.execute(
                 "SELECT item_id FROM dbo.PetPurchases WHERE employee_id = ? AND company_id = ?",
                 identity.employee_id, identity.company_id,
