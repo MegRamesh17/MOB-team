@@ -905,7 +905,7 @@ function MyCourses({ onBack, onOpenTraining }) {
     all,
     mandatory: all.filter((t) => t.required),
     completed: all.filter((t) => t.status === "completed"),
-    recommended: all.filter((t) => !t.required),
+    recommended: all.filter((t) => t.recommended),
   };
   const shown = byTab[tab];
 
@@ -1401,7 +1401,7 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
                 </p>
               )}
               {verdict.sourceQuote && (
-                <p style={{ color: C.sub }} className="text-xs italic mt-1.5">“{verdict.sourceQuote}”</p>
+                <p style={{ color: C.sub }} className="text-xs italic mt-1.5">"{verdict.sourceQuote}"</p>
               )}
             </div>
           </div>
@@ -1500,7 +1500,7 @@ function QuizResults({ result, onRetake, onDone }) {
             {r.sourceQuote && (
               <div style={{ borderLeft: `3px solid ${C.line}`, background: C.paper }} className="rounded-r-lg px-3 py-2 mt-2">
                 <p style={{ color: C.sub }} className="text-xs">
-                  {r.sourceTitle && <span className="font-semibold">{r.sourceTitle}: </span>}“{r.sourceQuote}”
+                  {r.sourceTitle && <span className="font-semibold">{r.sourceTitle}: </span>}"{r.sourceQuote}"
                 </p>
               </div>
             )}
@@ -1865,9 +1865,9 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
     <div style={{ borderColor: C.green300 }} className="border-2 rounded-xl p-5 bg-white mb-5">
       <h3 style={{ ...display, color: C.ink }} className="font-bold mb-1">Confirm who trains on what</h3>
       <p style={{ color: C.sub }} className="text-xs mb-1">
-        The AI read “{analysis.title}” and proposed this. Nothing is generated until you confirm.
+        The AI read "{analysis.title}" and proposed this. Nothing is generated until you confirm.
       </p>
-      {analysis.summary && <p style={{ color: C.sub }} className="text-xs italic mb-4">“{analysis.summary}”</p>}
+      {analysis.summary && <p style={{ color: C.sub }} className="text-xs italic mb-4">"{analysis.summary}"</p>}
 
       {nobodyToPublishTo && (
         <div style={{ background: C.amberBg, color: C.amber }} className="rounded-lg px-3 py-2.5 text-xs mb-4">
@@ -1913,7 +1913,7 @@ function MappingReview({ analysis, roles, onConfirmed, onCancel }) {
               <span style={{ color: C.ink }} className="text-sm font-medium flex-1 min-w-[200px]">{topic}</span>
               {isUnknown && !selected.length && (
                 <span style={{ background: C.dangerBg, color: C.danger }} className="text-[11px] font-semibold px-2 py-0.5 rounded-full">
-                  document names an unknown role
+                  document says "{proposed}" — not a company role
                 </span>
               )}
               <details style={{ borderColor: selected.length ? C.line : C.danger }}
@@ -2086,6 +2086,22 @@ function DocumentsScreen({ team, principal, onDone }) {
     }, 1200);
     return () => clearInterval(pollRef.current);
   }, [job, reload]);
+
+  // Rediscovers a job this component didn't start -- generation runs on the server
+  // regardless of whether anyone's tab is open to watch it, so a job already `job`
+  // knows about here is real state to resume, not something to invent. Runs whenever
+  // the document list reloads (including the mount after navigating back to this
+  // screen), which is exactly when a job started before navigating away needs to be
+  // found again. Guarded on `!job` so it never clobbers a job this tab already knows
+  // about with a slightly-stale copy of the same job from the list response.
+  useEffect(() => {
+    if (job || !data?.documents) return;
+    const active = data.documents.find((d) => d.activeJob)?.activeJob;
+    if (active) {
+      setJob({ jobId: active.jobId, state: "running", total: active.total,
+                done: active.done, kept: 0, message: active.message });
+    }
+  }, [data, job]);
 
   const handleFiles = async (files) => {
     const file = files?.[0];
@@ -2825,6 +2841,101 @@ function ShareCharacterModal({ equippedItemIds, name, qScore, trainingsCompleted
   );
 }
 
+// ---------- Skill interest popup ----------
+// GET /skills/options reports `prompted` from Employees.skills_prompted_at against a
+// rolling cooldown, so this can show again -- but only when there's something new the
+// employee hasn't already been offered or picked. Offers only trainings already visible
+// to this person's role and not already required for it (enforced server-side, not just
+// hidden here) -- there is deliberately no free-text option, so every choice maps to
+// something that already exists in the bank and can be recommended immediately, not
+// something the AI has to go build from nothing.
+function SkillInterestPopup({ onRecorded }) {
+  const [state, setState] = useState({ loading: true, options: null });
+  const [selected, setSelected] = useState(new Set());
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.skillOptions()
+      .then((res) => {
+        if (cancelled) return;
+        setState({ loading: false, options: !res.prompted && res.options.length > 0 ? res.options : null });
+      })
+      .catch(() => { if (!cancelled) setState({ loading: false, options: null }); });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (state.loading || !state.options) return null;
+
+  const toggle = (title) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(title) ? next.delete(title) : next.add(title);
+      return next;
+    });
+  };
+
+  const submit = async (skills) => {
+    setSubmitting(true);
+    try {
+      await api.setSkillInterest(skills);
+    } catch {
+      // The popup closing either way is more honest than pretending a retry loop here
+      // would help -- worst case it asks again a later session, which is a mild
+      // inconvenience, not a broken feature.
+    } finally {
+      setSubmitting(false);
+      setState({ loading: false, options: null });
+      onRecorded && onRecorded();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(30,27,46,0.6)" }}>
+      <div style={font} className="bg-white rounded-2xl p-6 max-w-md w-full">
+        <div className="flex items-start justify-between gap-3 mb-1">
+          <div style={{ background: C.lavender }} className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0">
+            <Target size={18} color={C.violet700} />
+          </div>
+          <button onClick={() => submit([])} disabled={submitting} style={{ color: C.sub }} className="shrink-0">
+            <X size={18} />
+          </button>
+        </div>
+        <h3 style={{ ...display, color: C.ink }} className="font-bold text-lg mt-3 mb-1">Anything you'd like to learn?</h3>
+        <p style={{ color: C.sub }} className="text-sm mb-4">
+          These are already in the training bank, beyond what your role requires. Pick any
+          that interest you and they'll show up under Recommended.
+        </p>
+
+        <div className="space-y-2 mb-5 max-h-64 overflow-y-auto">
+          {state.options.map((title) => {
+            const isChecked = selected.has(title);
+            return (
+              <button key={title} onClick={() => toggle(title)}
+                style={{ borderColor: isChecked ? C.violet700 : C.line, background: isChecked ? C.lavender : "#fff" }}
+                className="w-full text-left border rounded-lg px-3 py-2.5 text-sm flex items-center gap-2.5">
+                {isChecked
+                  ? <CheckCircle2 size={16} color={C.violet700} className="shrink-0" />
+                  : <Circle size={16} color="#C9C2DB" className="shrink-0" />}
+                <span style={{ color: C.ink }} className="min-w-0">{title}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex gap-2">
+          <Button onClick={() => submit([...selected])} disabled={submitting || selected.size === 0}>
+            {submitting ? "Saving…" : selected.size > 0 ? `Save ${selected.size} pick${selected.size === 1 ? "" : "s"}` : "Pick at least one"}
+          </Button>
+          <button onClick={() => submit([])} disabled={submitting} style={{ color: C.sub }} className="text-sm font-semibold px-3">
+            None of these
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------- Profile ----------
 function Settings() {
   const { data, loading, error, reload } = useAsync(() => api.getSettings(), []);
@@ -3217,21 +3328,27 @@ export default function App() {
   const quizViews = ["trainingDetail", "lesson", "quizPre", "quizRunner", "quizResults"];
 
   return (
-    <Shell
-      name={auth.name || auth.email}
-      department={auth.department}
-      title={auth.title}
-      manages={manages}
-      active={quizViews.includes(view) ? "dashboard" : view}
-      setActive={goto}
-      onLogout={async () => {
-        await api.logout();
-        setAuth(null);
-        setTeam(null);
-        setView("dashboard");
-      }}
-    >
-      {content}
-    </Shell>
+    <>
+      <Shell
+        name={auth.name || auth.email}
+        department={auth.department}
+        title={auth.title}
+        manages={manages}
+        active={quizViews.includes(view) ? "dashboard" : view}
+        setActive={goto}
+        onLogout={async () => {
+          await api.logout();
+          setAuth(null);
+          setTeam(null);
+          setView("dashboard");
+        }}
+      >
+        {content}
+      </Shell>
+      {/* Manages its own visibility -- fetches /skills/options and renders nothing if
+          already prompted or nothing to offer, so mounting it unconditionally here is
+          correct rather than something that needs its own loading gate in App. */}
+      <SkillInterestPopup />
+    </>
   );
 }

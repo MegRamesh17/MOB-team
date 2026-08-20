@@ -124,6 +124,9 @@ export const lesson = (training, moduleId) => {
 export const completeLessonPage = ({ moduleId, pageId }) =>
   call("/lesson/page/complete", { method: "POST", body: { moduleId, pageId } });
 export const certificates = () => call("/certificates");
+export const skillOptions = () => call("/skills/options");
+export const setSkillInterest = (skills) =>
+  call("/skills/interest", { method: "POST", body: { skills } });
 
 /**
  * The floating pet: points (derived from certificates earned, never a stored balance),
