@@ -127,9 +127,16 @@ def check_grounding(question: Question, chunk_text: str) -> Optional[str]:
     # passage behind it.
     if question.provenance_class == ProvenanceClass.ROLE_KNOWLEDGE:
         return None
-    if not question.source_quote:
-        return "documented question has no source quote"
-    if _flat(question.source_quote) not in _flat(chunk_text):
+    # A missing quote is no longer a hard reject here. azure_openai.py's _to_question
+    # already decided, per-chunk, whether an unverifiable quote should drop the
+    # question outright (real source documents) or just be cleared (gpt-5's own
+    # lesson prose, which a second gpt-5 call can't reasonably be held to quoting
+    # verbatim). This check re-imposing "must have a quote" on top of that undid the
+    # clear-instead-of-drop fix entirely -- every lesson-chunk question that took the
+    # "clear the quote" path landed here and got rejected anyway, which is why yield
+    # stayed at ~2-3 questions/module even after that fix shipped. Only check what we
+    # CAN check: if a quote is present, it must actually appear in the passage.
+    if question.source_quote and _flat(question.source_quote) not in _flat(chunk_text):
         return "source quote is not present verbatim in the cited passage"
     return None
 
