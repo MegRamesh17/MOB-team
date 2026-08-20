@@ -80,27 +80,29 @@ export function PetRobotSVG({ size = 64, mood = "idle", equippedItemIds = [] }) 
       <line x1="60" y1="16" x2="60" y2="3" stroke={SHELL_DARK} strokeWidth="4" strokeLinecap="round" />
       <circle cx="60" cy="3" r="6" fill={ACCENT} className={happy ? "pet-antenna-pulse" : ""} />
 
-      <rect x="40" y="34" width="40" height="24" rx="9" fill={VISOR} />
+      {/* Visor fills ~3/4 of the head (52 of 68 wide, 39 of 54 tall) so the face reads
+          as the character rather than a small screen floating in a big shell. */}
+      <rect x="34" y="24" width="52" height="39" rx="13" fill={VISOR} />
       {wearingGlasses ? (
         <>
-          <rect x="39" y="37" width="42" height="15" rx="7.5" fill="#1B1E27" stroke={OUTLINE} strokeWidth="1.2" />
-          <circle cx="50" cy="44.5" r="6" fill="#2A2E38" />
-          <circle cx="70" cy="44.5" r="6" fill="#2A2E38" />
-          <line x1="56" y1="44.5" x2="64" y2="44.5" stroke="#1B1E27" strokeWidth="3" />
-          <path d="M46 41 Q50 39 54 41" stroke="#5C6270" strokeWidth="1.5" fill="none" />
+          <rect x="33" y="27" width="54" height="25" rx="13" fill="#1B1E27" stroke={OUTLINE} strokeWidth="1.2" />
+          <circle cx="49" cy="40" r="8.5" fill="#2A2E38" />
+          <circle cx="71" cy="40" r="8.5" fill="#2A2E38" />
+          <line x1="57.5" y1="40" x2="62.5" y2="40" stroke="#1B1E27" strokeWidth="4" />
+          <path d="M43 34 Q49 30 55 34" stroke="#5C6270" strokeWidth="1.5" fill="none" />
         </>
       ) : happy ? (
         <>
-          <path d="M47 48 Q51 41 55 48" stroke={EYE} strokeWidth="3" strokeLinecap="round" fill="none" />
-          <path d="M65 48 Q69 41 73 48" stroke={EYE} strokeWidth="3" strokeLinecap="round" fill="none" />
-          <path d="M50 54 Q60 60 70 54" stroke={EYE} strokeWidth="2.5" strokeLinecap="round" fill="none" />
+          <path d="M45 43 Q49 35 53 43" stroke={EYE} strokeWidth="3.5" strokeLinecap="round" fill="none" />
+          <path d="M67 43 Q71 35 75 43" stroke={EYE} strokeWidth="3.5" strokeLinecap="round" fill="none" />
+          <path d="M46 51 Q60 60 74 51" stroke={EYE} strokeWidth="3" strokeLinecap="round" fill="none" />
         </>
       ) : (
         <>
-          <circle cx="52" cy="46" r="6.5" fill={EYE} opacity="0.22" />
-          <circle cx="68" cy="46" r="6.5" fill={EYE} opacity="0.22" />
-          <circle cx="52" cy="46" r="4" fill={EYE} />
-          <circle cx="68" cy="46" r="4" fill={EYE} />
+          <circle cx="49" cy="41" r="8.5" fill={EYE} opacity="0.22" />
+          <circle cx="71" cy="41" r="8.5" fill={EYE} opacity="0.22" />
+          <circle cx="49" cy="41" r="5.5" fill={EYE} />
+          <circle cx="71" cy="41" r="5.5" fill={EYE} />
         </>
       )}
 
@@ -167,8 +169,8 @@ export function PetShopModal({ onClose, onChanged }) {
         {data && (
           <>
             <div className="flex items-center gap-4 mb-5 flex-wrap">
-              <div className="rounded-2xl flex items-center justify-center shrink-0" style={{ width: 120, height: 140, background: "#E3F1EB" }}>
-                <PetRobotSVG size={92} mood="idle" equippedItemIds={data.equippedItemIds} />
+              <div className="rounded-2xl flex items-center justify-center shrink-0" style={{ width: 130, height: 150, background: "#E3F1EB" }}>
+                <PetRobotSVG size={82} mood="idle" equippedItemIds={data.equippedItemIds} />
               </div>
               <div>
                 <p style={{ color: "#0F1214" }} className="text-2xl font-bold">{data.pointsBalance} pts</p>

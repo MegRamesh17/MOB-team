@@ -2724,8 +2724,8 @@ function MyPetCard({ name, qScore }) {
 
       {data && (
         <div className="flex items-center gap-6 flex-wrap">
-          <div className="rounded-2xl flex items-center justify-center shrink-0" style={{ width: 160, height: 160, background: C.mint }}>
-            <PetRobotSVG size={120} mood="idle" equippedItemIds={data.equippedItemIds} />
+          <div className="rounded-2xl flex items-center justify-center shrink-0" style={{ width: 170, height: 190, background: C.mint }}>
+            <PetRobotSVG size={104} mood="idle" equippedItemIds={data.equippedItemIds} />
           </div>
           <div className="flex-1 min-w-[200px]">
             <p style={{ ...display, color: C.ink }} className="text-lg font-bold mb-0.5">{data.pointsBalance} points</p>
