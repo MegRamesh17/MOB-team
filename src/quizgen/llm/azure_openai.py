@@ -24,7 +24,6 @@ and a learner now that human review has been dropped:
 from __future__ import annotations
 
 import json
-import random
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import CONFIG
@@ -36,12 +35,7 @@ _SYSTEM_GROUNDED = (
     "Every question and every answer must be answerable from that passage alone. "
     "Never use outside knowledge. Never invent a policy, a number, or a deadline. "
     "If the passage does not support a good question, return fewer questions or none. "
-    "Distractors must be plausible but clearly wrong to someone who has read the passage. "
-    "Every option — correct answer and distractors alike — must be similar in length "
-    "and level of detail; a learner must not be able to spot the correct answer just "
-    "because it is the longest or most elaborated option. Prefer distractors that are "
-    "common misconceptions or near-misses (the right idea but the wrong number, scope, "
-    "or category) over answers that are obviously wrong on their face."
+    "Distractors must be plausible but clearly wrong to someone who has read the passage."
 )
 
 _SYSTEM_AUGMENTED = (
@@ -59,12 +53,7 @@ _SYSTEM_AUGMENTED = (
     "company's internal rules. Write about the profession, not about their handbook. "
     "Say 'a common practice is' or 'generally', never 'the company requires'.\n\n"
     "Distractors must be plausible to someone with partial knowledge and clearly wrong "
-    "to someone competent. Every option — correct answer and distractors alike — must "
-    "be similar in length and level of detail; a learner must not be able to spot the "
-    "correct answer just because it is the longest or most elaborated option. Prefer "
-    "distractors that are common misconceptions or near-misses (the right idea but the "
-    "wrong number, scope, or category) over answers that are obviously wrong on their "
-    "face."
+    "to someone competent."
 )
 
 _SCHEMA_HINT = """Return ONLY a JSON object of this exact shape:
@@ -72,10 +61,28 @@ _SCHEMA_HINT = """Return ONLY a JSON object of this exact shape:
 {
   "questions": [
     {
-      "type": "MultipleChoice" | "TrueFalse",
+      "type": "MultipleChoice" | "TrueFalse" | "FillInBlank" | "ShortAnswer" |
+              "PromptResponse" | "PythonCode",
       "difficulty": "Easy" | "Medium" | "Hard",
       "prompt": "the question text",
       "options": [{"text": "...", "is_correct": true}],
+      "accepted_answers": ["..."],
+      "rubric": {
+        "criteria": [{
+          "id": "lowercase_identifier",
+          "description": "what must be demonstrated",
+          "accepted_evidence": ["concepts or approaches that satisfy this criterion"],
+          "weight": 50,
+          "required": true,
+          "critical": false
+        }],
+        "correct_threshold": 80,
+        "syntax_tolerance": "minor_errors_allowed" | "valid_syntax_required"
+      },
+      "fallback": {
+        "prompt": "an equivalent multiple-choice check of the same objective",
+        "options": [{"text": "...", "is_correct": true}]
+      },
       "explanation": "why the answer is right, citing the passage",
       "source_quote": "the exact sentence from the passage that supports the answer",
       "learning_point_id": "the supplied lp_ id this assesses",
@@ -85,11 +92,16 @@ _SCHEMA_HINT = """Return ONLY a JSON object of this exact shape:
 }
 
 Rules:
-- MultipleChoice: exactly 4 options, exactly 1 correct.
+- MultipleChoice: exactly 4 options, exactly 1 correct. Leave accepted_answers empty.
 - TrueFalse: exactly 2 options, "True" and "False", exactly 1 correct.
-- Every option must read as a complete, similarly-sized answer on its own — no option
-  should be noticeably longer, more specific, or more hedged than the others, since that
-  alone lets a learner guess the correct one without knowing the material.
+- FillInBlank: options empty; accepted_answers lists every acceptable spelling.
+- ShortAnswer: a response of one to three sentences. Options and accepted_answers empty.
+- PromptResponse: asks the learner to write a compact AI prompt for the stated task.
+- PythonCode: asks for a small Python snippet or function; never require code execution.
+- Every ShortAnswer, PromptResponse and PythonCode item MUST include a rubric whose
+  weights total 100 and a fallback with exactly 4 options and 1 correct answer.
+- Keep at least half of each batch choice-based. Use PythonCode or PromptResponse only
+  when that format genuinely fits the section; do not force it into policy recall.
 - source_quote: in grounded mode it MUST appear verbatim in the passage. In augmented
   mode leave it empty when the answer comes from your own knowledge of the subject.
 - When the passage contains tagged LEARNING_POINT and LESSON_PAGE ids, every question
@@ -158,6 +170,7 @@ class AzureOpenAIGenerator:
             and chunk.container != "generated-lessons"
         )
         system = _SYSTEM_AUGMENTED if augmented else _SYSTEM_GROUNDED
+        multiple_choice_minimum = max(1, count - 2)
         instruction = (
             "Write {} question(s) examining this topic. Go beyond what the passage "
             "literally states — test whether someone actually understands the subject.{}"
@@ -165,10 +178,9 @@ class AzureOpenAIGenerator:
             "Write {} question(s) from this passage.{}"
         ).format(count, want)
         instruction += (
-            " Every question must be MultipleChoice or TrueFalse — clickable, "
-            "unambiguously checkable answers only. No free-text or code-writing "
-            "questions."
-        )
+            " Include at least {} standard MultipleChoice question(s); reserve no more "
+            "than two items for AI-graded ShortAnswer, PromptResponse or PythonCode."
+        ).format(multiple_choice_minimum)
 
         user = (
             "Document: {}\nSection: {}\nTopic: {}\nRole: {}\n\n"
@@ -234,9 +246,6 @@ class AzureOpenAIGenerator:
                 return None
             quote = ""
 
-        if qtype not in (QuestionType.MULTIPLE_CHOICE, QuestionType.TRUE_FALSE):
-            return None
-
         options: List[Option] = []
         for opt in item.get("options", []) or []:
             text = str(opt.get("text", "")).strip()
@@ -250,17 +259,65 @@ class AzureOpenAIGenerator:
                 )
             )
 
+        accepted = [str(a).strip() for a in (item.get("accepted_answers") or []) if str(a).strip()]
+
+        ai_graded = qtype in (
+            QuestionType.SHORT_ANSWER,
+            QuestionType.PROMPT_RESPONSE,
+            QuestionType.PYTHON_CODE,
+        )
+        rubric_json = ""
+        fallback_json = ""
+        if ai_graded:
+            rubric = item.get("rubric") or {}
+            fallback = item.get("fallback") or {}
+            criteria = rubric.get("criteria") or []
+            fallback_options = fallback.get("options") or []
+            try:
+                weight_total = sum(int(c.get("weight") or 0) for c in criteria)
+            except (AttributeError, TypeError, ValueError):
+                return None
+            if (
+                not criteria
+                or weight_total != 100
+                or any(not str(c.get("id") or "").strip() for c in criteria)
+                or any(not str(c.get("description") or "").strip() for c in criteria)
+                or len(fallback_options) != 4
+                or sum(1 for option in fallback_options if option.get("is_correct")) != 1
+                or not str(fallback.get("prompt") or "").strip()
+            ):
+                return None
+            fallback_id = stable_id("fb", question_id)
+            safe_options = []
+            for option in fallback_options:
+                text = str(option.get("text") or "").strip()
+                if not text:
+                    return None
+                safe_options.append({
+                    "optionId": stable_id("fbopt", fallback_id, text),
+                    "text": text,
+                    "isCorrect": bool(option.get("is_correct")),
+                })
+            rubric_json = json.dumps(rubric, separators=(",", ":"), sort_keys=True)
+            fallback_json = json.dumps({
+                "questionId": fallback_id,
+                "prompt": str(fallback["prompt"]).strip(),
+                "difficulty": item.get("difficulty", "Medium"),
+                "options": safe_options,
+            }, separators=(",", ":"), sort_keys=True)
+
         # Structural validation — a question with no correct answer grades everyone to
         # zero, and that is worth catching here rather than in front of a learner.
-        correct = [o for o in options if o.is_correct]
-        if len(options) < 2 or len(correct) != 1:
-            return None
-
-        # The model tends toward a default ordering (the correct answer landing in a
-        # consistent position across questions), which a learner can exploit without
-        # knowing any material. Shuffling here, once, at storage time, is the only
-        # place this can be fixed for every consumer of the question.
-        random.shuffle(options)
+        if qtype == QuestionType.FILL_IN_BLANK:
+            if not accepted:
+                return None
+        elif ai_graded:
+            if options or accepted:
+                return None
+        else:
+            correct = [o for o in options if o.is_correct]
+            if len(options) < 2 or len(correct) != 1:
+                return None
 
         try:
             level = Difficulty(item.get("difficulty", "Medium"))
@@ -304,10 +361,10 @@ class AzureOpenAIGenerator:
             difficulty=level,
             prompt=prompt,
             options=options,
-            accepted_answers=[],
-            rubric_json="",
-            fallback_json="",
-            grading_version="",
+            accepted_answers=accepted,
+            rubric_json=rubric_json,
+            fallback_json=fallback_json,
+            grading_version="rubric-v1" if ai_graded else "",
             explanation=str(item.get("explanation", "")).strip(),
             source_chunk_id=chunk.chunk_id,
             source_doc_title=chunk.doc_title,
