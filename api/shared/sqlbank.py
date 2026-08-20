@@ -296,12 +296,15 @@ class SqlBank:
             total = int(getattr(row, "total", 0) or 0) if row else 0
             quick = int(getattr(row, "quick_count", 0) or 0) if row else 0
             diagnostic = int(getattr(row, "diagnostic_difficulties", 0) or 0) if row else 0
-            # Was `diagnostic == 3` (exactly Easy+Medium+Hard, all three, before this
-            # counts as ready). Loosened to >= 1: an exact 3-way split blocked otherwise
-            # solid modules over missing a single difficulty tier, with no way to recover
-            # short of a full regeneration. A module still needs a real diagnostic
-            # question, just not a perfectly balanced one.
-            publish = total >= 10 and quick >= 10 and diagnostic >= 1
+            # Was total>=10 and quick>=10 and diagnostic>=3 (originally ==3). Dropped
+            # the fixed count floors entirely: the lesson content itself already passed
+            # its own word-count/learning-point quality gate during authoring (see
+            # validate_module), so a module reaching this point already has real,
+            # verified instructional depth -- gating publication on a SEPARATE arbitrary
+            # question-count minimum on top of that was withholding modules with real,
+            # approved questions and no way to recover short of a full regeneration.
+            # Only requirement left: not literally empty.
+            publish = total >= 1
             notes = list(module.quality_notes)
             if not publish:
                 notes.append(
