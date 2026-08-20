@@ -1650,13 +1650,16 @@ def start_pathway_assessment(req: func.HttpRequest) -> func.HttpResponse:
                     return _error(409, "Final assessment is locked",
                                   "Pass every module checkpoint first.")
                 selected, blueprint = pathway.final_questions(pool, modules, learner + attempt_id)
-                target, pass_mark = blueprint["total"], 80
-                if len(selected) < target:
-                    return _error(
-                        409, "Final question bank is incomplete",
-                        "The balanced blueprint needs {} questions but only {} could be selected."
-                        .format(target, len(selected)),
-                    )
+                # Was a hard block whenever the pool came up short of the blueprint's
+                # target (25-35, from final_assessment_size) -- final_questions() already
+                # degrades gracefully when a topic/difficulty slot has no candidates (see
+                # its own shortages fallback), so len(selected) coming in under target is
+                # an expected outcome for a thinner bank, not a broken one. Score against
+                # what was actually selected instead of refusing to start at all.
+                if not selected:
+                    return _error(409, "Final question bank is incomplete",
+                                  "No final assessment questions are available yet.")
+                target, pass_mark = len(selected), 80
 
             cur.execute(
                 """INSERT INTO dbo.GeneratedQuizAttempts
