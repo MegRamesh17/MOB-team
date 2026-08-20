@@ -1619,9 +1619,14 @@ def start_pathway_assessment(req: func.HttpRequest) -> func.HttpResponse:
                     if q.get("module_id") == module_id
                     and q["question_type"] in pathway.FAST_MODULE_TYPES
                 ]
-                if len(module_pool) < 10:
-                    return _error(409, "Module question bank is incomplete",
-                                  "This module needs at least 10 quick-response approved questions.")
+                # Was a hard `< 10` block on starting the checkpoint at all. 10 was an
+                # arbitrary target, not a real minimum -- a module that generated fewer
+                # (a realistic outcome now that the publish gate only requires total>=1)
+                # could have a real, approved question bank and still never be
+                # startable. Scale the target down to what actually exists instead of
+                # blocking; only an empty bank is a real problem.
+                if not module_pool:
+                    return _error(409, "No module questions available", module["title"])
                 diagnostic = module.get("diagnosticScore") or {}
                 wanted = pathway.initial_module_difficulty(
                     int(diagnostic.get("correct") or 0), int(diagnostic.get("possible") or 3))
@@ -1638,7 +1643,7 @@ def start_pathway_assessment(req: func.HttpRequest) -> func.HttpResponse:
                 if first is None:
                     return _error(409, "No module questions available", module["title"])
                 selected = [{**first, "purpose": "adaptive"}]
-                target, pass_mark = 10, 90
+                target, pass_mark = min(10, len(module_pool)), 90
                 blueprint = {"initialDifficulty": wanted}
             else:
                 if state["finalAssessment"]["locked"]:
