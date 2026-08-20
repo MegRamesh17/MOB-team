@@ -2599,23 +2599,38 @@ function ManagerTeam({ team }) {
   );
 }
 
-function polarPoint(cx, cy, r, angleDeg) {
-  const rad = (angleDeg * Math.PI) / 180;
-  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+// A short, stable hash of `seed` mapped into [-range, range]. Deterministic on
+// purpose: positions must not reshuffle every time this re-renders or refetches,
+// only when the actual team roster changes.
+function seededJitter(seed, range) {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return ((h % 1000) / 1000 - 0.5) * 2 * range;
 }
 
-function TeamHabitat({ members, highlightName }) {
+function TeamHangout({ members, highlightName }) {
   const [selected, setSelected] = useState(null);
-  const width = 720, height = 420;
-  const cx = width / 2, cy = height / 2 + 6;
-  const radius = Math.min(width, height) / 2 - 92;
+  const width = 720, height = 380;
   const n = members.length;
 
+  // A loose grid gives every robot its own patch of ground with no overlap
+  // guarantees to reason about, then per-person jitter (seeded by name, so it's
+  // stable) breaks the grid up into something that reads as people standing
+  // around together rather than a spreadsheet.
+  const cols = Math.ceil(Math.sqrt(n));
+  const rows = Math.ceil(n / cols);
+  const topPad = 55, bottomPad = 60;
+  const cellW = width / cols;
+  const cellH = (height - topPad - bottomPad) / rows;
+
   const nodes = members.map((m, i) => {
-    const angle = -90 + (360 / n) * i;
-    const pos = polarPoint(cx, cy, radius, angle);
-    const size = 64;
-    return { ...m, pos, size };
+    const col = i % cols, row = Math.floor(i / cols);
+    const baseX = cellW * (col + 0.5);
+    const baseY = topPad + cellH * (row + 0.5);
+    const x = baseX + seededJitter(m.name + "x", cellW * 0.22);
+    const y = baseY + seededJitter(m.name + "y", cellH * 0.18);
+    const size = 58 + seededJitter(m.name + "s", 9);
+    return { ...m, pos: { x, y }, size };
   });
 
   const selectedNode = nodes.find((nd) => nd.name === selected);
@@ -2625,38 +2640,30 @@ function TeamHabitat({ members, highlightName }) {
       <div style={{ borderColor: C.line, background: C.mint }} className="border rounded-2xl p-3 overflow-hidden">
         <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ display: "block" }}>
           <style>{`
-            @keyframes qhub-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 0.95; } }
-            .qhub-pulse { animation: qhub-pulse 3s ease-in-out infinite; }
+            @keyframes teammate-pop { from { transform: scale(0.85); opacity: 0; } to { transform: scale(1); opacity: 1; } }
           `}</style>
-
-          {n >= 3 && nodes.map((nd, i) => {
-            const nxt = nodes[(i + 1) % n];
-            return <line key={`edge-${i}`} x1={nd.pos.x} y1={nd.pos.y} x2={nxt.pos.x} y2={nxt.pos.y}
-              stroke={C.green300} strokeWidth="1.5" strokeDasharray="3 5" opacity="0.5" />;
-          })}
-
-          {nodes.map((nd, i) => {
-            const isSelected = selected === nd.name;
-            return <line key={`spoke-${i}`} x1={cx} y1={cy} x2={nd.pos.x} y2={nd.pos.y}
-              stroke={isSelected ? C.green700 : C.green300} strokeWidth={isSelected ? 2.5 : 1.5} opacity={isSelected ? 0.9 : 0.45} />;
-          })}
-
-          <circle cx={cx} cy={cy} r="28" fill={C.green700} className="qhub-pulse" />
-          <circle cx={cx} cy={cy} r="28" fill="none" stroke={C.green300} strokeWidth="1.5" />
-          <text x={cx} y={cy + 6} textAnchor="middle" fill="#fff" fontSize="17" fontWeight="700" fontFamily="'Playfair Display', serif">Q</text>
 
           {nodes.map((nd) => {
             const isYou = nd.name === highlightName;
             const isSelected = selected === nd.name;
+            const feetY = nd.pos.y + (nd.size * 1.3) / 2 - 4;
+            const scale = isSelected ? 1.12 : 1;
             return (
               <g key={nd.name} onClick={() => setSelected(isSelected ? null : nd.name)} style={{ cursor: "pointer" }}>
-                <circle cx={nd.pos.x} cy={nd.pos.y} r={nd.size / 2 + 9}
-                  fill="#fff" stroke={isYou ? C.green700 : isSelected ? C.green500 : C.line}
-                  strokeWidth={isYou || isSelected ? 2.5 : 1.5} />
-                <g transform={`translate(${nd.pos.x - nd.size / 2}, ${nd.pos.y - (nd.size * 1.3) / 2})`}>
+                {/* Grounding shadow -- reads as "standing here" rather than floating. */}
+                <ellipse cx={nd.pos.x} cy={feetY} rx={nd.size * 0.34} ry={nd.size * 0.09}
+                  fill={C.green900} opacity="0.14" />
+                {isYou && (
+                  <ellipse cx={nd.pos.x} cy={feetY} rx={nd.size * 0.42} ry={nd.size * 0.12}
+                    fill="none" stroke={C.green700} strokeWidth="2" opacity="0.7" />
+                )}
+                <g
+                  transform={`translate(${nd.pos.x - (nd.size * scale) / 2}, ${nd.pos.y - (nd.size * scale * 1.3) / 2}) scale(${scale})`}
+                  style={{ transformOrigin: "center", transition: "transform 150ms ease" }}
+                >
                   <PetRobotSVG size={nd.size} mood="idle" equippedItemIds={nd.equippedItemIds} />
                 </g>
-                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 19} textAnchor="middle" fill={C.ink} fontSize="11" fontWeight="700" fontFamily="'Inter', sans-serif">
+                <text x={nd.pos.x} y={feetY + 20} textAnchor="middle" fill={C.ink} fontSize="11" fontWeight="700" fontFamily="'Inter', sans-serif">
                   {nd.name.split(" ")[0]}{isYou ? " (you)" : ""}
                 </text>
               </g>
@@ -2680,7 +2687,7 @@ function TeamHabitat({ members, highlightName }) {
           </div>
         </div>
       ) : (
-        <p style={{ color: C.sub }} className="text-xs mt-3 text-center">Tap a character to see who they are.</p>
+        <p style={{ color: C.sub }} className="text-xs mt-3 text-center">Tap someone to see who they are.</p>
       )}
     </div>
   );
@@ -2714,9 +2721,9 @@ function TeammatesGallery({ team, name }) {
   const peers = team.peers || [];
 
   // Nobody sharing your manager is a fact about the org chart, not an error -- the
-  // endpoint returns 200 with an empty list rather than 403. TeamHabitat divides by
-  // members.length to place nodes on a circle, so it must not be handed an empty
-  // list either way.
+  // endpoint returns 200 with an empty list rather than 403. TeamHangout divides by
+  // members.length to lay out its grid, so it must not be handed an empty list either
+  // way.
   if (peers.length === 0) {
     return (
       <div className="p-8 max-w-4xl">
@@ -2743,7 +2750,7 @@ function TeammatesGallery({ team, name }) {
       <p style={{ color: C.sub }} className="text-sm mb-6">
         People who share your manager — {peers.length} {peers.length === 1 ? "person" : "people"}.
       </p>
-      <TeamHabitat members={members} highlightName={name} />
+      <TeamHangout members={members} highlightName={name} />
     </div>
   );
 }
