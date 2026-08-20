@@ -18,10 +18,18 @@
 #      Website Contributor) on mob-functions-dev -- it no longer needs SQL admin
 #      login or Key Vault read, since this pipeline doesn't touch the database.
 #
-# Trigger: push to main, paths under api/. Independent of GitHub Actions'
+# Trigger: push to main, paths under api/ or src/. Independent of GitHub Actions'
 # migrate-database/seed-database chain -- if you change db/migrations or db/seed
 # AND api/ in the same push, let the GitHub Actions chain finish (Actions tab)
 # before trusting a deploy that ran in parallel with it.
+#
+# src/* is included because the build step below vendors src/quizgen into
+# api/quizgen (rm -rf api/quizgen && cp -r src/quizgen api/quizgen) -- a
+# src/-only change (e.g. src/quizgen/validators.py, src/quizgen/pipeline.py)
+# changes what actually deploys just as much as an api/-only change does, but
+# without this path being watched it silently never triggered a deploy. Found
+# by hand three separate times before this: had to manually `az pipelines run`
+# for changes that only touched src/quizgen.
 
 trigger:
   branches:
@@ -30,6 +38,7 @@ trigger:
   paths:
     include:
       - api/*
+      - src/*
       - azure-pipelines-backend.yml
 
 # Azure Pipelines' default, if this is omitted, is to ALSO run on every pull request
