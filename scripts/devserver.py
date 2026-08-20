@@ -698,19 +698,38 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return self._send({
             "notificationsEnabled": devauth.get_notifications_enabled(identity.employee_id),
+            "petVisible": devauth.get_pet_visible(identity.employee_id),
         })
 
     def _settings_set(self):
+        """Each preference is independently optional in the body -- the caller sends
+        only the one it changed, and whichever it omits is left exactly as stored."""
         identity = self._require()
         if identity is None:
             return None
         body = self._body()
-        enabled = body.get("notificationsEnabled")
-        if not isinstance(enabled, bool):
-            return self._error(400, "Bad request", "notificationsEnabled (boolean) is required.")
-        if not devauth.set_notifications_enabled(identity.employee_id, enabled):
-            return self._error(404, "Not found", "No credential record for this account.")
-        return self._send({"notificationsEnabled": enabled})
+        touched = False
+        if "notificationsEnabled" in body:
+            enabled = body.get("notificationsEnabled")
+            if not isinstance(enabled, bool):
+                return self._error(400, "Bad request", "notificationsEnabled must be a boolean.")
+            if not devauth.set_notifications_enabled(identity.employee_id, enabled):
+                return self._error(404, "Not found", "No credential record for this account.")
+            touched = True
+        if "petVisible" in body:
+            visible = body.get("petVisible")
+            if not isinstance(visible, bool):
+                return self._error(400, "Bad request", "petVisible must be a boolean.")
+            if not devauth.set_pet_visible(identity.employee_id, visible):
+                return self._error(404, "Not found", "No credential record for this account.")
+            touched = True
+        if not touched:
+            return self._error(400, "Bad request",
+                                "Provide notificationsEnabled and/or petVisible (booleans).")
+        return self._send({
+            "notificationsEnabled": devauth.get_notifications_enabled(identity.employee_id),
+            "petVisible": devauth.get_pet_visible(identity.employee_id),
+        })
 
     def _static(self, relative: str):
         target = (WEB / relative).resolve()

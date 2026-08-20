@@ -392,7 +392,7 @@ function Login({ onLogin }) {
 }
 
 // ---------- Shell ----------
-function Shell({ name, department, title, manages, active, setActive, onLogout, children }) {
+function Shell({ name, department, title, manages, active, setActive, onLogout, petVisible, children }) {
   // One nav for everyone. Managing people ADDS a tab; it does not replace the rest.
   //
   // This used to be two lists, with managerNav substituted for employeeNav — so a
@@ -469,7 +469,7 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
         </div>
       </aside>
       <main className="flex-1 min-h-0 overflow-y-auto">{children}</main>
-      <FloatingPet />
+      {petVisible !== false && <FloatingPet />}
     </div>
   );
 }
@@ -2980,21 +2980,44 @@ function SkillInterestPopup({ onRecorded }) {
 }
 
 // ---------- Profile ----------
-function Settings() {
-  const { data, loading, error, reload } = useAsync(() => api.getSettings(), []);
-  const [saving, setSaving] = useState(false);
+function SettingsToggleRow({ title, description, value, saving, onToggle }) {
+  return (
+    <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 flex items-center justify-between gap-6">
+      <div className="min-w-0">
+        <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">{title}</p>
+        <p style={{ color: C.sub }} className="text-xs">{description}</p>
+      </div>
+      <button
+        onClick={onToggle} disabled={saving} aria-pressed={value}
+        style={{ background: value ? C.green700 : C.line }}
+        className="w-11 h-6 rounded-full relative shrink-0 transition-colors disabled:opacity-60"
+      >
+        <span
+          style={{ background: "#fff", left: value ? 22 : 2 }}
+          className="w-5 h-5 rounded-full absolute top-0.5 transition-all"
+        />
+      </button>
+    </div>
+  );
+}
+
+// settings/onSettingsChange are lifted to App rather than fetched here, so toggling
+// petVisible takes effect on the floating pet immediately -- Shell reads the same
+// state this page writes.
+function Settings({ settings, onSettingsChange }) {
+  const [saving, setSaving] = useState(null); // null | "notifications" | "pet"
   const [saveError, setSaveError] = useState(null);
 
-  const toggle = async () => {
-    setSaving(true);
+  const toggle = async (field, key) => {
+    setSaving(field);
     setSaveError(null);
     try {
-      await api.updateSettings(!data.notificationsEnabled);
-      await reload();
+      const next = await api.updateSettings({ [key]: !settings[key] });
+      onSettingsChange(next);
     } catch (err) {
       setSaveError(err.message || "Could not save.");
     }
-    setSaving(false);
+    setSaving(null);
   };
 
   return (
@@ -3002,28 +3025,24 @@ function Settings() {
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Settings</h1>
       <p style={{ color: C.sub }} className="text-sm mb-8">Your account preferences.</p>
 
-      {loading && <Loading />}
-      {error && <ErrorBox error={error} onRetry={reload} />}
+      {!settings && <Loading />}
 
-      {data && (
-        <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 flex items-center justify-between gap-6">
-          <div className="min-w-0">
-            <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">Email notifications</p>
-            <p style={{ color: C.sub }} className="text-xs">
-              Reminders about training that's due soon, and a notice when something new is
-              assigned to your role.
-            </p>
-          </div>
-          <button
-            onClick={toggle} disabled={saving} aria-pressed={data.notificationsEnabled}
-            style={{ background: data.notificationsEnabled ? C.green700 : C.line }}
-            className="w-11 h-6 rounded-full relative shrink-0 transition-colors disabled:opacity-60"
-          >
-            <span
-              style={{ background: "#fff", left: data.notificationsEnabled ? 22 : 2 }}
-              className="w-5 h-5 rounded-full absolute top-0.5 transition-all"
-            />
-          </button>
+      {settings && (
+        <div className="space-y-4">
+          <SettingsToggleRow
+            title="Email notifications"
+            description="Reminders about training that's due soon, and a notice when something new is assigned to your role."
+            value={settings.notificationsEnabled}
+            saving={saving === "notifications"}
+            onToggle={() => toggle("notifications", "notificationsEnabled")}
+          />
+          <SettingsToggleRow
+            title="Desk pet"
+            description="The floating character in the corner of the screen. Turn this off if you'd rather it not be there -- while taking a quiz, or ever."
+            value={settings.petVisible}
+            saving={saving === "pet"}
+            onToggle={() => toggle("pet", "petVisible")}
+          />
         </div>
       )}
       {saveError && <p style={{ color: C.danger }} className="text-xs font-semibold mt-3">{saveError}</p>}
@@ -3234,6 +3253,10 @@ export default function App() {
   // access_role: the tier says what you may DO, the reporting line says whose training
   // you are responsible for, and they are not the same question.
   const [team, setTeam] = useState(null);
+  // Lifted here (not fetched inside Settings) so the floating pet's visibility can
+  // react the instant someone toggles it, without needing Shell and Settings to
+  // share state any other way.
+  const [settings, setSettings] = useState(null);
   const [view, setView] = useState("dashboard");
   const [training, setTraining] = useState(null);
   const [module, setModule] = useState(null);
@@ -3247,6 +3270,7 @@ export default function App() {
     setAuth(principal);
     setView("dashboard");
     api.team().then(setTeam).catch(() => setTeam(null));
+    api.getSettings().then(setSettings).catch(() => setSettings(null));
   }, []);
 
   // Restore a session from the stored token. api.currentUser() clears an expired token
@@ -3365,7 +3389,7 @@ export default function App() {
   } else if (view === "teammates") {
     content = <TeammatesGallery team={team} name={auth.name || auth.email} />;
   } else if (view === "settings") {
-    content = <Settings />;
+    content = <Settings settings={settings} onSettingsChange={setSettings} />;
   }
 
   const quizViews = ["trainingDetail", "lesson", "quizPre", "quizRunner", "quizResults"];
@@ -3379,6 +3403,7 @@ export default function App() {
         manages={manages}
         active={quizViews.includes(view) ? "dashboard" : view}
         setActive={goto}
+        petVisible={settings ? settings.petVisible : true}
         onLogout={async () => {
           await api.logout();
           setAuth(null);
