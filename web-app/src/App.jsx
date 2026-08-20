@@ -2599,161 +2599,13 @@ function ManagerTeam({ team }) {
   );
 }
 
-// A short, stable hash of `seed` mapped into [-range, range]. Deterministic on
-// purpose: positions must not reshuffle every time this re-renders or refetches,
-// only when the actual team roster changes.
-function seededJitter(seed, range) {
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
-  return ((h % 1000) / 1000 - 0.5) * 2 * range;
-}
-
-function TeamHangout({ members, highlightName }) {
-  const [selected, setSelected] = useState(null);
-  const width = 720, height = 380;
-  const n = members.length;
-
-  // A loose grid gives every robot its own patch of ground with no overlap
-  // guarantees to reason about, then per-person jitter (seeded by name, so it's
-  // stable) breaks the grid up into something that reads as people standing
-  // around together rather than a spreadsheet.
-  const cols = Math.ceil(Math.sqrt(n));
-  const rows = Math.ceil(n / cols);
-  const topPad = 55, bottomPad = 60;
-  const cellW = width / cols;
-  const cellH = (height - topPad - bottomPad) / rows;
-
-  const nodes = members.map((m, i) => {
-    const col = i % cols, row = Math.floor(i / cols);
-    const baseX = cellW * (col + 0.5);
-    const baseY = topPad + cellH * (row + 0.5);
-    const x = baseX + seededJitter(m.name + "x", cellW * 0.22);
-    const y = baseY + seededJitter(m.name + "y", cellH * 0.18);
-    const size = 58 + seededJitter(m.name + "s", 9);
-    return { ...m, pos: { x, y }, size };
-  });
-
-  const selectedNode = nodes.find((nd) => nd.name === selected);
-
+// The department-wide leaderboard is the whole page now -- TeamLeaderboard fetches
+// its own data (GET /team/leaderboard), so this is just the page frame around it.
+function TeammatesGallery() {
   return (
-    <div>
-      <div style={{ borderColor: C.line, background: C.mint }} className="border rounded-2xl p-3 overflow-hidden">
-        <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ display: "block" }}>
-          <style>{`
-            @keyframes teammate-pop { from { transform: scale(0.85); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-          `}</style>
-
-          {nodes.map((nd) => {
-            const isYou = nd.name === highlightName;
-            const isSelected = selected === nd.name;
-            const feetY = nd.pos.y + (nd.size * 1.3) / 2 - 4;
-            const scale = isSelected ? 1.12 : 1;
-            return (
-              <g key={nd.name} onClick={() => setSelected(isSelected ? null : nd.name)} style={{ cursor: "pointer" }}>
-                {/* Grounding shadow -- reads as "standing here" rather than floating. */}
-                <ellipse cx={nd.pos.x} cy={feetY} rx={nd.size * 0.34} ry={nd.size * 0.09}
-                  fill={C.green900} opacity="0.14" />
-                {isYou && (
-                  <ellipse cx={nd.pos.x} cy={feetY} rx={nd.size * 0.42} ry={nd.size * 0.12}
-                    fill="none" stroke={C.green700} strokeWidth="2" opacity="0.7" />
-                )}
-                <g
-                  transform={`translate(${nd.pos.x - (nd.size * scale) / 2}, ${nd.pos.y - (nd.size * scale * 1.3) / 2}) scale(${scale})`}
-                  style={{ transformOrigin: "center", transition: "transform 150ms ease" }}
-                >
-                  <PetRobotSVG size={nd.size} mood="idle" equippedItemIds={nd.equippedItemIds} />
-                </g>
-                <text x={nd.pos.x} y={feetY + 20} textAnchor="middle" fill={C.ink} fontSize="11" fontWeight="700" fontFamily="'Inter', sans-serif">
-                  {nd.name.split(" ")[0]}{isYou ? " (you)" : ""}
-                </text>
-              </g>
-            );
-          })}
-        </svg>
-      </div>
-
-      {selectedNode ? (
-        <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white mt-4 flex items-center gap-4">
-          <div className="rounded-xl flex items-center justify-center shrink-0" style={{ width: 60, height: 60, background: C.mint }}>
-            <PetRobotSVG size={34} mood="idle" equippedItemIds={selectedNode.equippedItemIds} />
-          </div>
-          <div>
-            <p style={{ color: C.ink }} className="text-sm font-semibold">
-              {selectedNode.name}{selectedNode.name === highlightName ? " (you)" : ""}
-            </p>
-            <p style={{ color: C.sub }} className="text-xs">
-              {selectedNode.role}
-            </p>
-          </div>
-        </div>
-      ) : (
-        <p style={{ color: C.sub }} className="text-xs mt-3 text-center">Tap someone to see who they are.</p>
-      )}
-    </div>
-  );
-}
-
-// Your reporting subtree, from GET /team — everyone below you in the Employees.manager_id
-// chain, however deep, so a director sees their managers' reports too. The server decides
-// who is in here; this only draws what it returns.
-//
-// It used to filter a hardcoded ROSTER by department and say "the backend has no org chart
-// yet". That was true when it was written and is not any more, which made it worse than a
-// blank screen: it showed invented colleagues to someone who reads them as real.
-function TeammatesGallery({ team, name }) {
-  // team is null while the fetch is in flight, and also if it failed — signIn() catches
-  // to null. Distinguishing the two would need a third state; "not loaded" covers both
-  // honestly and neither is worth a different screen.
-  if (!team) {
-    return (
-      <div className="p-8 max-w-4xl">
-        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Team</h1>
-        <p style={{ color: C.sub }} className="text-sm">Loading your team…</p>
-      </div>
-    );
-  }
-
-  // Peers, not the reporting subtree: teammates are the people who share YOUR
-  // manager (an SDE1 has SDE2/SDE3 as teammates this way), not people below you --
-  // that's My Team, a separate screen, and most people have nobody below them at
-  // all. Someone with direct reports still sees their own peers here, same as
-  // anyone else; who they manage stays on My Team.
-  const peers = team.peers || [];
-
-  // Nobody sharing your manager is a fact about the org chart, not an error -- the
-  // endpoint returns 200 with an empty list rather than 403. TeamHangout divides by
-  // members.length to lay out its grid, so it must not be handed an empty list either
-  // way.
-  if (peers.length === 0) {
-    return (
-      <div className="p-8 max-w-4xl">
-        <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Team</h1>
-        <p style={{ color: C.sub }} className="text-sm">
-          Nobody else shares your manager, so there is no team to show. If that looks
-          wrong, it means reporting lines have not been set for your organisation yet.
-        </p>
-      </div>
-    );
-  }
-
-  // GET /team returns each peer's equipped item ids -- what they're wearing, never
-  // their points balance or trainings completed, which stay theirs alone.
-  const members = peers.map((p) => ({
-    name: p.name,
-    role: p.title || p.roleCode,
-    equippedItemIds: p.equippedItemIds || [],
-  }));
-
-  return (
-    <div className="p-8 max-w-4xl">
+    <div className="p-8">
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Team</h1>
-      <p style={{ color: C.sub }} className="text-sm mb-6">
-        People who share your manager — {peers.length} {peers.length === 1 ? "person" : "people"}.
-      </p>
-      <TeamHangout members={members} highlightName={name} />
-
-      <h2 style={{ ...display, color: C.ink }} className="text-lg font-bold mt-10 mb-1">Department leaderboard</h2>
-      <p style={{ color: C.sub }} className="text-sm mb-4">Ranked by points earned from trainings completed.</p>
+      <p style={{ color: C.sub }} className="text-sm mb-6">Ranked by points earned from trainings completed.</p>
       <TeamLeaderboard />
     </div>
   );
@@ -3453,7 +3305,7 @@ export default function App() {
   } else if (view === "certificates") {
     content = <Certificates />;
   } else if (view === "teammates") {
-    content = <TeammatesGallery team={team} name={auth.name || auth.email} />;
+    content = <TeammatesGallery />;
   } else if (view === "settings") {
     content = <Settings settings={settings} onSettingsChange={setSettings} />;
   }
