@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import * as api from "./api";
 import { Logo } from "./logo.jsx";
+import FloatingPet, { cheerPet } from "./FloatingPet.jsx";
 
 /**
  * WHAT IS REAL AND WHAT IS NOT.
@@ -475,6 +476,7 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
         </div>
       </aside>
       <main className="flex-1 overflow-y-auto">{children}</main>
+      <FloatingPet />
     </div>
   );
 }
@@ -1418,7 +1420,7 @@ function QuizResults({ result, onRetake, onDone }) {
                 <Award size={16} /> Certificate earned
               </div>
             )}
-            <Button onClick={onDone}>View training pathway</Button>
+            <Button onClick={() => { cheerPet(); onDone(); }}>View training pathway</Button>
           </>
         ) : (
           <>
