@@ -4,7 +4,7 @@ import {
   ChevronRight, X, AlertCircle, Clock, ArrowLeft, User, Star,
   Trophy, Flame, Target, Mail, Briefcase, Share2, Download, Copy,
   Loader2, RefreshCw, Upload, FileText, Link2, Search, Send,
-  Settings as SettingsIcon, Box, Calendar, ShieldCheck, LayoutGrid,
+  Settings as SettingsIcon, Box, Calendar, ShieldCheck, LayoutGrid, Trash2,
 } from "lucide-react";
 import * as api from "./api";
 import { Logo } from "./logo.jsx";
@@ -2072,6 +2072,7 @@ function DocumentsScreen({ team, principal, onDone }) {
   const [analysis, setAnalysis] = useState(null);   // awaiting manager confirmation
   const [job, setJob] = useState(null);
   const [dragging, setDragging] = useState(false);
+  const [deletingDocumentId, setDeletingDocumentId] = useState(null);
   const fileRef = useRef(null);
   const pollRef = useRef(null);
 
@@ -2109,6 +2110,40 @@ function DocumentsScreen({ team, principal, onDone }) {
                 done: active.done, kept: 0, message: active.message });
     }
   }, [data, job]);
+
+  // Same idea as the job-resume effect above, for the step before a job even exists:
+  // the AI's proposed mapping was pure React state in `analysis` and vanished the
+  // moment this component unmounted, even though the chunks it describes were already
+  // durable on the server. Now that proposal is saved server-side too (see
+  // _ingest_and_propose), so a remount can put the manager right back in front of the
+  // same MappingReview instead of an orphaned, unconfirmable document.
+  useEffect(() => {
+    if (analysis || !data?.documents) return;
+    const pending = data.documents.find((d) => d.pendingAnalysis)?.pendingAnalysis;
+    if (pending) setAnalysis(pending);
+  }, [data, analysis]);
+
+  const handleDeleteDocument = async (document) => {
+    const confirmed = window.confirm(
+      `Permanently delete "${document.title}"?\n\nThis removes the training from every ` +
+      "employee's board and Q Score, including progress, quiz attempts, and " +
+      "certificates. If it's still generating, this stops that too. This cannot be undone."
+    );
+    if (!confirmed) return;
+
+    setDeletingDocumentId(document.documentId);
+    setUploadError(null);
+    try {
+      await api.deleteDocument(document.documentId);
+      if (job && document.title === job.title) setJob(null);
+      if (analysis && document.documentId === analysis.documentId) setAnalysis(null);
+      await Promise.all([reload(), linksQ.reload()]);
+    } catch (e) {
+      setUploadError(e);
+    } finally {
+      setDeletingDocumentId(null);
+    }
+  };
 
   const handleFiles = async (files) => {
     const file = files?.[0];
@@ -2181,7 +2216,18 @@ function DocumentsScreen({ team, principal, onDone }) {
         <MappingReview
           analysis={analysis}
           roles={roles}
-          onCancel={() => setAnalysis(null)}
+          onCancel={async () => {
+            // The proposal is now saved server-side (pending_analysis_json), not just
+            // in this component's state -- clearing local state alone would leave it
+            // there to reappear on the next reload. Deleting the document is the
+            // actual cancel: it clears the proposal, the orphaned chunks, and the
+            // registry row together, the same one action "cancel any upload" needs.
+            setAnalysis(null);
+            if (analysis.documentId) {
+              try { await api.deleteDocument(analysis.documentId); } catch { /* best effort */ }
+              reload();
+            }
+          }}
           onConfirmed={(result) => {
             setAnalysis(null);
             if (result.jobId) setJob({ jobId: result.jobId, state: "running", done: 0, total: 0, kept: 0, message: "Starting…" });
@@ -2229,7 +2275,7 @@ function DocumentsScreen({ team, principal, onDone }) {
 
       <div className="space-y-2">
         {(data?.documents || []).map((d) => (
-          <div key={d.title} style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white flex items-center justify-between gap-3">
+          <div key={d.documentId || d.title} style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
               <div style={{ background: d.ready ? C.successBg : C.amberBg }} className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0">
                 <FileText size={16} color={d.ready ? C.success : C.amber} />
@@ -2239,9 +2285,27 @@ function DocumentsScreen({ team, principal, onDone }) {
                 <p style={{ color: C.sub }} className="text-xs">
                   {d.chunks} section{d.chunks === 1 ? "" : "s"} · {d.questions} question{d.questions === 1 ? "" : "s"}
                 </p>
+                <p style={{ color: C.sub }} className="text-xs truncate">Added by {d.uploadedBy}</p>
               </div>
             </div>
-            <StatusPill status={d.ready ? "completed" : "in-progress"} />
+            <div className="flex items-center gap-2 shrink-0">
+              <StatusPill status={d.activeJob ? "in-progress" : d.ready ? "completed" : "in-progress"} />
+              {d.canDelete && (
+                <button
+                  type="button"
+                  title={d.activeJob ? `Cancel and delete ${d.title}` : `Delete ${d.title}`}
+                  aria-label={`Delete ${d.title}`}
+                  disabled={deletingDocumentId === d.documentId}
+                  onClick={() => handleDeleteDocument(d)}
+                  style={{ color: C.danger }}
+                  className="w-9 h-9 flex items-center justify-center disabled:opacity-40"
+                >
+                  {deletingDocumentId === d.documentId
+                    ? <Loader2 size={16} className="animate-spin" />
+                    : <Trash2 size={16} />}
+                </button>
+              )}
+            </div>
           </div>
         ))}
       </div>

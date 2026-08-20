@@ -269,3 +269,14 @@ export const confirmDocument = ({ title, assignments, newRoles, supersede, makeR
       makeRequired: makeRequired !== false,
     },
   });
+
+/**
+ * Permanently delete a course: the source, its modules, questions, and every learner
+ * attempt/certificate derived from it. Also doubles as "cancel this upload" -- calling
+ * it on a document whose generation is still running stops that job too, since deleting
+ * its GenerationJobs row is the only signal the background worker has to stop. Only the
+ * person who added it, or an admin/executive, may call this -- enforced server-side,
+ * not just hidden here.
+ */
+export const deleteDocument = (documentId) =>
+  call(`/documents/${encodeURIComponent(documentId)}/delete`, { method: "POST" });

@@ -35,8 +35,10 @@ def _manager_token():
 class TestActiveJobSurfaced(unittest.TestCase):
     def test_a_running_job_is_attached_to_its_document(self):
         responses = {
-            "FROM dbo.SourceChunks WHERE company_id": [
-                {"doc_title": "Zero-Trust Security", "chunks": 6}],
+            "FROM dbo.SourceChunks AS source": [
+                {"doc_id": "doc_zts", "doc_title": "Zero-Trust Security", "chunks": 6,
+                 "uploaded_by": 7, "uploaded_by_name": "Priya Nair",
+                 "source_kind": "upload", "pending_analysis_json": None}],
             "FROM dbo.GeneratedQuestions": [],
             "FROM dbo.GenerationJobs": [{
                 "job_id": "job_abc123", "doc_title": "Zero-Trust Security",
@@ -60,8 +62,10 @@ class TestActiveJobSurfaced(unittest.TestCase):
 
     def test_a_document_with_no_job_reports_none(self):
         responses = {
-            "FROM dbo.SourceChunks WHERE company_id": [
-                {"doc_title": "Onboarding", "chunks": 3}],
+            "FROM dbo.SourceChunks AS source": [
+                {"doc_id": "doc_onb", "doc_title": "Onboarding", "chunks": 3,
+                 "uploaded_by": None, "uploaded_by_name": None,
+                 "source_kind": "legacy", "pending_analysis_json": None}],
             "FROM dbo.GeneratedQuestions": [],
             "FROM dbo.GenerationJobs": [],
         }

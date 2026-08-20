@@ -270,6 +270,55 @@ class TestGenerationQueueHandoff(unittest.TestCase):
         self.assertEqual(updates[0]["total"], 9)
         self.assertEqual(updates[-1]["state"], "done")
 
+    def test_a_deleted_job_row_stops_the_worker_before_its_next_chunk(self):
+        # delete_document's cascade removes this job's own GenerationJobs row -- that
+        # deletion IS the cancel signal, checked once per lesson chunk. The first chunk
+        # here completes (get_job still finds the row); by the time the loop reaches
+        # the second, the row is gone and the worker must stop without generating for
+        # it or ever reaching a "done" update.
+        connection = FakeConnection()
+        chunk = SimpleNamespace(topic="Capacity", chunk_id="chunk_1", doc_title="Capacity Planning",
+                                container="source", role_scope="SWE_DIRECTOR")
+        lessons = [
+            SimpleNamespace(topic="Capacity", chunk_id="lesson_1", module_id="mod_1"),
+            SimpleNamespace(topic="Capacity", chunk_id="lesson_2", module_id="mod_2"),
+        ]
+        modules = [
+            SimpleNamespace(module_id="mod_1", heading="Part 1", learning_points=list(range(5))),
+            SimpleNamespace(module_id="mod_2", heading="Part 2", learning_points=list(range(5))),
+        ]
+        course = SimpleNamespace(modules=modules, ready_modules=modules)
+        result = SimpleNamespace(kept=[1], written=1, rejected=[])
+        updates = []
+        generate_calls = []
+
+        def generate(bank, chunks, **kwargs):
+            generate_calls.append(chunks[0].chunk_id)
+            return result
+
+        FakeBank.chunks = [chunk]
+
+        with (
+            patch.object(function_app, "_conn", return_value=connection),
+            patch.object(sqlbank, "SqlBank", FakeBank),
+            # Order matches call order in _run_generation_job: the initial existence
+            # check, then once before each lesson chunk. Running through lesson_1,
+            # gone by the time lesson_2 is checked.
+            patch.object(sqlbank, "get_job", side_effect=[
+                {"state": "running"}, {"state": "running"}, None,
+            ]),
+            patch.object(sqlbank, "update_job", side_effect=lambda *args, **fields: updates.append(fields)),
+            patch.object(coursegen, "build_instructional_course", return_value=course),
+            patch.object(coursegen, "assessment_chunks", return_value=lessons),
+            patch.object(pipeline, "generate_questions", side_effect=generate),
+        ):
+            function_app._run_generation_job("job_cancel", 7, "Capacity Planning")
+
+        self.assertEqual(generate_calls, ["lesson_1"],
+                          "generated for a chunk after its job row was deleted")
+        self.assertFalse(any(u.get("state") == "done" for u in updates),
+                          "reported done after being cancelled mid-run")
+
 
 if __name__ == "__main__":
     unittest.main()
