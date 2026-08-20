@@ -299,10 +299,18 @@ class AzureOpenAIGenerator:
         else:
             provenance = ProvenanceClass.DOCUMENTED
 
+        # A question whose self-reported learning_point_id doesn't exactly match one
+        # of the chunk's known ids used to be dropped outright -- but this id is just
+        # bookkeeping (which lesson page/point does this question test), not a
+        # correctness signal, so a mismatch here says nothing about whether the
+        # question itself is right or wrong. Same invisible-loss shape as the quote
+        # check: this runs before pipeline.py's rejection bookkeeping ever sees it.
+        # Clear it instead of dropping the question; the lesson_page_id lookup below
+        # already tolerates a missing/unknown point the same way.
         learning_point_id = str(item.get("learning_point_id") or "").strip()
         valid_point_ids = set(getattr(chunk, "learning_point_ids", []) or [])
         if valid_point_ids and learning_point_id not in valid_point_ids:
-            return None
+            learning_point_id = ""
         page_by_point = getattr(chunk, "lesson_page_by_learning_point", {}) or {}
         lesson_page_id = str(item.get("lesson_page_id") or "").strip()
         expected_page_id = page_by_point.get(learning_point_id, "")
