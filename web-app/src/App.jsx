@@ -2751,6 +2751,72 @@ function TeammatesGallery({ team, name }) {
         People who share your manager — {peers.length} {peers.length === 1 ? "person" : "people"}.
       </p>
       <TeamHangout members={members} highlightName={name} />
+
+      <h2 style={{ ...display, color: C.ink }} className="text-lg font-bold mt-10 mb-1">Department leaderboard</h2>
+      <p style={{ color: C.sub }} className="text-sm mb-4">Ranked by points earned from trainings completed.</p>
+      <TeamLeaderboard />
+    </div>
+  );
+}
+
+function LeaderboardRankBadge({ rank }) {
+  const top = rank === 1;
+  const podium = rank <= 3;
+  return (
+    <div
+      style={{
+        background: top ? C.green700 : podium ? C.mint : "transparent",
+        color: top ? "#fff" : podium ? C.green700 : C.sub,
+        borderColor: podium ? "transparent" : C.line,
+      }}
+      className="w-7 h-7 rounded-full border flex items-center justify-center text-xs font-bold shrink-0"
+    >
+      {rank}
+    </div>
+  );
+}
+
+function TeamLeaderboard() {
+  const { data, loading, error, reload } = useAsync(() => api.teamLeaderboard(), []);
+
+  return (
+    <div>
+      {loading && <Loading />}
+      {error && <ErrorBox error={error} onRetry={reload} />}
+
+      {data && data.leaderboard.length === 0 && (
+        <p style={{ color: C.sub }} className="text-sm">No department is set up for your role yet.</p>
+      )}
+
+      {data && data.leaderboard.length > 0 && (
+        <div style={{ borderColor: C.line }} className="border rounded-xl bg-white overflow-hidden">
+          {data.leaderboard.map((row, i) => (
+            <div
+              key={row.employeeId}
+              style={{
+                borderColor: C.line,
+                background: row.isYou ? C.mint : "transparent",
+              }}
+              className={`flex items-center gap-4 px-5 py-3 ${i > 0 ? "border-t" : ""}`}
+            >
+              <LeaderboardRankBadge rank={i + 1} />
+              <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: C.mint }}>
+                <PetRobotSVG size={24} mood="idle" equippedItemIds={row.equippedItemIds} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p style={{ color: C.ink }} className="text-sm font-semibold truncate">
+                  {row.name}{row.isYou ? " (you)" : ""}
+                </p>
+                <p style={{ color: C.sub }} className="text-xs truncate">{row.title}</p>
+              </div>
+              <div className="text-right shrink-0">
+                <p style={{ ...display, color: C.ink }} className="text-sm font-bold">{row.pointsEarned}</p>
+                <p style={{ color: C.sub }} className="text-[10px] uppercase tracking-wide">points</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
