@@ -42,6 +42,7 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 from auth.login import bp as auth_bp
 from shared.auth import get_current_employee, require_manager
 from shared import qscore
+from shared import pet_shop
 
 app.register_functions(auth_bp)
 
@@ -2395,6 +2396,147 @@ def set_settings(req: func.HttpRequest) -> func.HttpResponse:
             )
             c.commit()
         return _json({"notificationsEnabled": enabled})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+def _pet_state(cur, identity) -> Dict[str, Any]:
+    """Shared by GET /pet and both mutating routes below, so a purchase or an equip
+    responds with the same freshly-computed numbers rather than the caller's stale copy."""
+    cur.execute(
+        "SELECT COUNT(DISTINCT doc_title) AS n FROM dbo.Certificates "
+        "WHERE employee_id = ? AND company_id = ?",
+        identity.employee_id, identity.company_id,
+    )
+    completed = int(cur.fetchone()["n"] or 0)
+
+    cur.execute(
+        "SELECT item_id, equipped FROM dbo.PetPurchases WHERE employee_id = ? AND company_id = ?",
+        identity.employee_id, identity.company_id,
+    )
+    owned = _rows(cur)
+    owned_ids = [r["item_id"] for r in owned]
+    equipped_ids = [r["item_id"] for r in owned if r["equipped"]]
+
+    return {
+        "trainingsCompleted": completed,
+        "pointsEarned": pet_shop.points_earned(completed),
+        "pointsBalance": pet_shop.points_balance(completed, owned_ids),
+        "ownedItemIds": owned_ids,
+        "equippedItemIds": equipped_ids,
+        "catalog": pet_shop.catalog_public(),
+    }
+
+
+@app.route(route="pet", methods=["GET"])
+def get_pet(req: func.HttpRequest) -> func.HttpResponse:
+    """This employee's pet: points derived from certificates earned, items owned and
+    worn. Nothing here is stored as a mutable balance -- see api/shared/pet_shop.py."""
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    try:
+        with _conn() as c:
+            return _json(_pet_state(c.cursor(), identity))
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="pet/purchase", methods=["POST"])
+def purchase_pet_item(req: func.HttpRequest) -> func.HttpResponse:
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+
+    item_id = (body.get("itemId") or "").strip()
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT COUNT(DISTINCT doc_title) AS n FROM dbo.Certificates "
+                "WHERE employee_id = ? AND company_id = ?",
+                identity.employee_id, identity.company_id,
+            )
+            completed = int(cur.fetchone()["n"] or 0)
+            cur.execute(
+                "SELECT item_id FROM dbo.PetPurchases WHERE employee_id = ? AND company_id = ?",
+                identity.employee_id, identity.company_id,
+            )
+            owned_ids = [r["item_id"] for r in _rows(cur)]
+
+            if not pet_shop.can_afford(completed, owned_ids, item_id):
+                return _error(400, "Bad request",
+                              "Cannot buy {!r} -- not enough points, already owned, or "
+                              "not a real item.".format(item_id))
+
+            cur.execute(
+                "INSERT INTO dbo.PetPurchases (employee_id, company_id, item_id, equipped) "
+                "VALUES (?, ?, ?, 0)",
+                identity.employee_id, identity.company_id, item_id,
+            )
+            c.commit()
+            return _json(_pet_state(cur, identity))
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
+@app.route(route="pet/equip", methods=["POST"])
+def equip_pet_item(req: func.HttpRequest) -> func.HttpResponse:
+    """Toggle-wear an owned item. Equipping one item in a slot unequips whatever else
+    was worn in that slot -- a robot does not wear two hats."""
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    try:
+        body = req.get_json()
+    except ValueError:
+        return _error(400, "Bad request", "Body must be JSON")
+
+    item_id = (body.get("itemId") or "").strip()
+    slot = pet_shop.slot_of(item_id)
+    if slot is None:
+        return _error(400, "Bad request", "{!r} is not a real item.".format(item_id))
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT item_id, equipped FROM dbo.PetPurchases "
+                "WHERE employee_id = ? AND company_id = ?",
+                identity.employee_id, identity.company_id,
+            )
+            owned = _rows(cur)
+            owned_ids = {r["item_id"] for r in owned}
+            if item_id not in owned_ids:
+                return _error(400, "Bad request", "{!r} is not owned.".format(item_id))
+
+            currently_equipped = {r["item_id"] for r in owned if r["equipped"]}
+            if item_id in currently_equipped:
+                cur.execute(
+                    "UPDATE dbo.PetPurchases SET equipped = 0 "
+                    "WHERE employee_id = ? AND company_id = ? AND item_id = ?",
+                    identity.employee_id, identity.company_id, item_id,
+                )
+            else:
+                same_slot = [i for i in owned_ids if pet_shop.slot_of(i) == slot]
+                for other in same_slot:
+                    cur.execute(
+                        "UPDATE dbo.PetPurchases SET equipped = 0 "
+                        "WHERE employee_id = ? AND company_id = ? AND item_id = ?",
+                        identity.employee_id, identity.company_id, other,
+                    )
+                cur.execute(
+                    "UPDATE dbo.PetPurchases SET equipped = 1 "
+                    "WHERE employee_id = ? AND company_id = ? AND item_id = ?",
+                    identity.employee_id, identity.company_id, item_id,
+                )
+            c.commit()
+            return _json(_pet_state(cur, identity))
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
 

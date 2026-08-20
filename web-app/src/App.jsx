@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import * as api from "./api";
 import { Logo } from "./logo.jsx";
-import FloatingPet, { cheerPet } from "./FloatingPet.jsx";
+import FloatingPet, { cheerPet, PetRobotSVG, PetShopModal } from "./FloatingPet.jsx";
 
 /**
  * WHAT IS REAL AND WHAT IS NOT.
@@ -98,15 +98,6 @@ const PROFILES = {
   employee: { name: "Daniel Cho", role: "Software Engineer I", email: "d.cho@quadranttechnologies.com", joined: "Feb 2025" },
   manager: { name: "Priya Nair", role: "Engineering Manager", email: "p.nair@quadranttechnologies.com", joined: "Nov 2022" },
 };
-
-const PET_STAGES = [
-  { level: 1, name: "Qibble", min: 0, size: 56 },
-  { level: 2, name: "Qip", min: 1, size: 74 },
-  { level: 3, name: "Quill", min: 3, size: 92 },
-  { level: 4, name: "Quorra", min: 5, size: 110 },
-  { level: 5, name: "Quasar", min: 8, size: 128 },
-  { level: 6, name: "Qrown", min: 12, size: 146 },
-];
 
 // The catalog only -- title/description/icon. Whether each one is actually earned
 // comes from GET /api/me's badges field (see Profile below); ids 2 and 6 have no
@@ -2370,75 +2361,6 @@ function ManagerTeam({ team }) {
   );
 }
 
-function getPetStageIdx(trainingsCompleted) {
-  let idx = 0;
-  for (let i = 0; i < PET_STAGES.length; i++) {
-    if (trainingsCompleted >= PET_STAGES[i].min) idx = i;
-  }
-  return idx;
-}
-
-function PetCreature({ stageIdx, size }) {
-  const s = size;
-  const cx = s / 2, cy = s / 2 + s * 0.06;
-  const bodyR = s * 0.34;
-  const uid = `${size}-${stageIdx}`;
-  return (
-    <svg width={s} height={s} viewBox={`0 0 ${s} ${s}`}>
-      {stageIdx >= 4 && (
-        <ellipse cx={cx} cy={cy} rx={bodyR * 1.55} ry={bodyR * 0.5} fill="none" stroke={C.green300} strokeWidth="2" opacity="0.7" />
-      )}
-
-      {stageIdx >= 3 && (
-        <>
-          <ellipse cx={cx - bodyR * 1.05} cy={cy} rx={bodyR * 0.5} ry={bodyR * 0.72}
-            fill={C.mint} stroke={C.green500} strokeWidth="1.5" transform={`rotate(-18 ${cx - bodyR} ${cy})`} />
-          <ellipse cx={cx + bodyR * 1.05} cy={cy} rx={bodyR * 0.5} ry={bodyR * 0.72}
-            fill={C.mint} stroke={C.green500} strokeWidth="1.5" transform={`rotate(18 ${cx + bodyR} ${cy})`} />
-        </>
-      )}
-
-      {stageIdx >= 2 && [-1, 0, 1].map((i) => (
-        <polygon key={i}
-          points={`${cx + i * bodyR * 0.42},${cy - bodyR * 0.95} ${cx + i * bodyR * 0.42 - 5},${cy - bodyR * 0.55} ${cx + i * bodyR * 0.42 + 5},${cy - bodyR * 0.55}`}
-          fill={C.green500} />
-      ))}
-
-      {stageIdx >= 1 && (
-        <>
-          <ellipse cx={cx - bodyR * 0.72} cy={cy - bodyR * 0.85} rx={bodyR * 0.24} ry={bodyR * 0.34}
-            fill={C.green600} transform={`rotate(-25 ${cx - bodyR * 0.72} ${cy - bodyR * 0.85})`} />
-          <ellipse cx={cx + bodyR * 0.72} cy={cy - bodyR * 0.85} rx={bodyR * 0.24} ry={bodyR * 0.34}
-            fill={C.green600} transform={`rotate(25 ${cx + bodyR * 0.72} ${cy - bodyR * 0.85})`} />
-        </>
-      )}
-
-      <path d={`M ${cx + bodyR * 0.48} ${cy + bodyR * 0.58} L ${cx + bodyR * 1.02} ${cy + bodyR * 1.12}`}
-        stroke={C.green900} strokeWidth={Math.max(2.5, bodyR * 0.16)} strokeLinecap="round" />
-
-      <circle cx={cx} cy={cy} r={bodyR} fill={C.green600} />
-      <ellipse cx={cx} cy={cy + bodyR * 0.32} rx={bodyR * 0.62} ry={bodyR * 0.42} fill={C.mint} opacity="0.85" />
-
-      <circle cx={cx - bodyR * 0.32} cy={cy - bodyR * 0.05} r={bodyR * 0.15} fill="#fff" />
-      <circle cx={cx + bodyR * 0.32} cy={cy - bodyR * 0.05} r={bodyR * 0.15} fill="#fff" />
-      <circle cx={cx - bodyR * 0.29} cy={cy - bodyR * 0.02} r={bodyR * 0.07} fill={C.ink} />
-      <circle cx={cx + bodyR * 0.35} cy={cy - bodyR * 0.02} r={bodyR * 0.07} fill={C.ink} />
-
-      <path d={`M ${cx - bodyR * 0.2} ${cy + bodyR * 0.28} Q ${cx} ${cy + bodyR * 0.42} ${cx + bodyR * 0.2} ${cy + bodyR * 0.28}`}
-        fill="none" stroke={C.ink} strokeWidth={Math.max(1.5, bodyR * 0.05)} strokeLinecap="round" />
-
-      <circle cx={cx - bodyR * 0.55} cy={cy + bodyR * 0.15} r={bodyR * 0.12} fill={C.green300} opacity="0.6" />
-      <circle cx={cx + bodyR * 0.55} cy={cy + bodyR * 0.15} r={bodyR * 0.12} fill={C.green300} opacity="0.6" />
-
-      {stageIdx >= 5 && (
-        <polygon
-          points={`${cx - bodyR * 0.5},${cy - bodyR * 0.95} ${cx - bodyR * 0.28},${cy - bodyR * 1.25} ${cx},${cy - bodyR * 0.98} ${cx + bodyR * 0.28},${cy - bodyR * 1.25} ${cx + bodyR * 0.5},${cy - bodyR * 0.95}`}
-          fill={C.green500} stroke={C.green900} strokeWidth="1" strokeLinejoin="round" />
-      )}
-    </svg>
-  );
-}
-
 function polarPoint(cx, cy, r, angleDeg) {
   const rad = (angleDeg * Math.PI) / 180;
   return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
@@ -2454,10 +2376,12 @@ function TeamHabitat({ members, highlightName }) {
   const nodes = members.map((m, i) => {
     const angle = -90 + (360 / n) * i;
     const pos = polarPoint(cx, cy, radius, angle);
-    const stageIdx = getPetStageIdx(m.trainingsCompleted);
-    const stage = PET_STAGES[stageIdx];
-    const size = Math.min(88, Math.max(52, stage.size * 0.62));
-    return { ...m, pos, stageIdx, stage, size };
+    // A teammate's own equipped items are theirs to see, not something this screen
+    // fetches for everyone they sit near -- so the gallery shows every robot
+    // undressed, same as it always showed everyone at the same stage before
+    // trainingsCompleted had a real per-peer value to draw from.
+    const size = 64;
+    return { ...m, pos, size };
   });
 
   const selectedNode = nodes.find((nd) => nd.name === selected);
@@ -2495,14 +2419,11 @@ function TeamHabitat({ members, highlightName }) {
                 <circle cx={nd.pos.x} cy={nd.pos.y} r={nd.size / 2 + 9}
                   fill="#fff" stroke={isYou ? C.green700 : isSelected ? C.green500 : C.line}
                   strokeWidth={isYou || isSelected ? 2.5 : 1.5} />
-                <svg x={nd.pos.x - nd.size / 2} y={nd.pos.y - nd.size / 2} width={nd.size} height={nd.size} viewBox={`0 0 ${nd.size} ${nd.size}`}>
-                  <PetCreature stageIdx={nd.stageIdx} size={nd.size} />
-                </svg>
+                <g transform={`translate(${nd.pos.x - nd.size / 2}, ${nd.pos.y - (nd.size * 1.3) / 2})`}>
+                  <PetRobotSVG size={nd.size} mood="idle" equippedItemIds={[]} />
+                </g>
                 <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 19} textAnchor="middle" fill={C.ink} fontSize="11" fontWeight="700" fontFamily="'Inter', sans-serif">
                   {nd.name.split(" ")[0]}{isYou ? " (you)" : ""}
-                </text>
-                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 32} textAnchor="middle" fill={C.green700} fontSize="9" fontWeight="600" fontFamily="'Inter', sans-serif">
-                  Lv {nd.stage.level} · {nd.stage.name}
                 </text>
               </g>
             );
@@ -2513,14 +2434,14 @@ function TeamHabitat({ members, highlightName }) {
       {selectedNode ? (
         <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white mt-4 flex items-center gap-4">
           <div className="rounded-xl flex items-center justify-center shrink-0" style={{ width: 60, height: 60, background: C.mint }}>
-            <PetCreature stageIdx={selectedNode.stageIdx} size={44} />
+            <PetRobotSVG size={34} mood="idle" equippedItemIds={[]} />
           </div>
           <div>
             <p style={{ color: C.ink }} className="text-sm font-semibold">
               {selectedNode.name}{selectedNode.name === highlightName ? " (you)" : ""}
             </p>
             <p style={{ color: C.sub }} className="text-xs">
-              {selectedNode.role} · {selectedNode.stage.name}, Level {selectedNode.stage.level} · {selectedNode.trainingsCompleted} training{selectedNode.trainingsCompleted === 1 ? "" : "s"} completed
+              {selectedNode.role}
             </p>
           </div>
         </div>
@@ -2574,15 +2495,12 @@ function TeammatesGallery({ team, name }) {
     );
   }
 
-  // trainingsCompleted drives the character stage. GET /team does not return it — it
-  // answers who your teammates are, not how far along each of them is — so it is
-  // passed as 0 rather than invented. Everyone renders at the first stage until
-  // there is a real per-person figure to use; a plausible-looking fake number is
-  // the one thing this screen must not go back to.
+  // A teammate's owned/equipped pet items are their own; GET /team does not expose
+  // another person's shop state, so every robot in this gallery renders undressed
+  // rather than guessing at what someone else is wearing.
   const members = peers.map((p) => ({
     name: p.name,
     role: p.title || p.roleCode,
-    trainingsCompleted: 0,
   }));
 
   return (
@@ -2596,87 +2514,62 @@ function TeammatesGallery({ team, name }) {
   );
 }
 
-function CompanionCard({ trainingsCompleted, name, qScore }) {
-  const stageIdx = getPetStageIdx(trainingsCompleted);
-  const stage = PET_STAGES[stageIdx];
-  const next = PET_STAGES[stageIdx + 1];
-  const progressPct = next
-    ? Math.round(((trainingsCompleted - stage.min) / (next.min - stage.min)) * 100)
-    : 100;
+function MyPetCard({ name, qScore }) {
+  const { data, loading, error, reload } = useAsync(() => api.getPet(), []);
+  const [showShop, setShowShop] = useState(false);
   const [showShare, setShowShare] = useState(false);
 
   return (
     <div style={{ borderColor: C.line }} className="border rounded-xl p-5 bg-white mb-8">
       <div className="flex items-center justify-between mb-4">
-        <h3 style={{ ...display, color: C.ink }} className="font-bold">Your Q character</h3>
-        <div className="flex items-center gap-2">
-          <button onClick={() => setShowShare(true)} style={{ borderColor: C.line, color: C.green700 }}
-            className="border text-xs font-semibold px-3 py-1.5 rounded-full flex items-center gap-1.5">
-            <Share2 size={12} /> Share
-          </button>
-          <span style={{ background: C.mint, color: C.green700 }} className="text-xs font-semibold px-2.5 py-1 rounded-full">
-            Level {stage.level}
-          </span>
-        </div>
+        <h3 style={{ ...display, color: C.ink }} className="font-bold">Your robot</h3>
+        {data && (
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowShare(true)} style={{ borderColor: C.line, color: C.green700 }}
+              className="border text-xs font-semibold px-3 py-1.5 rounded-full flex items-center gap-1.5">
+              <Share2 size={12} /> Share
+            </button>
+            <button onClick={() => setShowShop(true)} style={{ background: C.green700 }}
+              className="text-white text-xs font-semibold px-3 py-1.5 rounded-full">
+              Customize
+            </button>
+          </div>
+        )}
       </div>
 
-      <div className="flex items-center gap-6 mb-5 flex-wrap">
-        <div className="rounded-2xl flex items-center justify-center shrink-0" style={{ width: 160, height: 160, background: C.mint }}>
-          <PetCreature stageIdx={stageIdx} size={stage.size} />
-        </div>
-        <div className="flex-1 min-w-[200px]">
-          <p style={{ ...display, color: C.ink }} className="text-lg font-bold mb-0.5">{stage.name}</p>
-          <p style={{ color: C.sub }} className="text-sm mb-3">
-            {trainingsCompleted} training{trainingsCompleted === 1 ? "" : "s"} completed
-          </p>
-          {next ? (
-            <>
-              <div className="flex items-center justify-between mb-1.5">
-                <span style={{ color: C.sub }} className="text-xs font-semibold">
-                  {next.min - trainingsCompleted} more to reach {next.name}
-                </span>
-                <span style={{ color: C.sub }} className="text-xs font-semibold">{progressPct}%</span>
-              </div>
-              <div style={{ background: C.line }} className="w-full h-2.5 rounded-full overflow-hidden">
-                <div style={{ width: `${progressPct}%`, background: C.green700 }} className="h-full rounded-full transition-all" />
-              </div>
-            </>
-          ) : (
-            <p style={{ color: C.green700 }} className="text-xs font-semibold flex items-center gap-1.5">
-              <Trophy size={13} /> Max level reached — {stage.name} is fully grown
+      {loading && <Loading />}
+      {error && <ErrorBox error={error} onRetry={reload} />}
+
+      {data && (
+        <div className="flex items-center gap-6 flex-wrap">
+          <div className="rounded-2xl flex items-center justify-center shrink-0" style={{ width: 160, height: 160, background: C.mint }}>
+            <PetRobotSVG size={120} mood="idle" equippedItemIds={data.equippedItemIds} />
+          </div>
+          <div className="flex-1 min-w-[200px]">
+            <p style={{ ...display, color: C.ink }} className="text-lg font-bold mb-0.5">{data.pointsBalance} points</p>
+            <p style={{ color: C.sub }} className="text-sm mb-3">
+              {data.pointsEarned} earned from {data.trainingsCompleted} training{data.trainingsCompleted === 1 ? "" : "s"} completed
+              {data.ownedItemIds.length > 0 && ` · ${data.ownedItemIds.length} item${data.ownedItemIds.length === 1 ? "" : "s"} owned`}
             </p>
-          )}
+            <p style={{ color: C.sub }} className="text-xs">
+              Finish a training to earn 100 points, then spend them on the shop to dress up your robot.
+            </p>
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="flex items-center">
-        {PET_STAGES.map((st, i) => {
-          const reached = i <= stageIdx;
-          const isLast = i === PET_STAGES.length - 1;
-          return (
-            <React.Fragment key={st.level}>
-              <div className="flex flex-col items-center" style={{ width: 56 }}>
-                <div style={{ background: reached ? C.green700 : "#F1F0F3", color: reached ? "#fff" : "#9A93A8" }}
-                  className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0">
-                  {reached ? (i === stageIdx ? st.level : <CheckCircle2 size={14} />) : <Lock size={11} />}
-                </div>
-                <span style={{ color: reached ? C.ink : C.sub }} className="text-[10px] font-semibold mt-1 text-center leading-tight">{st.name}</span>
-              </div>
-              {!isLast && <div style={{ background: i < stageIdx ? C.green700 : C.line }} className="flex-1 h-0.5 -mt-4" />}
-            </React.Fragment>
-          );
-        })}
-      </div>
-
-      {showShare && (
-        <ShareCharacterModal stage={stage} stageIdx={stageIdx} name={name} qScore={qScore}
-          trainingsCompleted={trainingsCompleted} onClose={() => setShowShare(false)} />
+      {showShop && (
+        <PetShopModal onClose={() => setShowShop(false)} onChanged={() => reload()} />
+      )}
+      {showShare && data && (
+        <ShareCharacterModal equippedItemIds={data.equippedItemIds} name={name} qScore={qScore}
+          trainingsCompleted={data.trainingsCompleted} onClose={() => setShowShare(false)} />
       )}
     </div>
   );
 }
 
-function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted, onClose }) {
+function ShareCharacterModal({ equippedItemIds, name, qScore, trainingsCompleted, onClose }) {
   const svgRef = useRef(null);
   const [copied, setCopied] = useState(false);
 
@@ -2695,13 +2588,13 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
       URL.revokeObjectURL(url);
       const a = document.createElement("a");
       a.href = canvas.toDataURL("image/png");
-      a.download = `${stage.name.toLowerCase()}-ascend-card.png`;
+      a.download = "my-ascend-robot-card.png";
       a.click();
     };
     img.src = url;
   };
 
-  const caption = `I just reached Level ${stage.level} with ${stage.name} on Ascend! ${trainingsCompleted} trainings completed, Q Score ${qScore}.`;
+  const caption = `Meet my Ascend robot! ${trainingsCompleted} trainings completed, Q Score ${qScore}.`;
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(caption);
@@ -2714,7 +2607,7 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(30,27,46,0.6)" }} onClick={onClose}>
       <div style={font} className="bg-white rounded-2xl p-5 max-w-sm w-full" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
-          <h3 style={{ ...display, color: C.ink }} className="font-bold">Share your character</h3>
+          <h3 style={{ ...display, color: C.ink }} className="font-bold">Share your robot</h3>
           <button onClick={onClose} style={{ color: C.sub }}><X size={18} /></button>
         </div>
 
@@ -2722,11 +2615,10 @@ function ShareCharacterModal({ stage, stageIdx, name, qScore, trainingsCompleted
           <svg ref={svgRef} width="240" height="340" viewBox="0 0 240 340" xmlns="http://www.w3.org/2000/svg">
             <rect x="0" y="0" width="240" height="340" rx="20" fill={C.green900} />
             <text x="20" y="32" fill="#fff" fontSize="13" fontWeight="700" fontFamily="'Playfair Display', serif" letterSpacing="1">ASCEND</text>
-            <svg x="45" y="52" width="150" height="150" viewBox="0 0 150 150">
-              <PetCreature stageIdx={stageIdx} size={150} />
-            </svg>
-            <text x="120" y="228" textAnchor="middle" fill="#fff" fontSize="20" fontWeight="700" fontFamily="'Playfair Display', serif">{stage.name}</text>
-            <text x="120" y="250" textAnchor="middle" fill="#CFE9D9" fontSize="12" fontWeight="600" fontFamily="'Inter', sans-serif">Level {stage.level} · {name}</text>
+            <g transform="translate(60, 50)">
+              <PetRobotSVG size={120} mood="happy" equippedItemIds={equippedItemIds} />
+            </g>
+            <text x="120" y="250" textAnchor="middle" fill="#CFE9D9" fontSize="12" fontWeight="600" fontFamily="'Inter', sans-serif">{name}</text>
             <line x1="30" y1="268" x2="210" y2="268" stroke="rgba(255,255,255,0.2)" />
             <text x="70" y="292" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700" fontFamily="'Playfair Display', serif">{qScore}</text>
             <text x="70" y="308" textAnchor="middle" fill="#A9DFC0" fontSize="9" fontFamily="'Inter', sans-serif">Q SCORE</text>
@@ -2911,7 +2803,7 @@ function Profile({ principal }) {
         </div>
       )}
 
-      <CompanionCard trainingsCompleted={completed} name={p.name} qScore={qScore} />
+      <MyPetCard name={p.name} qScore={qScore} />
 
       <div className="grid grid-cols-3 gap-4 mb-8">
         <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white flex items-center gap-3">

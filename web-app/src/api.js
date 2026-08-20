@@ -123,6 +123,16 @@ export const lesson = (training, moduleId) => {
 };
 export const certificates = () => call("/certificates");
 
+/**
+ * The floating pet: points (derived from certificates earned, never a stored balance),
+ * the shop catalog, and what this employee owns/wears.
+ */
+export const getPet = () => call("/pet");
+export const purchasePetItem = (itemId) =>
+  call("/pet/purchase", { method: "POST", body: { itemId } });
+export const equipPetItem = (itemId) =>
+  call("/pet/equip", { method: "POST", body: { itemId } });
+
 /** This learner's own preferences. Real, persisted server-side -- not a local toggle. */
 export const getSettings = () => call("/settings");
 export const updateSettings = (notificationsEnabled) =>
