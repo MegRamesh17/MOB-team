@@ -2502,6 +2502,22 @@ def get_team(req: func.HttpRequest) -> func.HttpResponse:
             )
             peers = _rows(cur)
 
+            # What each peer's robot is wearing -- cosmetic only, never points or
+            # trainings completed (peers' own progress is theirs, not something this
+            # screen exposes). One batched query rather than one per peer.
+            peer_equipped: Dict[int, List[str]] = {}
+            peer_ids = [p["id"] for p in peers]
+            if peer_ids:
+                placeholders = ",".join("?" for _ in peer_ids)
+                cur.execute(
+                    "SELECT employee_id, item_id FROM dbo.PetPurchases "
+                    "WHERE company_id = ? AND equipped = 1 "
+                    "AND employee_id IN ({})".format(placeholders),
+                    identity.company_id, *peer_ids,
+                )
+                for r in _rows(cur):
+                    peer_equipped.setdefault(r["employee_id"], []).append(r["item_id"])
+
             # Who I report to -- shown alongside "people below you" on My Team, so a
             # manager sees both directions of the chain, not just downward.
             manager = None
@@ -2565,6 +2581,7 @@ def get_team(req: func.HttpRequest) -> func.HttpResponse:
                     "email": p["email"],
                     "title": p.get("title"),
                     "roleCode": (p.get("role_code") or "ALL").upper(),
+                    "equippedItemIds": peer_equipped.get(p["id"], []),
                 }
                 for p in peers
             ],

@@ -2614,10 +2614,6 @@ function TeamHabitat({ members, highlightName }) {
   const nodes = members.map((m, i) => {
     const angle = -90 + (360 / n) * i;
     const pos = polarPoint(cx, cy, radius, angle);
-    // A teammate's own equipped items are theirs to see, not something this screen
-    // fetches for everyone they sit near -- so the gallery shows every robot
-    // undressed, same as it always showed everyone at the same stage before
-    // trainingsCompleted had a real per-peer value to draw from.
     const size = 64;
     return { ...m, pos, size };
   });
@@ -2658,7 +2654,7 @@ function TeamHabitat({ members, highlightName }) {
                   fill="#fff" stroke={isYou ? C.green700 : isSelected ? C.green500 : C.line}
                   strokeWidth={isYou || isSelected ? 2.5 : 1.5} />
                 <g transform={`translate(${nd.pos.x - nd.size / 2}, ${nd.pos.y - (nd.size * 1.3) / 2})`}>
-                  <PetRobotSVG size={nd.size} mood="idle" equippedItemIds={[]} />
+                  <PetRobotSVG size={nd.size} mood="idle" equippedItemIds={nd.equippedItemIds} />
                 </g>
                 <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 19} textAnchor="middle" fill={C.ink} fontSize="11" fontWeight="700" fontFamily="'Inter', sans-serif">
                   {nd.name.split(" ")[0]}{isYou ? " (you)" : ""}
@@ -2672,7 +2668,7 @@ function TeamHabitat({ members, highlightName }) {
       {selectedNode ? (
         <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white mt-4 flex items-center gap-4">
           <div className="rounded-xl flex items-center justify-center shrink-0" style={{ width: 60, height: 60, background: C.mint }}>
-            <PetRobotSVG size={34} mood="idle" equippedItemIds={[]} />
+            <PetRobotSVG size={34} mood="idle" equippedItemIds={selectedNode.equippedItemIds} />
           </div>
           <div>
             <p style={{ color: C.ink }} className="text-sm font-semibold">
@@ -2733,12 +2729,12 @@ function TeammatesGallery({ team, name }) {
     );
   }
 
-  // A teammate's owned/equipped pet items are their own; GET /team does not expose
-  // another person's shop state, so every robot in this gallery renders undressed
-  // rather than guessing at what someone else is wearing.
+  // GET /team returns each peer's equipped item ids -- what they're wearing, never
+  // their points balance or trainings completed, which stay theirs alone.
   const members = peers.map((p) => ({
     name: p.name,
     role: p.title || p.roleCode,
+    equippedItemIds: p.equippedItemIds || [],
   }));
 
   return (

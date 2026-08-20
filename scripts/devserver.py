@@ -525,6 +525,19 @@ class Handler(BaseHTTPRequestHandler):
             if p["employee_id"] != identity.employee_id
             and p.get("manager_id") == identity.manager_id
         ]
+
+        # What each peer's robot is wearing -- cosmetic only, never points or
+        # trainings completed (peers' own progress is theirs, not something this
+        # screen exposes).
+        with Bank(DB, self._company()) as bank:
+            peer_equipped = {
+                p["employee_id"]: [
+                    row["item_id"] for row in bank.pet_purchases(p.get("email", ""))
+                    if row["equipped"]
+                ]
+                for p in peers
+            }
+
         manager = None
         if identity.manager_id is not None:
             m = by_id.get(identity.manager_id)
@@ -580,6 +593,7 @@ class Handler(BaseHTTPRequestHandler):
                     "email": p.get("email", ""),
                     "title": p.get("title", ""),
                     "roleCode": (p.get("role_code") or "ALL").upper(),
+                    "equippedItemIds": peer_equipped.get(p["employee_id"], []),
                 }
                 for p in peers
             ],
