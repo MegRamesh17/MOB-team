@@ -925,6 +925,20 @@ def answer_question(req: func.HttpRequest) -> func.HttpResponse:
         return _error(500, "Internal error", type(exc).__name__)
 
 
+# Demo-only: a fixed role -> course-title list, shown under Recommended regardless of
+# whether the employee ever opened the skill-interest popup. Real recommendation is
+# meant to come from EmployeeSkillInterest (an employee opting in); this hardcoded list
+# exists so the tab has real, clickable content to show right now without waiting on
+# that opt-in flow. Add more titles here as more courses get generated for a role --
+# nothing else needs to change, a title just has to exist as a real training for it to
+# show up.
+HARDCODED_RECOMMENDATIONS: Dict[str, List[str]] = {
+    "SDE1": ["Prompt Engineering"],
+    "SDE2": ["Prompt Engineering"],
+    "SDE3": ["Prompt Engineering"],
+}
+
+
 @app.route(route="trainings", methods=["GET"])
 def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
     """
@@ -1042,6 +1056,7 @@ def list_trainings(req: func.HttpRequest) -> func.HttpResponse:
                 identity.employee_id, identity.company_id,
             )
             interested_docs = {r["doc_title"] for r in _rows(cur)}
+            interested_docs |= set(HARDCODED_RECOMMENDATIONS.get(role, []))
 
         rolled: Dict[str, Dict[str, int]] = {}
         for topic, row in by_topic.items():

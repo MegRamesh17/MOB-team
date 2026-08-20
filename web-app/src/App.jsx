@@ -1215,7 +1215,6 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
   const [fallbackNotice, setFallbackNotice] = useState(false);
 
   const isMulti = q?.type === "MultiSelect";
-  const isFree = ["FillInBlank", "ShortAnswer", "PythonCode", "PromptResponse"].includes(q?.type);
   const checked = Boolean(verdict);
   const position = Math.min(checked ? answeredCount : answeredCount + 1, quiz.questionTarget);
 
@@ -1329,60 +1328,41 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
           <span style={{ borderColor: C.line, color: C.sub }} className="text-[11px] font-semibold px-2 py-0.5 rounded-full border">{q.difficulty}</span>
         </div>
 
-        {isFree ? (
-          <div>
-            <textarea
-              value={draft ?? ""}
-              onChange={(e) => setDraft(e.target.value)}
-              disabled={checked || pending}
-              placeholder="Type your answer"
-              rows={q.type === "PythonCode" ? 10 : 4}
-              style={{ borderColor: C.line, color: C.ink }}
-              className={`w-full border rounded-lg px-3 py-2.5 text-sm mb-3 resize-y ${q.type === "PythonCode" ? "font-mono" : ""}`}
-            />
-            {!checked && (
-              <Button onClick={() => commit({ textAnswer: draft || "" })} disabled={!draft || pending}>
-                {pending ? "Checking…" : "Check answer"}
+        <div className="space-y-2">
+          {(q.options || []).map((opt) => {
+            const { state, selected, style } = optionStyle(opt.optionId);
+            return (
+              <button
+                key={opt.optionId}
+                onClick={() => selectOption(opt.optionId)}
+                disabled={checked || pending}
+                style={style}
+                className="w-full text-left border rounded-lg px-3 py-2.5 text-sm flex items-center gap-2"
+              >
+                <span style={{
+                  borderColor: state === "correct" ? C.success : state === "incorrect" ? C.danger : selected ? C.green700 : "#C9C2DB",
+                  background: state === "correct" ? C.success : state === "incorrect" ? C.danger : selected ? C.green700 : "transparent",
+                  borderRadius: isMulti ? 4 : 999,
+                }} className="w-4 h-4 border-2 shrink-0 flex items-center justify-center">
+                  {state === "correct" ? <CheckCircle2 size={11} color="#fff" />
+                    : state === "incorrect" ? <X size={11} color="#fff" />
+                    : selected ? <div className="w-1.5 h-1.5 rounded-full bg-white" /> : null}
+                </span>
+                <span className="min-w-0">{opt.text}</span>
+              </button>
+            );
+          })}
+          {isMulti && !checked && (
+            <div className="pt-1">
+              <Button
+                onClick={() => commit({ selectedOptionIds: Array.isArray(draft) ? draft : [] })}
+                disabled={!Array.isArray(draft) || draft.length === 0 || pending}
+              >
+                {pending ? "Checking…" : "Check answers"}
               </Button>
-            )}
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {(q.options || []).map((opt) => {
-              const { state, selected, style } = optionStyle(opt.optionId);
-              return (
-                <button
-                  key={opt.optionId}
-                  onClick={() => selectOption(opt.optionId)}
-                  disabled={checked || pending}
-                  style={style}
-                  className="w-full text-left border rounded-lg px-3 py-2.5 text-sm flex items-center gap-2"
-                >
-                  <span style={{
-                    borderColor: state === "correct" ? C.success : state === "incorrect" ? C.danger : selected ? C.green700 : "#C9C2DB",
-                    background: state === "correct" ? C.success : state === "incorrect" ? C.danger : selected ? C.green700 : "transparent",
-                    borderRadius: isMulti ? 4 : 999,
-                  }} className="w-4 h-4 border-2 shrink-0 flex items-center justify-center">
-                    {state === "correct" ? <CheckCircle2 size={11} color="#fff" />
-                      : state === "incorrect" ? <X size={11} color="#fff" />
-                      : selected ? <div className="w-1.5 h-1.5 rounded-full bg-white" /> : null}
-                  </span>
-                  <span className="min-w-0">{opt.text}</span>
-                </button>
-              );
-            })}
-            {isMulti && !checked && (
-              <div className="pt-1">
-                <Button
-                  onClick={() => commit({ selectedOptionIds: Array.isArray(draft) ? draft : [] })}
-                  disabled={!Array.isArray(draft) || draft.length === 0 || pending}
-                >
-                  {pending ? "Checking…" : "Check answers"}
-                </Button>
-              </div>
-            )}
-          </div>
-        )}
+            </div>
+          )}
+        </div>
 
         {error && <ErrorBox error={error} />}
 
@@ -1394,11 +1374,6 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
               <p className="font-semibold mb-0.5">{verdict.correct ? "Correct" : "Not quite"}</p>
               {verdict.explanation && (
                 <p style={{ color: C.ink }} className="text-sm leading-snug opacity-90">{verdict.explanation}</p>
-              )}
-              {isFree && !verdict.correct && verdict.acceptedAnswers?.length > 0 && (
-                <p style={{ color: C.ink }} className="text-sm leading-snug opacity-90 mt-1">
-                  Accepted: {verdict.acceptedAnswers.join(", ")}
-                </p>
               )}
               {verdict.sourceQuote && (
                 <p style={{ color: C.sub }} className="text-xs italic mt-1.5">"{verdict.sourceQuote}"</p>
