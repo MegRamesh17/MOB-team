@@ -956,7 +956,7 @@ function TrainingDetail({ training, onBack, onStartDiagnostic, onOpenModule, onS
   const path = data?.training;
 
   return (
-    <div className="p-8 max-w-3xl">
+    <div className="p-8">
       <button onClick={onBack} style={{ color: C.sub }} className="flex items-center gap-1 text-sm font-semibold mb-4">
         <ArrowLeft size={14} /> Back
       </button>
@@ -1180,7 +1180,7 @@ function QuizPreScreen({ training, assessment, onStart, onBack, starting, error 
       ? "The next question becomes harder after a correct answer and easier after a mistake."
       : "Every form follows the same topic and difficulty blueprint for fairness.";
   return (
-    <div className="p-8 max-w-xl">
+    <div className="p-8">
       <button onClick={onBack} style={{ color: C.sub }} className="flex items-center gap-1 text-sm font-semibold mb-4">
         <ArrowLeft size={14} /> Back
       </button>
@@ -1296,7 +1296,7 @@ function QuizRunner({ training, quiz, onSubmit, onBack }) {
   };
 
   return (
-    <div className="p-8 max-w-2xl">
+    <div className="p-8">
       <button onClick={onBack} style={{ color: C.sub }} className="flex items-center gap-1 text-sm font-semibold mb-4">
         <ArrowLeft size={14} /> Exit quiz
       </button>
@@ -1426,7 +1426,7 @@ function QuizResults({ result, onRetake, onDone }) {
   const diagnostic = result.kind === "diagnostic";
   const checkpoint = result.kind === "module";
   return (
-    <div className="p-8 max-w-2xl">
+    <div className="p-8">
       <div style={{ borderColor: C.line }} className="border rounded-2xl p-8 bg-white text-center mb-6">
         <div className="flex justify-center mb-4">
           <MasteryRing value={result.scorePercent} size={100} stroke={9} />
@@ -1541,7 +1541,7 @@ function Certificates() {
   };
 
   return (
-    <div className="p-8 max-w-3xl">
+    <div className="p-8">
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Certificates</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">Everything you've completed and passed.</p>
 
@@ -2148,7 +2148,7 @@ function DocumentsScreen({ team, principal, onDone }) {
   };
 
   return (
-    <div className="p-8 max-w-3xl">
+    <div className="p-8">
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Resources</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">
         Upload a training document. The AI maps each section to the role it trains,
@@ -2480,7 +2480,7 @@ function ManagerTeam({ team }) {
 
   if (!people.length) {
     return (
-      <div className="p-8 max-w-4xl">
+      <div className="p-8">
         <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Reports</h1>
         <ReportsToCard manager={team?.manager} />
         <p style={{ color: C.sub }} className="text-sm">Nobody reports to you yet.</p>
@@ -2506,7 +2506,7 @@ function ManagerTeam({ team }) {
   const tableLabel = showTeamSize ? "Managers" : "My team";
 
   return (
-    <div className="p-8 max-w-5xl">
+    <div className="p-8">
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Reports</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">
         Everyone who reports to you, and how their training is going.
@@ -2939,7 +2939,7 @@ function Settings({ settings, onSettingsChange }) {
   };
 
   return (
-    <div className="p-8 max-w-2xl">
+    <div className="p-8">
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Settings</h1>
       <p style={{ color: C.sub }} className="text-sm mb-8">Your account preferences.</p>
 
@@ -3016,7 +3016,7 @@ function Profile({ principal }) {
   const earnedCount = badges.filter((b) => b.earned).length;
 
   return (
-    <div className="p-8 max-w-4xl">
+    <div className="p-8">
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">My profile</h1>
       <p style={{ color: C.sub }} className="text-sm mb-6">Your progress and Q score at a glance.</p>
 
