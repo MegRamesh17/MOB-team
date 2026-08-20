@@ -132,13 +132,19 @@ stages:
               runtimeStack: 'PYTHON|3.11'
               deploymentMethod: 'zipDeploy'
 
-          - bash: sleep 45
+          - bash: sleep 60
             displayName: 'Wait for app'
 
+          # Budget: 60s initial wait + 8 x 20s retries = 220s total. Was 45s + 5x15s = 120s,
+          # which a cold start can outlast once the deployed package carries enough native-
+          # extension dependencies (pyodbc, cryptography, Pillow, ...) -- the app comes up
+          # fine, just after the old budget had already given up and failed the build. This
+          # doesn't make cold start faster, it just stops the pipeline reporting a healthy
+          # deploy as broken.
           - bash: |
               URL="https://$(functionAppName).azurewebsites.net/api/health"
               echo "GET $URL"
-              for attempt in 1 2 3 4 5; do
+              for attempt in 1 2 3 4 5 6 7 8; do
                 CODE=$(curl -s -o /tmp/health.json -w "%{http_code}" --max-time 30 "$URL" || echo "000")
                 if [ "$CODE" = "200" ]; then
                   echo "Healthy."
@@ -148,10 +154,10 @@ stages:
                 if [ "$CODE" = "404" ]; then
                   echo "##vso[task.logissue type=error]The Function host is reachable but no /api/health route is registered. Check the deployed zip and Python worker import logs."
                 fi
-                echo "Attempt $attempt: HTTP $CODE — retrying in 15s"
-                sleep 15
+                echo "Attempt $attempt: HTTP $CODE — retrying in 20s"
+                sleep 20
               done
-              echo "##vso[task.logissue type=error]Health check failed after 5 attempts (last HTTP $CODE)."
+              echo "##vso[task.logissue type=error]Health check failed after 8 attempts (last HTTP $CODE)."
               cat /tmp/health.json 2>/dev/null || true
               exit 1
             displayName: 'Health check'
