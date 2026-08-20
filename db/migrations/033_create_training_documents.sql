@@ -4,19 +4,28 @@
 -- different grain, so it cannot answer who added a course without repeating ownership
 -- on every chunk. This registry supplies that missing ownership boundary and gives the
 -- delete endpoint a stable document id that is not a mutable AI-generated title.
+--
+-- pending_analysis_json also lives here rather than in a separate table: the AI's
+-- proposed section->role mapping is exactly document-grain state, and a document has
+-- at most one open proposal at a time (a second upload of the same title collides on
+-- doc_title before it ever gets here). Written when analyze_document() succeeds,
+-- cleared the moment confirm_document() tags the chunks -- so a manager who navigates
+-- away from the mapping-review screen before confirming can come back and see the
+-- same proposal again instead of it vanishing with the unmounted component.
 
 IF OBJECT_ID('dbo.TrainingDocuments', 'U') IS NULL
 BEGIN
     CREATE TABLE dbo.TrainingDocuments
     (
-        company_id      INT            NOT NULL,
-        document_id     NVARCHAR(64)   NOT NULL,
-        doc_title       NVARCHAR(300)  NOT NULL,
-        uploaded_by     INT            NULL,
-        source_kind     NVARCHAR(20)   NOT NULL DEFAULT 'upload',
-        source_label    NVARCHAR(1000) NULL,
-        trusted_link_id INT            NULL,
-        created_at      DATETIME2(3)   NOT NULL DEFAULT SYSUTCDATETIME(),
+        company_id           INT            NOT NULL,
+        document_id          NVARCHAR(64)   NOT NULL,
+        doc_title            NVARCHAR(300)  NOT NULL,
+        uploaded_by          INT            NULL,
+        source_kind          NVARCHAR(20)   NOT NULL DEFAULT 'upload',
+        source_label         NVARCHAR(1000) NULL,
+        trusted_link_id      INT            NULL,
+        pending_analysis_json NVARCHAR(MAX) NULL,
+        created_at           DATETIME2(3)   NOT NULL DEFAULT SYSUTCDATETIME(),
 
         CONSTRAINT PK_TrainingDocuments PRIMARY KEY (company_id, document_id),
         CONSTRAINT FK_TrainingDocuments_Company FOREIGN KEY (company_id)
@@ -53,3 +62,8 @@ SELECT source.company_id, source.doc_id, MAX(source.doc_title), NULL, 'legacy',
        )
  GROUP BY source.company_id, source.doc_id;
 GO
+
+-- A running job is the one other in-progress state a document can be in besides "has a
+-- pending mapping proposal" -- and it isn't tracked in TrainingDocuments at all, it's
+-- read straight off GenerationJobs by list_documents already. Nothing to add here for
+-- that case.

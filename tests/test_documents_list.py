@@ -48,7 +48,7 @@ class TestActiveJobSurfaced(unittest.TestCase):
             "FROM dbo.SourceChunks AS source": [{
                 "doc_id": "doc_zero", "doc_title": "Zero-Trust Security", "chunks": 6,
                 "uploaded_by": 3, "uploaded_by_name": "Ethan Brooks",
-                "source_kind": "upload",
+                "source_kind": "upload", "pending_analysis_json": None,
             }],
             "FROM dbo.GeneratedQuestions": [],
             "FROM dbo.GenerationJobs": [{
@@ -78,7 +78,7 @@ class TestActiveJobSurfaced(unittest.TestCase):
             "FROM dbo.SourceChunks AS source": [{
                 "doc_id": "doc_onboarding", "doc_title": "Onboarding", "chunks": 3,
                 "uploaded_by": 3, "uploaded_by_name": "Ethan Brooks",
-                "source_kind": "upload",
+                "source_kind": "upload", "pending_analysis_json": None,
             }],
             "FROM dbo.GeneratedQuestions": [],
             "FROM dbo.GenerationJobs": [],

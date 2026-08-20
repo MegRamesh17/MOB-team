@@ -3387,15 +3387,10 @@ def _company_name(company_id: int) -> str:
         return "Your company"
 
 
-def _ingest_and_propose(
-    chunks,
-    identity,
-    label: str,
-    retitle_suffix: str,
-    extra_fields: Optional[dict] = None,
-    source_kind: str = "upload",
-    trusted_link_id: Optional[int] = None,
-) -> func.HttpResponse:
+def _ingest_and_propose(chunks, identity, label: str, retitle_suffix: str,
+                        source_kind: str = "upload",
+                        trusted_link_id: Optional[int] = None,
+                        extra_fields: Optional[dict] = None) -> func.HttpResponse:
     """
     Save already-extracted chunks, seed the role catalog if empty, and ask the model to
     propose a section->role mapping -- the part upload_document and add_trusted_link
@@ -3406,6 +3401,14 @@ def _ingest_and_propose(
     is the parenthetical used only if doc_title collides with a different document
     (Path(safe).stem for an upload, the URL's host for a link) -- kept separate from
     label because a suffix built from a full URL would be unreadable.
+
+    source_kind/trusted_link_id record ownership in TrainingDocuments, at document grain
+    rather than repeated on every chunk -- see 033_create_training_documents.sql. That
+    registry is also where the proposed mapping itself gets saved (pending_analysis_json),
+    so a manager who navigates away from the mapping-review screen before confirming can
+    come back to the same proposal instead of it vanishing with the React state that held
+    it -- the chunks were already durable the moment this function ran; the proposal
+    describing what to do with them was not, until now.
     """
     if not chunks:
         return _error(422, "No teachable content found",
@@ -3470,9 +3473,26 @@ def _ingest_and_propose(
                     ch.doc_title = doc_title
 
             bank.save_chunks(chunks)
-            # SourceChunks is passage-level evidence. Keep document ownership once at
-            # document grain so delete authorization is stable even when an AI title
-            # changes or a source produces dozens of chunks.
+
+            from quizgen.pipeline import generator_name
+            payload = {
+                "file": label, "title": doc_title, "documentId": chunks[0].doc_id,
+                "chunks": len(chunks), "topics": topics,
+                "summary": mapping.summary,
+                "proposedRoles": mapping.assignments,
+                "permittedRoles": sorted(permitted),
+                "unknownRoles": mapping.unknown_roles,
+                "thinTopics": mapping.thin_topics,
+                "knownRoles": known_roles,
+                "generator": generator_name(),
+                "needsConfirmation": True,
+            }
+            payload.update(extra_fields or {})
+
+            # SourceChunks is passage-level evidence. Keep document ownership, and the
+            # AI's not-yet-confirmed proposal, once at document grain -- see the
+            # docstring above and 033_create_training_documents.sql.
+            analysis_json = json.dumps(payload, separators=(",", ":"))
             cur.execute(
                 """MERGE dbo.TrainingDocuments AS target
                    USING (SELECT ? AS company_id, ? AS document_id) AS source
@@ -3481,32 +3501,20 @@ def _ingest_and_propose(
                    WHEN MATCHED THEN UPDATE SET
                        doc_title = ?, uploaded_by = COALESCE(target.uploaded_by, ?),
                        source_kind = ?, source_label = ?,
-                       trusted_link_id = COALESCE(target.trusted_link_id, ?)
+                       trusted_link_id = COALESCE(target.trusted_link_id, ?),
+                       pending_analysis_json = ?
                    WHEN NOT MATCHED THEN INSERT
                        (company_id, document_id, doc_title, uploaded_by, source_kind,
-                        source_label, trusted_link_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?);""",
+                        source_label, trusted_link_id, pending_analysis_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?);""",
                 identity.company_id, chunks[0].doc_id,
                 doc_title, identity.employee_id, source_kind, label, trusted_link_id,
+                analysis_json,
                 identity.company_id, chunks[0].doc_id, doc_title, identity.employee_id,
-                source_kind, label, trusted_link_id,
+                source_kind, label, trusted_link_id, analysis_json,
             )
             c.commit()
 
-        from quizgen.pipeline import generator_name
-        payload = {
-            "file": label, "title": doc_title, "documentId": chunks[0].doc_id,
-            "chunks": len(chunks), "topics": topics,
-            "summary": mapping.summary,
-            "proposedRoles": mapping.assignments,
-            "permittedRoles": sorted(permitted),
-            "unknownRoles": mapping.unknown_roles,
-            "thinTopics": mapping.thin_topics,
-            "knownRoles": known_roles,
-            "generator": generator_name(),
-            "needsConfirmation": True,
-        }
-        payload.update(extra_fields or {})
         return _json(payload, 201)
     except Exception as exc:  # noqa: BLE001
         logging.exception("ingest/propose failed for %s", label)
@@ -3526,7 +3534,8 @@ def list_documents(req: func.HttpRequest) -> func.HttpResponse:
             cur.execute(
                 """SELECT source.doc_id, source.doc_title, COUNT(*) AS chunks,
                           registry.uploaded_by, employee.name AS uploaded_by_name,
-                          registry.source_kind
+                          registry.source_kind,
+                          MAX(registry.pending_analysis_json) AS pending_analysis_json
                      FROM dbo.SourceChunks AS source
                      LEFT JOIN dbo.TrainingDocuments AS registry
                        ON registry.company_id = source.company_id
@@ -3573,8 +3582,18 @@ def list_documents(req: func.HttpRequest) -> func.HttpResponse:
                 })
 
         may_delete_any = (identity.access_role or "") in ("admin", "executive")
-        docs = [
-            {
+        docs = []
+        for row in sorted(source_docs, key=lambda item: item.doc_title.lower()):
+            pending = None
+            if row.pending_analysis_json:
+                try:
+                    pending = json.loads(row.pending_analysis_json)
+                except (TypeError, ValueError):
+                    # Corrupt or truncated JSON must not break the whole list -- the
+                    # document itself is still real and still listable, it just can't
+                    # offer to reopen a mapping review that no longer parses.
+                    pending = None
+            docs.append({
                 "documentId": row.doc_id,
                 "title": row.doc_title,
                 "chunks": row.chunks,
@@ -3582,12 +3601,14 @@ def list_documents(req: func.HttpRequest) -> func.HttpResponse:
                 # Read but not yet generated from -- the UI offers to generate for these.
                 "ready": q_counts.get(row.doc_title, 0) > 0,
                 "activeJob": active_jobs.get(row.doc_title),
+                # Set only while the AI's proposed mapping hasn't been confirmed yet --
+                # lets DocumentsScreen reopen MappingReview after a remount instead of
+                # the proposal just vanishing with whatever tab held it in memory.
+                "pendingAnalysis": pending,
                 "uploadedBy": row.uploaded_by_name or "Unknown (legacy)",
                 "sourceKind": row.source_kind or "legacy",
                 "canDelete": may_delete_any or row.uploaded_by == identity.employee_id,
-            }
-            for row in sorted(source_docs, key=lambda item: item.doc_title.lower())
-        ]
+            })
         from quizgen.pipeline import generator_name
         return _json({"documents": docs, "files": [], "generator": generator_name(),
                       "uploadDir": ""})
@@ -3707,6 +3728,13 @@ def _delete_training_document(cur, company_id: int, document_id: str,
         company_id, doc_title,
     )
     remove(
+        # Deleting this row is also how a job that's still running finds out it should
+        # stop -- _run_generation_job's per-chunk loop checks whether its own job row
+        # still exists. There's no separate "cancel" endpoint: cancelling a running
+        # generation and deleting a finished document are the same action from here,
+        # just with different timing. A best-effort stop, not an instant kill -- the
+        # background worker notices between chunks (one chunk's worth of gpt-5 latency,
+        # ~20-90s), not mid-call.
         "jobs",
         "DELETE FROM dbo.GenerationJobs WHERE company_id = ? AND doc_title = ?",
         company_id, doc_title,
@@ -3732,7 +3760,14 @@ def _delete_training_document(cur, company_id: int, document_id: str,
 
 @app.route(route="documents/{documentId}/delete", methods=["POST"])
 def delete_document(req: func.HttpRequest) -> func.HttpResponse:
-    """Permanently delete a course owned by the caller, or any course for admin/executive."""
+    """
+    Permanently delete a course owned by the caller, or any course for admin/executive.
+
+    Works regardless of whether generation is running -- deleting the GenerationJobs
+    row IS how a running job is told to stop (see _delete_training_document). There is
+    deliberately no separate cancel endpoint: "cancel this upload" and "delete this
+    document" are the same request whether or not a job happens to be mid-run.
+    """
     identity = get_current_employee(req)
     forbidden = require_manager(identity)
     if forbidden:
@@ -3765,17 +3800,6 @@ def delete_document(req: func.HttpRequest) -> func.HttpResponse:
                 return _error(
                     403, "Forbidden",
                     "Only the person who added this document, or an admin/executive, may delete it.",
-                )
-
-            cur.execute(
-                "SELECT COUNT(*) FROM dbo.GenerationJobs WHERE company_id = ? "
-                "AND doc_title = ? AND state = 'running'",
-                identity.company_id, row.doc_title,
-            )
-            if cur.fetchone()[0]:
-                return _error(
-                    409, "Generation still running",
-                    "Wait for generation to finish before permanently deleting this course.",
                 )
 
             counts = _delete_training_document(
@@ -3837,7 +3861,8 @@ def upload_document(req: func.HttpRequest) -> func.HttpResponse:
                           "{}: {}".format(type(exc).__name__, str(exc)[:200]))
 
     return _ingest_and_propose(
-        chunks, identity, label=safe, retitle_suffix=Path(safe).stem.replace("_", " "))
+        chunks, identity, label=safe, retitle_suffix=Path(safe).stem.replace("_", " "),
+        source_kind="upload")
 
 
 @app.route(route="documents/confirm", methods=["POST"])
@@ -3945,6 +3970,17 @@ def confirm_document(req: func.HttpRequest, generation_message) -> func.HttpResp
             job_id = new_job_id()
             create_job(c, job_id, identity.company_id, doc_title)
 
+            # The proposal this confirms is no longer pending -- clear it so the
+            # mapping-review screen doesn't reopen for a document that's already
+            # generating. Matched on title, not document_id: this handler only ever
+            # receives the title, and doc_title is already unique per company by the
+            # collision check in _ingest_and_propose.
+            cur.execute(
+                "UPDATE dbo.TrainingDocuments SET pending_analysis_json = NULL "
+                "WHERE company_id = ? AND doc_title = ?",
+                identity.company_id, doc_title,
+            )
+
         generation_message.set(json.dumps({
             "jobId": job_id,
             "companyId": identity.company_id,
@@ -4036,6 +4072,15 @@ def _run_generation_job(
                 message="Writing assessments for {} module(s)...".format(len(lesson_chunks)),
             )
             for chunk in lesson_chunks:
+                # Cancellation IS deletion: delete_document removes this job's own row
+                # as part of its cascade, and that's the only signal a still-running
+                # invocation has to know it should stop -- there is no separate cancel
+                # call. Checked once per lesson chunk (each iteration is a full
+                # difficulty-ladder pass, ~60-90s of gpt-5 calls), not more finely,
+                # since a mid-chunk kill would still leave that chunk's own writes to
+                # land after the check either way.
+                if get_job(c, job_id, company_id) is None:
+                    return
                 module = next(item for item in course.ready_modules
                               if item.module_id == getattr(chunk, "module_id", ""))
                 target = (
@@ -4223,8 +4268,8 @@ def add_trusted_link(req: func.HttpRequest) -> func.HttpResponse:
 
     return _ingest_and_propose(
         chunks, identity, label=url, retitle_suffix=host,
-        extra_fields={"crawl": crawl_info},
         source_kind="trusted_link", trusted_link_id=trusted_link_id,
+        extra_fields={"crawl": crawl_info},
     )
 
 

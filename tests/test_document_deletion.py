@@ -1,3 +1,12 @@
+"""
+POST /documents/{documentId}/delete -- permanent removal, and doubling as cancel.
+
+Deliberately does NOT block while a job is running (that's the whole point: deleting
+IS how a running job is told to stop, since _run_generation_job's only way to notice
+is that its own GenerationJobs row disappeared). See test_generation_cancellation.py
+for the worker side of that contract; this file only covers the delete endpoint.
+"""
+
 from __future__ import annotations
 
 import json
@@ -22,9 +31,8 @@ class Request:
 
 
 class Cursor:
-    def __init__(self, uploaded_by=7, running=0):
+    def __init__(self, uploaded_by=7):
         self.uploaded_by = uploaded_by
-        self.running = running
         self.current = None
         self.executed = []
         self.rowcount = 0
@@ -38,8 +46,6 @@ class Cursor:
                 doc_id="doc_owned", doc_title="Intern Onboarding",
                 uploaded_by=self.uploaded_by, trusted_link_id=None,
             )
-        elif "SELECT COUNT(*) FROM dbo.GenerationJobs" in normalized:
-            self.current = (self.running,)
         else:
             self.current = None
         return self
@@ -67,9 +73,7 @@ class Connection:
 
 
 def identity(employee_id=7, access_role="manager"):
-    return SimpleNamespace(
-        employee_id=employee_id, company_id=1, access_role=access_role,
-    )
+    return SimpleNamespace(employee_id=employee_id, company_id=1, access_role=access_role)
 
 
 class TestDocumentDeletion(unittest.TestCase):
@@ -97,7 +101,7 @@ class TestDocumentDeletion(unittest.TestCase):
             "dbo.EmployeeModuleProgress", "dbo.EmployeeTrainingProgress",
             "dbo.GeneratedQuestions", "dbo.TrainingModules",
             "dbo.RoleRequirements", "dbo.EmployeeSkillInterest",
-            "dbo.SourceChunks", "dbo.TrainingDocuments",
+            "dbo.GenerationJobs", "dbo.SourceChunks", "dbo.TrainingDocuments",
         ):
             self.assertIn("DELETE FROM " + table, sql)
 
@@ -115,13 +119,15 @@ class TestDocumentDeletion(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(connection.committed)
 
-    def test_running_generation_must_finish_first(self):
-        cursor = Cursor(uploaded_by=7, running=1)
+    def test_deleting_a_running_generation_is_allowed_and_cancels_it(self):
+        # No "running" state modeled here on purpose -- the endpoint no longer checks
+        # GenerationJobs.state before deleting at all. Its own DELETE FROM
+        # dbo.GenerationJobs (asserted above) is the cancellation signal; there is
+        # nothing left for this endpoint itself to gate on.
+        cursor = Cursor(uploaded_by=7)
         response, connection = self.call(identity(), cursor)
-
-        self.assertEqual(response.status_code, 409)
-        self.assertFalse(connection.committed)
-        self.assertFalse(any(sql.startswith("DELETE") for sql in cursor.executed))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(connection.committed)
 
 
 if __name__ == "__main__":
