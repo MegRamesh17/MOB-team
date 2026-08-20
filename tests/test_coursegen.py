@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from quizgen.config import CONFIG  # noqa: E402
 from quizgen.coursegen import (  # noqa: E402
     Citation, Evidence, LearningPoint, LessonPage, ModuleDraft, assessment_chunks,
-    build_instructional_course, validate_module,
+    _needs_web_enrichment, build_instructional_course, validate_module,
 )
 from quizgen.models import Chunk  # noqa: E402
 
@@ -27,6 +27,119 @@ def source_chunk(topic: str, text: str, index: int = 1) -> Chunk:
 
 
 class TestCourseGeneration(unittest.TestCase):
+    def test_demo_fast_keeps_grounding_and_company_policy_guardrails(self):
+        point = LearningPoint("lp_1", 1, "A focused change is easier to review.")
+        page = LessonPage(
+            page_id="page_1", order=1, title="Focused changes", page_type="concept",
+            body="A focused change is easier to review and reverse when an issue appears.",
+            learning_point_ids=[point.learning_point_id],
+        )
+        module = ModuleDraft(
+            module_id="mod_1", doc_id="doc_1", doc_title="Course", topic="Delivery",
+            heading="Delivery", source_order=1, source_topics=["Delivery"],
+            generation_id="gen_1", learning_points=[point], pages=[page],
+        )
+        with (
+            patch.object(CONFIG, "demo_fast", True),
+            patch.object(CONFIG, "course_min_pages", 1),
+            patch.object(CONFIG, "course_min_learning_points", 1),
+            patch.object(CONFIG, "course_min_words", 1),
+        ):
+            findings = validate_module(module)
+            self.assertTrue(any("citation" in finding for finding in findings))
+
+            module.pages[0].body = "Our company requires every change to ship immediately."
+            findings = validate_module(module)
+
+        self.assertTrue(any("unsupported company rule" in finding for finding in findings))
+
+    def test_demo_fast_keeps_normal_lesson_quality_floor(self):
+        point = LearningPoint("lp_1", 1, "A focused change is easier to review.")
+        module = ModuleDraft(
+            module_id="mod_1", doc_id="doc_1", doc_title="Course", topic="Delivery",
+            heading="Delivery", source_order=1, source_topics=["Delivery"],
+            generation_id="gen_1", learning_points=[point], pages=[LessonPage(
+                page_id="page_1", order=1, title="Focused changes", page_type="concept",
+                body="A focused change is easier to review.",
+                learning_point_ids=[point.learning_point_id],
+            )],
+        )
+
+        with (
+            patch.object(CONFIG, "demo_fast", True),
+            patch.object(CONFIG, "course_min_pages", 3),
+            patch.object(CONFIG, "course_min_learning_points", 5),
+            patch.object(CONFIG, "course_min_words", 600),
+        ):
+            findings = validate_module(module)
+
+        self.assertIn("needs 3-8 lesson pages", findings)
+        self.assertTrue(any("600 instructional words" in finding for finding in findings))
+        self.assertTrue(any("5 assessable learning points" in finding for finding in findings))
+
+    def test_demo_fast_preserves_topic_coverage_and_uses_bounded_authoring(self):
+        sentence = (
+            "A safe delivery practice defines the change, verifies an observable result, "
+            "and records the evidence needed to review the outcome consistently."
+        )
+        chunks = [
+            source_chunk(topic, "\n\n".join(
+                "{} example {}: {}".format(topic, index, sentence)
+                for index in range(35)
+            ), order)
+            for order, topic in enumerate(("Planning", "Testing", "Escalation"), 1)
+        ]
+        executor_settings = []
+
+        class InlineExecutor:
+            def __init__(self, max_workers):
+                executor_settings.append(max_workers)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def map(self, function, values):
+                return [function(value) for value in values]
+
+        with (
+            patch.object(CONFIG, "provider", "azure"),
+            patch.object(CONFIG, "demo_fast", True),
+            patch.object(CONFIG, "demo_fast_author_workers", 2),
+            patch("quizgen.coursegen.ThreadPoolExecutor", InlineExecutor),
+            patch("quizgen.coursegen._author_with_azure") as author,
+            patch("quizgen.coursegen.validate_module", return_value=[]),
+        ):
+            course = build_instructional_course(chunks, 7)
+
+        self.assertEqual([module.topic for module in course.modules], [
+            "Planning", "Testing", "Escalation",
+        ])
+        self.assertEqual(executor_settings, [2])
+        self.assertEqual(author.call_count, 3)
+        self.assertTrue(all(module.status == "ready" for module in course.modules))
+
+    def test_demo_fast_only_researches_sources_too_thin_for_a_full_lesson(self):
+        substantial = Evidence(
+            "ev_full", "company", "Guide", " ".join("practice" for _ in range(700)))
+        thin = Evidence(
+            "ev_thin", "company", "Memo", " ".join("practice" for _ in range(80)))
+
+        with (
+            patch.object(CONFIG, "demo_fast", True),
+            patch.object(CONFIG, "course_min_words", 600),
+        ):
+            self.assertFalse(_needs_web_enrichment([substantial]))
+            self.assertTrue(_needs_web_enrichment([thin]))
+
+        with (
+            patch.object(CONFIG, "demo_fast", False),
+            patch.object(CONFIG, "course_min_words", 600),
+        ):
+            self.assertTrue(_needs_web_enrichment([substantial]))
+
     def test_thin_adjacent_topics_merge_before_module_authoring(self):
         sentence = (
             "A reliable prompt states the task, relevant context, expected constraints, "

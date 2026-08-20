@@ -218,6 +218,8 @@ def decide_update_or_add(
 # Seeded from the team's own role list. Managers add and remove from the UI;
 # this only runs on an empty table so removals stick.
 SEED_ROLES: List[Dict[str, str]] = [
+    {"role_code": "INTERN", "title": "Engineering Intern",
+     "description": "Audience onboarding, safe delivery, testing, and engineering fundamentals."},
     {"role_code": "SDE1", "title": "Software Development Engineer 1",
      "description": "Junior engineer: clean code, testing, git, debugging."},
     {"role_code": "SDE2", "title": "Software Development Engineer 2",

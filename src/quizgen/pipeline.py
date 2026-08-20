@@ -20,7 +20,7 @@ from typing import Callable, Dict, List, Optional, Sequence
 from .bank import Bank
 from .config import CONFIG
 from .llm.base import get_generator
-from .models import Chunk, Difficulty, Question
+from .models import Chunk, Difficulty, Question, QuestionType
 from .retrieval import BM25
 from .validators import validate
 
@@ -105,6 +105,32 @@ def representative_chunks_by_topic(chunks: Sequence[Chunk],
     return selected
 
 
+def _generate_candidate_batch(generator, chunk: Chunk, per_chunk: int,
+                              difficulty_ladder: bool) -> List[Question]:
+    if not difficulty_ladder:
+        return generator.generate(chunk, count=per_chunk)
+    if not CONFIG.demo_fast:
+        produced: List[Question] = []
+        for difficulty in (Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD):
+            produced.extend(generator.generate(
+                chunk, count=per_chunk, difficulty=difficulty
+            ))
+        return produced
+
+    # One balanced response is dramatically faster on gpt-5 than three sequential
+    # difficulty-specific responses. Only repair a missing diagnostic band when the
+    # provider ignored the explicit balanced-batch instruction.
+    produced = generator.generate(chunk, count=per_chunk * 3)
+    covered = {
+        question.difficulty for question in produced
+        if question.question_type == QuestionType.MULTIPLE_CHOICE
+    }
+    for difficulty in (Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD):
+        if difficulty not in covered:
+            produced.extend(generator.generate(chunk, count=1, difficulty=difficulty))
+    return produced
+
+
 def generate_questions(
     bank: Bank,
     chunks: Sequence[Chunk],
@@ -138,14 +164,9 @@ def generate_questions(
         # One flaky call must not abort the whole run. Failures are collected and
         # reported; re-running picks them up because nothing was saved for them.
         try:
-            if difficulty_ladder:
-                produced = []
-                for difficulty in (Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD):
-                    produced.extend(
-                        generator.generate(chunk, count=per_chunk, difficulty=difficulty)
-                    )
-            else:
-                produced = generator.generate(chunk, count=per_chunk)
+            produced = _generate_candidate_batch(
+                generator, chunk, per_chunk, difficulty_ladder
+            )
         except Exception as exc:  # noqa: BLE001
             label = "{}: {}".format(chunk.topic[:34], type(exc).__name__)
             result.failed.append(label)
