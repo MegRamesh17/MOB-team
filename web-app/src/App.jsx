@@ -392,7 +392,7 @@ function Login({ onLogin }) {
 }
 
 // ---------- Shell ----------
-function Shell({ name, department, title, manages, active, setActive, onLogout, children }) {
+function Shell({ name, department, title, manages, active, setActive, onLogout, petVisible, children }) {
   // One nav for everyone. Managing people ADDS a tab; it does not replace the rest.
   //
   // This used to be two lists, with managerNav substituted for employeeNav — so a
@@ -469,7 +469,7 @@ function Shell({ name, department, title, manages, active, setActive, onLogout, 
         </div>
       </aside>
       <main className="flex-1 min-h-0 overflow-y-auto">{children}</main>
-      <FloatingPet />
+      {petVisible !== false && <FloatingPet />}
     </div>
   );
 }
@@ -2599,27 +2599,38 @@ function ManagerTeam({ team }) {
   );
 }
 
-function polarPoint(cx, cy, r, angleDeg) {
-  const rad = (angleDeg * Math.PI) / 180;
-  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+// A short, stable hash of `seed` mapped into [-range, range]. Deterministic on
+// purpose: positions must not reshuffle every time this re-renders or refetches,
+// only when the actual team roster changes.
+function seededJitter(seed, range) {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return ((h % 1000) / 1000 - 0.5) * 2 * range;
 }
 
-function TeamHabitat({ members, highlightName }) {
+function TeamHangout({ members, highlightName }) {
   const [selected, setSelected] = useState(null);
-  const width = 720, height = 420;
-  const cx = width / 2, cy = height / 2 + 6;
-  const radius = Math.min(width, height) / 2 - 92;
+  const width = 720, height = 380;
   const n = members.length;
 
+  // A loose grid gives every robot its own patch of ground with no overlap
+  // guarantees to reason about, then per-person jitter (seeded by name, so it's
+  // stable) breaks the grid up into something that reads as people standing
+  // around together rather than a spreadsheet.
+  const cols = Math.ceil(Math.sqrt(n));
+  const rows = Math.ceil(n / cols);
+  const topPad = 55, bottomPad = 60;
+  const cellW = width / cols;
+  const cellH = (height - topPad - bottomPad) / rows;
+
   const nodes = members.map((m, i) => {
-    const angle = -90 + (360 / n) * i;
-    const pos = polarPoint(cx, cy, radius, angle);
-    // A teammate's own equipped items are theirs to see, not something this screen
-    // fetches for everyone they sit near -- so the gallery shows every robot
-    // undressed, same as it always showed everyone at the same stage before
-    // trainingsCompleted had a real per-peer value to draw from.
-    const size = 64;
-    return { ...m, pos, size };
+    const col = i % cols, row = Math.floor(i / cols);
+    const baseX = cellW * (col + 0.5);
+    const baseY = topPad + cellH * (row + 0.5);
+    const x = baseX + seededJitter(m.name + "x", cellW * 0.22);
+    const y = baseY + seededJitter(m.name + "y", cellH * 0.18);
+    const size = 58 + seededJitter(m.name + "s", 9);
+    return { ...m, pos: { x, y }, size };
   });
 
   const selectedNode = nodes.find((nd) => nd.name === selected);
@@ -2629,38 +2640,30 @@ function TeamHabitat({ members, highlightName }) {
       <div style={{ borderColor: C.line, background: C.mint }} className="border rounded-2xl p-3 overflow-hidden">
         <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ display: "block" }}>
           <style>{`
-            @keyframes qhub-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 0.95; } }
-            .qhub-pulse { animation: qhub-pulse 3s ease-in-out infinite; }
+            @keyframes teammate-pop { from { transform: scale(0.85); opacity: 0; } to { transform: scale(1); opacity: 1; } }
           `}</style>
-
-          {n >= 3 && nodes.map((nd, i) => {
-            const nxt = nodes[(i + 1) % n];
-            return <line key={`edge-${i}`} x1={nd.pos.x} y1={nd.pos.y} x2={nxt.pos.x} y2={nxt.pos.y}
-              stroke={C.green300} strokeWidth="1.5" strokeDasharray="3 5" opacity="0.5" />;
-          })}
-
-          {nodes.map((nd, i) => {
-            const isSelected = selected === nd.name;
-            return <line key={`spoke-${i}`} x1={cx} y1={cy} x2={nd.pos.x} y2={nd.pos.y}
-              stroke={isSelected ? C.green700 : C.green300} strokeWidth={isSelected ? 2.5 : 1.5} opacity={isSelected ? 0.9 : 0.45} />;
-          })}
-
-          <circle cx={cx} cy={cy} r="28" fill={C.green700} className="qhub-pulse" />
-          <circle cx={cx} cy={cy} r="28" fill="none" stroke={C.green300} strokeWidth="1.5" />
-          <text x={cx} y={cy + 6} textAnchor="middle" fill="#fff" fontSize="17" fontWeight="700" fontFamily="'Playfair Display', serif">Q</text>
 
           {nodes.map((nd) => {
             const isYou = nd.name === highlightName;
             const isSelected = selected === nd.name;
+            const feetY = nd.pos.y + (nd.size * 1.3) / 2 - 4;
+            const scale = isSelected ? 1.12 : 1;
             return (
               <g key={nd.name} onClick={() => setSelected(isSelected ? null : nd.name)} style={{ cursor: "pointer" }}>
-                <circle cx={nd.pos.x} cy={nd.pos.y} r={nd.size / 2 + 9}
-                  fill="#fff" stroke={isYou ? C.green700 : isSelected ? C.green500 : C.line}
-                  strokeWidth={isYou || isSelected ? 2.5 : 1.5} />
-                <g transform={`translate(${nd.pos.x - nd.size / 2}, ${nd.pos.y - (nd.size * 1.3) / 2})`}>
-                  <PetRobotSVG size={nd.size} mood="idle" equippedItemIds={[]} />
+                {/* Grounding shadow -- reads as "standing here" rather than floating. */}
+                <ellipse cx={nd.pos.x} cy={feetY} rx={nd.size * 0.34} ry={nd.size * 0.09}
+                  fill={C.green900} opacity="0.14" />
+                {isYou && (
+                  <ellipse cx={nd.pos.x} cy={feetY} rx={nd.size * 0.42} ry={nd.size * 0.12}
+                    fill="none" stroke={C.green700} strokeWidth="2" opacity="0.7" />
+                )}
+                <g
+                  transform={`translate(${nd.pos.x - (nd.size * scale) / 2}, ${nd.pos.y - (nd.size * scale * 1.3) / 2}) scale(${scale})`}
+                  style={{ transformOrigin: "center", transition: "transform 150ms ease" }}
+                >
+                  <PetRobotSVG size={nd.size} mood="idle" equippedItemIds={nd.equippedItemIds} />
                 </g>
-                <text x={nd.pos.x} y={nd.pos.y + nd.size / 2 + 19} textAnchor="middle" fill={C.ink} fontSize="11" fontWeight="700" fontFamily="'Inter', sans-serif">
+                <text x={nd.pos.x} y={feetY + 20} textAnchor="middle" fill={C.ink} fontSize="11" fontWeight="700" fontFamily="'Inter', sans-serif">
                   {nd.name.split(" ")[0]}{isYou ? " (you)" : ""}
                 </text>
               </g>
@@ -2672,7 +2675,7 @@ function TeamHabitat({ members, highlightName }) {
       {selectedNode ? (
         <div style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white mt-4 flex items-center gap-4">
           <div className="rounded-xl flex items-center justify-center shrink-0" style={{ width: 60, height: 60, background: C.mint }}>
-            <PetRobotSVG size={34} mood="idle" equippedItemIds={[]} />
+            <PetRobotSVG size={34} mood="idle" equippedItemIds={selectedNode.equippedItemIds} />
           </div>
           <div>
             <p style={{ color: C.ink }} className="text-sm font-semibold">
@@ -2684,7 +2687,7 @@ function TeamHabitat({ members, highlightName }) {
           </div>
         </div>
       ) : (
-        <p style={{ color: C.sub }} className="text-xs mt-3 text-center">Tap a character to see who they are.</p>
+        <p style={{ color: C.sub }} className="text-xs mt-3 text-center">Tap someone to see who they are.</p>
       )}
     </div>
   );
@@ -2718,9 +2721,9 @@ function TeammatesGallery({ team, name }) {
   const peers = team.peers || [];
 
   // Nobody sharing your manager is a fact about the org chart, not an error -- the
-  // endpoint returns 200 with an empty list rather than 403. TeamHabitat divides by
-  // members.length to place nodes on a circle, so it must not be handed an empty
-  // list either way.
+  // endpoint returns 200 with an empty list rather than 403. TeamHangout divides by
+  // members.length to lay out its grid, so it must not be handed an empty list either
+  // way.
   if (peers.length === 0) {
     return (
       <div className="p-8 max-w-4xl">
@@ -2733,12 +2736,12 @@ function TeammatesGallery({ team, name }) {
     );
   }
 
-  // A teammate's owned/equipped pet items are their own; GET /team does not expose
-  // another person's shop state, so every robot in this gallery renders undressed
-  // rather than guessing at what someone else is wearing.
+  // GET /team returns each peer's equipped item ids -- what they're wearing, never
+  // their points balance or trainings completed, which stay theirs alone.
   const members = peers.map((p) => ({
     name: p.name,
     role: p.title || p.roleCode,
+    equippedItemIds: p.equippedItemIds || [],
   }));
 
   return (
@@ -2747,7 +2750,7 @@ function TeammatesGallery({ team, name }) {
       <p style={{ color: C.sub }} className="text-sm mb-6">
         People who share your manager — {peers.length} {peers.length === 1 ? "person" : "people"}.
       </p>
-      <TeamHabitat members={members} highlightName={name} />
+      <TeamHangout members={members} highlightName={name} />
     </div>
   );
 }
@@ -2977,21 +2980,44 @@ function SkillInterestPopup({ onRecorded }) {
 }
 
 // ---------- Profile ----------
-function Settings() {
-  const { data, loading, error, reload } = useAsync(() => api.getSettings(), []);
-  const [saving, setSaving] = useState(false);
+function SettingsToggleRow({ title, description, value, saving, onToggle }) {
+  return (
+    <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 flex items-center justify-between gap-6">
+      <div className="min-w-0">
+        <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">{title}</p>
+        <p style={{ color: C.sub }} className="text-xs">{description}</p>
+      </div>
+      <button
+        onClick={onToggle} disabled={saving} aria-pressed={value}
+        style={{ background: value ? C.green700 : C.line }}
+        className="w-11 h-6 rounded-full relative shrink-0 transition-colors disabled:opacity-60"
+      >
+        <span
+          style={{ background: "#fff", left: value ? 22 : 2 }}
+          className="w-5 h-5 rounded-full absolute top-0.5 transition-all"
+        />
+      </button>
+    </div>
+  );
+}
+
+// settings/onSettingsChange are lifted to App rather than fetched here, so toggling
+// petVisible takes effect on the floating pet immediately -- Shell reads the same
+// state this page writes.
+function Settings({ settings, onSettingsChange }) {
+  const [saving, setSaving] = useState(null); // null | "notifications" | "pet"
   const [saveError, setSaveError] = useState(null);
 
-  const toggle = async () => {
-    setSaving(true);
+  const toggle = async (field, key) => {
+    setSaving(field);
     setSaveError(null);
     try {
-      await api.updateSettings(!data.notificationsEnabled);
-      await reload();
+      const next = await api.updateSettings({ [key]: !settings[key] });
+      onSettingsChange(next);
     } catch (err) {
       setSaveError(err.message || "Could not save.");
     }
-    setSaving(false);
+    setSaving(null);
   };
 
   return (
@@ -2999,28 +3025,24 @@ function Settings() {
       <h1 style={{ ...display, color: C.ink }} className="text-2xl font-bold mb-1">Settings</h1>
       <p style={{ color: C.sub }} className="text-sm mb-8">Your account preferences.</p>
 
-      {loading && <Loading />}
-      {error && <ErrorBox error={error} onRetry={reload} />}
+      {!settings && <Loading />}
 
-      {data && (
-        <div style={{ borderColor: C.line }} className="border rounded-xl bg-white p-5 flex items-center justify-between gap-6">
-          <div className="min-w-0">
-            <p style={{ color: C.ink }} className="text-sm font-semibold mb-1">Email notifications</p>
-            <p style={{ color: C.sub }} className="text-xs">
-              Reminders about training that's due soon, and a notice when something new is
-              assigned to your role.
-            </p>
-          </div>
-          <button
-            onClick={toggle} disabled={saving} aria-pressed={data.notificationsEnabled}
-            style={{ background: data.notificationsEnabled ? C.green700 : C.line }}
-            className="w-11 h-6 rounded-full relative shrink-0 transition-colors disabled:opacity-60"
-          >
-            <span
-              style={{ background: "#fff", left: data.notificationsEnabled ? 22 : 2 }}
-              className="w-5 h-5 rounded-full absolute top-0.5 transition-all"
-            />
-          </button>
+      {settings && (
+        <div className="space-y-4">
+          <SettingsToggleRow
+            title="Email notifications"
+            description="Reminders about training that's due soon, and a notice when something new is assigned to your role."
+            value={settings.notificationsEnabled}
+            saving={saving === "notifications"}
+            onToggle={() => toggle("notifications", "notificationsEnabled")}
+          />
+          <SettingsToggleRow
+            title="Desk pet"
+            description="The floating character in the corner of the screen. Turn this off if you'd rather it not be there -- while taking a quiz, or ever."
+            value={settings.petVisible}
+            saving={saving === "pet"}
+            onToggle={() => toggle("pet", "petVisible")}
+          />
         </div>
       )}
       {saveError && <p style={{ color: C.danger }} className="text-xs font-semibold mt-3">{saveError}</p>}
@@ -3231,6 +3253,10 @@ export default function App() {
   // access_role: the tier says what you may DO, the reporting line says whose training
   // you are responsible for, and they are not the same question.
   const [team, setTeam] = useState(null);
+  // Lifted here (not fetched inside Settings) so the floating pet's visibility can
+  // react the instant someone toggles it, without needing Shell and Settings to
+  // share state any other way.
+  const [settings, setSettings] = useState(null);
   const [view, setView] = useState("dashboard");
   const [training, setTraining] = useState(null);
   const [module, setModule] = useState(null);
@@ -3244,6 +3270,7 @@ export default function App() {
     setAuth(principal);
     setView("dashboard");
     api.team().then(setTeam).catch(() => setTeam(null));
+    api.getSettings().then(setSettings).catch(() => setSettings(null));
   }, []);
 
   // Restore a session from the stored token. api.currentUser() clears an expired token
@@ -3362,7 +3389,7 @@ export default function App() {
   } else if (view === "teammates") {
     content = <TeammatesGallery team={team} name={auth.name || auth.email} />;
   } else if (view === "settings") {
-    content = <Settings />;
+    content = <Settings settings={settings} onSettingsChange={setSettings} />;
   }
 
   const quizViews = ["trainingDetail", "lesson", "quizPre", "quizRunner", "quizResults"];
@@ -3376,6 +3403,7 @@ export default function App() {
         manages={manages}
         active={quizViews.includes(view) ? "dashboard" : view}
         setActive={goto}
+        petVisible={settings ? settings.petVisible : true}
         onLogout={async () => {
           await api.logout();
           setAuth(null);

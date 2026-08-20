@@ -2502,6 +2502,22 @@ def get_team(req: func.HttpRequest) -> func.HttpResponse:
             )
             peers = _rows(cur)
 
+            # What each peer's robot is wearing -- cosmetic only, never points or
+            # trainings completed (peers' own progress is theirs, not something this
+            # screen exposes). One batched query rather than one per peer.
+            peer_equipped: Dict[int, List[str]] = {}
+            peer_ids = [p["id"] for p in peers]
+            if peer_ids:
+                placeholders = ",".join("?" for _ in peer_ids)
+                cur.execute(
+                    "SELECT employee_id, item_id FROM dbo.PetPurchases "
+                    "WHERE company_id = ? AND equipped = 1 "
+                    "AND employee_id IN ({})".format(placeholders),
+                    identity.company_id, *peer_ids,
+                )
+                for r in _rows(cur):
+                    peer_equipped.setdefault(r["employee_id"], []).append(r["item_id"])
+
             # Who I report to -- shown alongside "people below you" on My Team, so a
             # manager sees both directions of the chain, not just downward.
             manager = None
@@ -2565,6 +2581,7 @@ def get_team(req: func.HttpRequest) -> func.HttpResponse:
                     "email": p["email"],
                     "title": p.get("title"),
                     "roleCode": (p.get("role_code") or "ALL").upper(),
+                    "equippedItemIds": peer_equipped.get(p["id"], []),
                 }
                 for p in peers
             ],
@@ -2768,8 +2785,9 @@ def send_team_reminder(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="settings", methods=["GET"])
 def get_settings(req: func.HttpRequest) -> func.HttpResponse:
-    """This employee's own preferences. One so far: whether they want the reminder/
-    notification email shared.comms already knows how to send."""
+    """This employee's own preferences: whether they want the reminder/notification
+    email shared.comms already knows how to send, and whether the floating desk pet
+    shows up on their screen at all."""
     identity = get_current_employee(req)
     if identity is None:
         return _unauthorized()
@@ -2777,11 +2795,15 @@ def get_settings(req: func.HttpRequest) -> func.HttpResponse:
         with _conn() as c:
             cur = c.cursor()
             cur.execute(
-                "SELECT notifications_enabled FROM dbo.Employees WHERE id = ? AND company_id = ?",
+                "SELECT notifications_enabled, pet_visible FROM dbo.Employees "
+                "WHERE id = ? AND company_id = ?",
                 identity.employee_id, identity.company_id,
             )
             row = cur.fetchone()
-        return _json({"notificationsEnabled": bool(row.notifications_enabled) if row else True})
+        return _json({
+            "notificationsEnabled": bool(row.notifications_enabled) if row else True,
+            "petVisible": bool(row.pet_visible) if row else True,
+        })
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
 
@@ -2792,6 +2814,11 @@ def set_settings(req: func.HttpRequest) -> func.HttpResponse:
     Update the caller's own preferences -- never someone else's: there is no
     employeeId in the body, only what the token says about who is asking, the same
     rule every other write in this file follows.
+
+    Each preference is independently optional in the body -- the caller sends only
+    the one it changed, and whichever it omits is left exactly as stored rather than
+    reset to a default. The response always reflects both, current, regardless of
+    which one (if either) the request actually touched.
     """
     identity = get_current_employee(req)
     if identity is None:
@@ -2801,19 +2828,43 @@ def set_settings(req: func.HttpRequest) -> func.HttpResponse:
     except ValueError:
         return _error(400, "Bad request", "Body must be JSON")
 
-    enabled = body.get("notificationsEnabled")
-    if not isinstance(enabled, bool):
-        return _error(400, "Bad request", "notificationsEnabled (boolean) is required.")
+    updates = []
+    params = []
+    if "notificationsEnabled" in body:
+        enabled = body.get("notificationsEnabled")
+        if not isinstance(enabled, bool):
+            return _error(400, "Bad request", "notificationsEnabled must be a boolean.")
+        updates.append("notifications_enabled = ?")
+        params.append(enabled)
+    if "petVisible" in body:
+        visible = body.get("petVisible")
+        if not isinstance(visible, bool):
+            return _error(400, "Bad request", "petVisible must be a boolean.")
+        updates.append("pet_visible = ?")
+        params.append(visible)
+    if not updates:
+        return _error(400, "Bad request",
+                       "Provide notificationsEnabled and/or petVisible (booleans).")
 
     try:
         with _conn() as c:
             cur = c.cursor()
             cur.execute(
-                "UPDATE dbo.Employees SET notifications_enabled = ? WHERE id = ? AND company_id = ?",
-                enabled, identity.employee_id, identity.company_id,
+                "UPDATE dbo.Employees SET {} WHERE id = ? AND company_id = ?".format(
+                    ", ".join(updates)),
+                *params, identity.employee_id, identity.company_id,
             )
             c.commit()
-        return _json({"notificationsEnabled": enabled})
+            cur.execute(
+                "SELECT notifications_enabled, pet_visible FROM dbo.Employees "
+                "WHERE id = ? AND company_id = ?",
+                identity.employee_id, identity.company_id,
+            )
+            row = cur.fetchone()
+        return _json({
+            "notificationsEnabled": bool(row.notifications_enabled),
+            "petVisible": bool(row.pet_visible),
+        })
     except Exception as exc:  # noqa: BLE001
         return _error(500, "Internal error", type(exc).__name__)
 

@@ -138,10 +138,14 @@ export const purchasePetItem = (itemId) =>
 export const equipPetItem = (itemId) =>
   call("/pet/equip", { method: "POST", body: { itemId } });
 
-/** This learner's own preferences. Real, persisted server-side -- not a local toggle. */
+/**
+ * This learner's own preferences. Real, persisted server-side -- not a local toggle.
+ * updateSettings takes a partial update ({ notificationsEnabled } and/or
+ * { petVisible }) -- whichever field is omitted is left exactly as stored.
+ */
 export const getSettings = () => call("/settings");
-export const updateSettings = (notificationsEnabled) =>
-  call("/settings", { method: "POST", body: { notificationsEnabled } });
+export const updateSettings = (updates) =>
+  call("/settings", { method: "POST", body: updates });
 
 export async function downloadCertificate(certificateUrl) {
   const url = certificateUrl.startsWith("http") ? certificateUrl : BASE + certificateUrl;
