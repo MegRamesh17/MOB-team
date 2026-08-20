@@ -246,29 +246,6 @@ class MockGenerator:
             generator=self.name,
         )
 
-    def _from_acronym(self, chunk: Chunk, sentence: str, rng: random.Random) -> Optional[Question]:
-        m = _ACRONYM_EXPANSION.search(sentence)
-        if not m:
-            return None
-        acronym = m.group("acronym")
-        expansion = m.group("expansion").strip().rstrip(".")
-
-        return Question(
-            question_id=stable_id("q", chunk.chunk_id, "acr", acronym),
-            topic=chunk.topic,
-            question_type=QuestionType.FILL_IN_BLANK,
-            difficulty=Difficulty.HARD,  # no options to fall back on
-            prompt="What does {} stand for?".format(acronym),
-            accepted_answers=[expansion, expansion.replace("-", " ")],
-            explanation="{} stands for {}.".format(acronym, expansion),
-            source_chunk_id=chunk.chunk_id,
-            source_doc_title=chunk.doc_title,
-            source_page=chunk.page_start,
-            role_code=chunk.role_scope or "",
-            source_quote=sentence,
-            generator=self.name,
-        )
-
     def _from_obligation(self, chunk: Chunk, sentence: str, rng: random.Random) -> Optional[Question]:
         """
         True/false from a stated obligation. The false variant inverts the modal, which
@@ -336,7 +313,6 @@ class MockGenerator:
         rng.shuffle(candidates)
 
         strategies = (
-            self._from_acronym,
             self._from_definition,
             self._from_quantity,
             self._from_obligation,
