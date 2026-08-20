@@ -17,6 +17,7 @@ import hashlib
 import json
 import math
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
@@ -45,6 +46,15 @@ def _normalise(value: str) -> str:
 
 def _word_count(value: str) -> int:
     return len(re.findall(r"\b[\w'-]+\b", value or ""))
+
+
+def _course_requirements() -> tuple:
+    return (
+        CONFIG.course_min_pages,
+        CONFIG.course_max_pages,
+        CONFIG.course_min_learning_points,
+        CONFIG.course_min_words,
+    )
 
 
 def _module_id(company_id: int, doc_id: str, topic: str, generation_id: str) -> str:
@@ -313,13 +323,24 @@ def _citation(raw: Dict[str, Any]) -> Citation:
     )
 
 
+def _needs_web_enrichment(evidence: Sequence[Evidence]) -> bool:
+    source_words = sum(_word_count(item.text) for item in evidence)
+    # A source that already meets the complete lesson's word floor can support a fully
+    # grounded draft without paying for a separate research request. Thin sources still
+    # get the normal evidence expansion; standard mode keeps the more conservative 2x
+    # buffer used before the recording optimization existed.
+    word_floor = CONFIG.course_min_words * (1 if CONFIG.demo_fast else 2)
+    return (
+        source_words < word_floor
+        and not any(item.source_type == "web" for item in evidence)
+    )
+
+
 def _author_with_azure(module: ModuleDraft, revision_notes: Optional[List[str]] = None) -> None:
     from .llm.azure_openai import _chat_kwargs, _client
 
     evidence = list(module.evidence)
-    source_words = sum(_word_count(item.text) for item in evidence)
-    if source_words < CONFIG.course_min_words * 2 and not any(
-            item.source_type == "web" for item in evidence):
+    if _needs_web_enrichment(evidence):
         evidence.extend(_web_evidence(module.heading, module.doc_title))
     module.evidence = evidence
 
@@ -367,6 +388,7 @@ def _author_with_azure(module: ModuleDraft, revision_notes: Optional[List[str]] 
             "\nA previous draft failed these mechanical checks. Correct every item: "
             + "; ".join(revision_notes[:12]) + "\n"
         )
+    min_pages, max_pages, min_points, min_words = _course_requirements()
     user = (
         "Course: {}\nModule topic: {}\n\nCreate {}-{} lesson pages, at least {} "
         "assessable learning points, and at least {} total instructional words. Include "
@@ -374,9 +396,9 @@ def _author_with_azure(module: ModuleDraft, revision_notes: Optional[List[str]] 
         "and a recap when the page count permits. Do not pad or repeat. Return JSON only "
         "with this shape:\n{}\n{}\nEVIDENCE:\n{}"
     ).format(
-        module.doc_title, module.heading, CONFIG.course_min_pages,
-        CONFIG.course_max_pages, CONFIG.course_min_learning_points,
-        CONFIG.course_min_words, json.dumps(schema), revision, "\n\n".join(excerpts),
+        module.doc_title, module.heading, min_pages,
+        max_pages, min_points, min_words, json.dumps(schema), revision,
+        "\n\n".join(excerpts),
     )
     response = _client().chat.completions.create(
         model=CONFIG.azure_chat_deployment,
@@ -430,9 +452,10 @@ def _author_from_source(module: ModuleDraft) -> None:
                 paragraphs.append((evidence, clean))
 
     all_words = sum(_word_count(text) for _, text in paragraphs)
-    if all_words < CONFIG.course_min_words:
+    min_pages, max_pages, _, min_words = _course_requirements()
+    if all_words < min_words:
         return
-    page_count = min(CONFIG.course_max_pages, max(CONFIG.course_min_pages, math.ceil(all_words / 300)))
+    page_count = min(max_pages, max(min_pages, math.ceil(all_words / 300)))
     buckets: List[List[tuple]] = [[] for _ in range(page_count)]
     bucket_words = [0] * page_count
     for item in paragraphs:
@@ -440,9 +463,16 @@ def _author_from_source(module: ModuleDraft) -> None:
         buckets[target].append(item)
         bucket_words[target] += _word_count(item[1])
 
+    # Round-robin evidence rather than exhausting the first chunk. A multi-page mock
+    # lesson otherwise derived every learning point from page one and then failed its
+    # own publication gate because later pages had no assessable point mapped to them.
+    sentence_groups = [
+        [(evidence, sentence) for sentence in _sentences(evidence.text)]
+        for evidence in module.evidence
+    ]
     sentence_items: List[tuple] = []
-    for evidence in module.evidence:
-        sentence_items.extend((evidence, sentence) for sentence in _sentences(evidence.text))
+    for index in range(max((len(group) for group in sentence_groups), default=0)):
+        sentence_items.extend(group[index] for group in sentence_groups if index < len(group))
     seen = set()
     for evidence, sentence in sentence_items:
         key = _normalise(sentence)
@@ -468,8 +498,10 @@ def _author_from_source(module: ModuleDraft) -> None:
             citations.append(Citation(evidence.evidence_id, quote))
         point_ids = [
             point.learning_point_id for point in module.learning_points
-            if any(citation.evidence_id in {item[0].evidence_id for item in items}
-                   for citation in point.citations)
+            if any(
+                _normalise(citation.quote) in _normalise(body)
+                for citation in point.citations
+            )
         ]
         module.pages.append(LessonPage(
             page_id=stable_id("page", module.module_id, module.generation_id, str(order)),
@@ -487,15 +519,16 @@ def validate_module(module: ModuleDraft) -> List[str]:
     """Mechanical publication gate.  Any finding keeps the module out of learner paths."""
     findings: List[str] = []
     evidence = {item.evidence_id: item for item in module.evidence}
-    if not (CONFIG.course_min_pages <= len(module.pages) <= CONFIG.course_max_pages):
+    min_pages, max_pages, min_points, min_words = _course_requirements()
+    if not (min_pages <= len(module.pages) <= max_pages):
         findings.append("needs {}-{} lesson pages".format(
-            CONFIG.course_min_pages, CONFIG.course_max_pages))
-    if module.word_count < CONFIG.course_min_words:
+            min_pages, max_pages))
+    if module.word_count < min_words:
         findings.append("needs at least {} instructional words (has {})".format(
-            CONFIG.course_min_words, module.word_count))
-    if len(module.learning_points) < CONFIG.course_min_learning_points:
+            min_words, module.word_count))
+    if len(module.learning_points) < min_points:
         findings.append("needs at least {} assessable learning points (has {})".format(
-            CONFIG.course_min_learning_points, len(module.learning_points)))
+            min_points, len(module.learning_points)))
 
     point_ids = {point.learning_point_id for point in module.learning_points}
     covered_point_ids = {
@@ -552,9 +585,10 @@ def build_instructional_course(chunks: Sequence[Chunk], company_id: int) -> Cour
     )
     result = CourseBuildResult(doc_id=doc_id, doc_title=doc_title, generation_id=generation_id)
 
+    modules: List[ModuleDraft] = []
     for source_order, group in enumerate(_source_groups(chunks), 1):
         topic = _topic_label(group)
-        module = ModuleDraft(
+        modules.append(ModuleDraft(
             module_id=_module_id(company_id, doc_id, topic, generation_id),
             doc_id=doc_id,
             doc_title=doc_title,
@@ -564,7 +598,9 @@ def build_instructional_course(chunks: Sequence[Chunk], company_id: int) -> Cour
             source_topics=list(dict.fromkeys(chunk.topic for chunk in group)),
             generation_id=generation_id,
             evidence=_evidence_from_chunks(group),
-        )
+        ))
+
+    def author(module: ModuleDraft) -> ModuleDraft:
         if CONFIG.provider == "azure":
             _author_with_azure(module)
         else:
@@ -574,7 +610,17 @@ def build_instructional_course(chunks: Sequence[Chunk], company_id: int) -> Cour
             _author_with_azure(module, module.quality_notes)
             module.quality_notes = validate_module(module)
         module.status = "ready" if not module.quality_notes else "insufficient"
-        result.modules.append(module)
+        return module
+
+    # Each module is independent until persistence. Two concurrent Azure authoring
+    # calls cut wall-clock time without reducing topic coverage, lesson length, citation
+    # rules, or the revision pass. Keep mock generation sequential and deterministic.
+    if CONFIG.provider == "azure" and CONFIG.demo_fast and len(modules) > 1:
+        workers = max(1, min(CONFIG.demo_fast_author_workers, len(modules)))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            result.modules.extend(executor.map(author, modules))
+    else:
+        result.modules.extend(author(module) for module in modules)
     return result
 
 

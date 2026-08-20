@@ -285,6 +285,15 @@ class Config:
     web_enrichment: bool = (
         _first("QUIZGEN_WEB_ENRICHMENT", default="true").lower() == "true"
     )
+    # Recording-friendly path. It keeps normal module coverage, grounding, citations,
+    # and lesson quality while reducing latency through bounded parallel authoring,
+    # avoiding unnecessary web research for already-substantial source material, and
+    # using one balanced assessment request instead of three sequential calls.
+    demo_fast: bool = (
+        _first("QUIZGEN_DEMO_FAST", default="false").lower() == "true"
+    )
+    demo_fast_author_workers: int = _int("QUIZGEN_DEMO_AUTHOR_WORKERS", 2)
+    demo_fast_question_count: int = _int("QUIZGEN_DEMO_QUESTION_COUNT", 18)
 
     # --- quiz assembly / adaptivity ---
     quiz_length: int = _int("QUIZGEN_QUIZ_LENGTH", 8)

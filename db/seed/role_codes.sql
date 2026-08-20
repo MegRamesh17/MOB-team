@@ -30,6 +30,15 @@
 
 SET NOCOUNT ON;
 
+DECLARE @company_id INT =
+    (SELECT id FROM Companies WHERE name = 'Quadrant Technologies');
+
+IF @company_id IS NULL
+BEGIN
+    RAISERROR('Companies is empty - run org_seed.sql before role_codes.sql.', 16, 1);
+    RETURN;
+END
+
 UPDATE r
 SET role_code = v.role_code
 FROM Roles r
@@ -38,6 +47,7 @@ JOIN (VALUES
     ('SDE 1',                              'SDE1'),
     ('SDE 2',                              'SDE2'),
     ('SDE 3',                              'SDE3'),
+    ('Engineering Intern',                 'INTERN'),
     ('Software Engineering Manager',       'SWE_MANAGER'),
     ('Director of Software Engineering',   'SWE_DIRECTOR'),
     -- DevOps: one practice, so every level maps to the same body of material
@@ -74,6 +84,17 @@ JOIN (VALUES
 WHERE r.role_code IS NULL;
 
 DECLARE @mapped INT = @@ROWCOUNT;
+
+-- QuizgenRoles powers the upload-target dropdown. seed_roles() intentionally does
+-- nothing once that catalog is non-empty, so a live database would never discover a
+-- newly added org role from Python's default list alone. MERGE this one role here,
+-- after org_seed has created it, without changing any manager-edited catalog entries.
+MERGE dbo.QuizgenRoles AS target
+USING (SELECT 'INTERN' AS role_code, @company_id AS company_id) AS source
+   ON target.role_code = source.role_code AND target.company_id = source.company_id
+WHEN NOT MATCHED THEN INSERT (role_code, company_id, title, description)
+    VALUES ('INTERN', @company_id, 'Engineering Intern',
+            'Audience onboarding, safe delivery, testing, and engineering fundamentals.');
 
 -- Still NOT mapped, and this is not an oversight:
 --

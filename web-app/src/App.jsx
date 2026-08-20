@@ -5,6 +5,7 @@ import {
   Trophy, Flame, Target, Mail, Briefcase, Share2, Download, Copy,
   Loader2, RefreshCw, Upload, FileText, Link2, Search, Send,
   Settings as SettingsIcon, Box, Calendar, ShieldCheck, LayoutGrid,
+  Trash2,
 } from "lucide-react";
 import * as api from "./api";
 import { Logo } from "./logo.jsx";
@@ -2064,6 +2065,7 @@ function DocumentsScreen({ team, principal, onDone }) {
   const [uploadError, setUploadError] = useState(null);
   const [analysis, setAnalysis] = useState(null);   // awaiting manager confirmation
   const [job, setJob] = useState(null);
+  const [deletingDocumentId, setDeletingDocumentId] = useState(null);
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef(null);
   const pollRef = useRef(null);
@@ -2124,6 +2126,26 @@ function DocumentsScreen({ team, principal, onDone }) {
   };
 
   const pct = job && job.total ? Math.round((job.done / job.total) * 100) : 0;
+
+  const handleDeleteDocument = async (document) => {
+    const confirmed = window.confirm(
+      `Permanently delete "${document.title}"?\n\nThis removes the training from every ` +
+      "employee's board and Q Score, including progress, quiz attempts, and certificates. " +
+      "This cannot be undone."
+    );
+    if (!confirmed) return;
+
+    setDeletingDocumentId(document.documentId);
+    setUploadError(null);
+    try {
+      await api.deleteDocument(document.documentId);
+      await Promise.all([reload(), linksQ.reload()]);
+    } catch (e) {
+      setUploadError(e);
+    } finally {
+      setDeletingDocumentId(null);
+    }
+  };
 
   return (
     <div className="p-8 max-w-3xl">
@@ -2222,7 +2244,7 @@ function DocumentsScreen({ team, principal, onDone }) {
 
       <div className="space-y-2">
         {(data?.documents || []).map((d) => (
-          <div key={d.title} style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white flex items-center justify-between gap-3">
+          <div key={d.documentId || d.title} style={{ borderColor: C.line }} className="border rounded-xl p-4 bg-white flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
               <div style={{ background: d.ready ? C.successBg : C.amberBg }} className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0">
                 <FileText size={16} color={d.ready ? C.success : C.amber} />
@@ -2232,9 +2254,27 @@ function DocumentsScreen({ team, principal, onDone }) {
                 <p style={{ color: C.sub }} className="text-xs">
                   {d.chunks} section{d.chunks === 1 ? "" : "s"} · {d.questions} question{d.questions === 1 ? "" : "s"}
                 </p>
+                <p style={{ color: C.sub }} className="text-xs truncate">Added by {d.uploadedBy}</p>
               </div>
             </div>
-            <StatusPill status={d.ready ? "completed" : "in-progress"} />
+            <div className="flex items-center gap-2 shrink-0">
+              <StatusPill status={d.ready ? "completed" : "in-progress"} />
+              {d.canDelete && (
+                <button
+                  type="button"
+                  title={d.activeJob ? "Wait for generation to finish" : `Delete ${d.title}`}
+                  aria-label={`Delete ${d.title}`}
+                  disabled={Boolean(d.activeJob) || deletingDocumentId === d.documentId}
+                  onClick={() => handleDeleteDocument(d)}
+                  style={{ color: C.danger }}
+                  className="w-9 h-9 flex items-center justify-center disabled:opacity-40"
+                >
+                  {deletingDocumentId === d.documentId
+                    ? <Loader2 size={16} className="animate-spin" />
+                    : <Trash2 size={16} />}
+                </button>
+              )}
+            </div>
           </div>
         ))}
       </div>

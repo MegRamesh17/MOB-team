@@ -54,7 +54,17 @@ FROM (VALUES
     ('Naomi Reyes',      'naomi.reyes@quizrant.com',     'Director of DevOps',              'Expert',   0, ''),
     ('Ben Novak',        'ben.novak@quizrant.com',       'Senior DevOps',                   'Expert',   0, ''),
     ('Grace Kim',        'grace.kim@quizrant.com',       'DevOps Engineer',                 'Mediocre', 0, 'Finish on-call onboarding'),
-    ('Diego Martins',    'diego.martins@quizrant.com',   'Junior DevOps',                   'Beginner', 0, 'Finish onboarding requirements')
+    ('Diego Martins',    'diego.martins@quizrant.com',   'Junior DevOps',                   'Beginner', 0, 'Finish onboarding requirements'),
+    ('Audience Intern 01', 'intern01@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training'),
+    ('Audience Intern 02', 'intern02@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training'),
+    ('Audience Intern 03', 'intern03@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training'),
+    ('Audience Intern 04', 'intern04@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training'),
+    ('Audience Intern 05', 'intern05@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training'),
+    ('Audience Intern 06', 'intern06@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training'),
+    ('Audience Intern 07', 'intern07@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training'),
+    ('Audience Intern 08', 'intern08@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training'),
+    ('Audience Intern 09', 'intern09@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training'),
+    ('Audience Intern 10', 'intern10@quizrant.com',      'Engineering Intern',              'Beginner', 0, 'Complete the audience training')
 ) AS v(name, email, role_title, mastery_level, mastery_override, goal)
 JOIN Roles r ON r.title = v.role_title
 WHERE NOT EXISTS (SELECT 1 FROM Employees e WHERE e.email = v.email);
@@ -88,6 +98,19 @@ JOIN (VALUES
     ('diego.martins@quizrant.com',  'naomi.reyes@quizrant.com'),
     ('naomi.reyes@quizrant.com',    'marcus.chen@quizrant.com'),
 
+    -- Audience demo accounts use one low-privilege training role and report to Dana,
+    -- so Dana can assign one INTERN course to all ten at once.
+    ('intern01@quizrant.com',       'dana.whitfield@quizrant.com'),
+    ('intern02@quizrant.com',       'dana.whitfield@quizrant.com'),
+    ('intern03@quizrant.com',       'dana.whitfield@quizrant.com'),
+    ('intern04@quizrant.com',       'dana.whitfield@quizrant.com'),
+    ('intern05@quizrant.com',       'dana.whitfield@quizrant.com'),
+    ('intern06@quizrant.com',       'dana.whitfield@quizrant.com'),
+    ('intern07@quizrant.com',       'dana.whitfield@quizrant.com'),
+    ('intern08@quizrant.com',       'dana.whitfield@quizrant.com'),
+    ('intern09@quizrant.com',       'dana.whitfield@quizrant.com'),
+    ('intern10@quizrant.com',       'dana.whitfield@quizrant.com'),
+
     -- Sales (unchanged)
     ('sofia.delgado@quizrant.com',  'priya.n@quizrant.com'),
     ('noah.whitaker@quizrant.com',  'priya.n@quizrant.com'),
@@ -95,6 +118,16 @@ JOIN (VALUES
 ) AS v(email, manager_email) ON v.email = e.email
 JOIN Employees m ON m.email = v.manager_email
 WHERE e.manager_id IS NULL OR e.manager_id <> m.id;
+
+-- These are presentation logins, not real inboxes. Do not spend time or provider quota
+-- attempting assignment and expiry emails for them.
+UPDATE Employees
+   SET notifications_enabled = 0
+ WHERE email IN
+       ('intern01@quizrant.com', 'intern02@quizrant.com', 'intern03@quizrant.com',
+        'intern04@quizrant.com', 'intern05@quizrant.com', 'intern06@quizrant.com',
+        'intern07@quizrant.com', 'intern08@quizrant.com', 'intern09@quizrant.com',
+        'intern10@quizrant.com');
 
 -- =========================================================
 -- 2. COURSES

@@ -3265,8 +3265,15 @@ def _company_name(company_id: int) -> str:
         return "Your company"
 
 
-def _ingest_and_propose(chunks, identity, label: str, retitle_suffix: str,
-                        extra_fields: Optional[dict] = None) -> func.HttpResponse:
+def _ingest_and_propose(
+    chunks,
+    identity,
+    label: str,
+    retitle_suffix: str,
+    extra_fields: Optional[dict] = None,
+    source_kind: str = "upload",
+    trusted_link_id: Optional[int] = None,
+) -> func.HttpResponse:
     """
     Save already-extracted chunks, seed the role catalog if empty, and ask the model to
     propose a section->role mapping -- the part upload_document and add_trusted_link
@@ -3341,10 +3348,33 @@ def _ingest_and_propose(chunks, identity, label: str, retitle_suffix: str,
                     ch.doc_title = doc_title
 
             bank.save_chunks(chunks)
+            # SourceChunks is passage-level evidence. Keep document ownership once at
+            # document grain so delete authorization is stable even when an AI title
+            # changes or a source produces dozens of chunks.
+            cur.execute(
+                """MERGE dbo.TrainingDocuments AS target
+                   USING (SELECT ? AS company_id, ? AS document_id) AS source
+                      ON target.company_id = source.company_id
+                     AND target.document_id = source.document_id
+                   WHEN MATCHED THEN UPDATE SET
+                       doc_title = ?, uploaded_by = COALESCE(target.uploaded_by, ?),
+                       source_kind = ?, source_label = ?,
+                       trusted_link_id = COALESCE(target.trusted_link_id, ?)
+                   WHEN NOT MATCHED THEN INSERT
+                       (company_id, document_id, doc_title, uploaded_by, source_kind,
+                        source_label, trusted_link_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?);""",
+                identity.company_id, chunks[0].doc_id,
+                doc_title, identity.employee_id, source_kind, label, trusted_link_id,
+                identity.company_id, chunks[0].doc_id, doc_title, identity.employee_id,
+                source_kind, label, trusted_link_id,
+            )
+            c.commit()
 
         from quizgen.pipeline import generator_name
         payload = {
-            "file": label, "title": doc_title, "chunks": len(chunks), "topics": topics,
+            "file": label, "title": doc_title, "documentId": chunks[0].doc_id,
+            "chunks": len(chunks), "topics": topics,
             "summary": mapping.summary,
             "proposedRoles": mapping.assignments,
             "permittedRoles": sorted(permitted),
@@ -3372,12 +3402,22 @@ def list_documents(req: func.HttpRequest) -> func.HttpResponse:
         with _conn() as c:
             cur = c.cursor()
             cur.execute(
-                "SELECT doc_title, COUNT(*) AS chunks FROM dbo.SourceChunks "
-                "WHERE company_id = ? AND COALESCE(container, '') <> 'generated-lessons' "
-                "GROUP BY doc_title",
+                """SELECT source.doc_id, source.doc_title, COUNT(*) AS chunks,
+                          registry.uploaded_by, employee.name AS uploaded_by_name,
+                          registry.source_kind
+                     FROM dbo.SourceChunks AS source
+                     LEFT JOIN dbo.TrainingDocuments AS registry
+                       ON registry.company_id = source.company_id
+                      AND registry.document_id = source.doc_id
+                     LEFT JOIN dbo.Employees AS employee
+                       ON employee.id = registry.uploaded_by
+                    WHERE source.company_id = ?
+                      AND COALESCE(source.container, '') <> 'generated-lessons'
+                    GROUP BY source.doc_id, source.doc_title, registry.uploaded_by,
+                             employee.name, registry.source_kind""",
                 identity.company_id,
             )
-            chunk_counts = {r.doc_title: r.chunks for r in cur.fetchall()}
+            source_docs = list(cur.fetchall())
             cur.execute(
                 "SELECT source_doc_title, COUNT(*) AS n FROM dbo.GeneratedQuestions "
                 "WHERE company_id = ? AND review_status = 'Approved' "
@@ -3410,16 +3450,21 @@ def list_documents(req: func.HttpRequest) -> func.HttpResponse:
                     "message": r.message,
                 })
 
+        may_delete_any = (identity.access_role or "") in ("admin", "executive")
         docs = [
             {
-                "title": title,
-                "chunks": count,
-                "questions": q_counts.get(title, 0),
+                "documentId": row.doc_id,
+                "title": row.doc_title,
+                "chunks": row.chunks,
+                "questions": q_counts.get(row.doc_title, 0),
                 # Read but not yet generated from -- the UI offers to generate for these.
-                "ready": q_counts.get(title, 0) > 0,
-                "activeJob": active_jobs.get(title),
+                "ready": q_counts.get(row.doc_title, 0) > 0,
+                "activeJob": active_jobs.get(row.doc_title),
+                "uploadedBy": row.uploaded_by_name or "Unknown (legacy)",
+                "sourceKind": row.source_kind or "legacy",
+                "canDelete": may_delete_any or row.uploaded_by == identity.employee_id,
             }
-            for title, count in sorted(chunk_counts.items())
+            for row in sorted(source_docs, key=lambda item: item.doc_title.lower())
         ]
         from quizgen.pipeline import generator_name
         return _json({"documents": docs, "files": [], "generator": generator_name(),
@@ -3427,6 +3472,202 @@ def list_documents(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as exc:  # noqa: BLE001
         logging.exception("GET /documents failed")
         return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
+
+
+def _delete_training_document(cur, company_id: int, document_id: str,
+                              doc_title: str, trusted_link_id: Optional[int]) -> Dict[str, int]:
+    """Remove one source and every learner-facing or score-bearing record derived from it."""
+    cur.execute("CREATE TABLE #DeleteModules (module_id NVARCHAR(64) PRIMARY KEY)")
+    cur.execute(
+        "INSERT INTO #DeleteModules SELECT module_id FROM dbo.TrainingModules "
+        "WHERE company_id = ? AND doc_id = ?",
+        company_id, document_id,
+    )
+    cur.execute("CREATE TABLE #DeleteQuestions (question_id NVARCHAR(64) PRIMARY KEY)")
+    cur.execute(
+        """INSERT INTO #DeleteQuestions
+           SELECT DISTINCT question.question_id
+             FROM dbo.GeneratedQuestions AS question
+             LEFT JOIN dbo.SourceChunks AS source
+               ON source.chunk_id = question.source_chunk_id
+            WHERE question.company_id = ?
+              AND (question.source_doc_title = ?
+                   OR question.module_id IN (SELECT module_id FROM #DeleteModules)
+                   OR source.doc_id = ?)""",
+        company_id, doc_title, document_id,
+    )
+    cur.execute("CREATE TABLE #DeleteAttempts (attempt_id NVARCHAR(64) PRIMARY KEY)")
+    cur.execute(
+        """INSERT INTO #DeleteAttempts
+           SELECT DISTINCT attempt.attempt_id
+             FROM dbo.GeneratedQuizAttempts AS attempt
+            WHERE attempt.company_id = ?
+              AND (attempt.training_doc_id = ? OR attempt.training_title = ?
+                   OR attempt.module_id IN (SELECT module_id FROM #DeleteModules)
+                   OR EXISTS
+                      (SELECT 1 FROM dbo.GeneratedQuizAttemptQuestions AS served
+                        WHERE served.attempt_id = attempt.attempt_id
+                          AND served.question_id IN
+                              (SELECT question_id FROM #DeleteQuestions)))""",
+        company_id, document_id, doc_title,
+    )
+
+    counts: Dict[str, int] = {}
+
+    def remove(key: str, sql: str, *params) -> None:
+        cur.execute(sql, *params)
+        counts[key] = max(0, cur.rowcount)
+
+    # Attempts and questions are audit history, but the product action explicitly says
+    # permanent deletion. Remove dependent audit rows before their parents so SQL Server
+    # cannot leave a half-deleted course behind.
+    remove(
+        "certificates",
+        "DELETE FROM dbo.Certificates WHERE company_id = ? "
+        "AND (doc_title = ? OR attempt_id IN (SELECT attempt_id FROM #DeleteAttempts))",
+        company_id, doc_title,
+    )
+    remove(
+        "gradingEvents",
+        "DELETE FROM dbo.GeneratedGradingEvents WHERE company_id = ? AND "
+        "(attempt_id IN (SELECT attempt_id FROM #DeleteAttempts) "
+        "OR question_id IN (SELECT question_id FROM #DeleteQuestions))",
+        company_id,
+    )
+    remove(
+        "responses",
+        "DELETE FROM dbo.GeneratedQuizResponses WHERE company_id = ? AND "
+        "(attempt_id IN (SELECT attempt_id FROM #DeleteAttempts) "
+        "OR question_id IN (SELECT question_id FROM #DeleteQuestions))",
+        company_id,
+    )
+    remove(
+        "servedQuestions",
+        "DELETE FROM dbo.GeneratedQuizAttemptQuestions WHERE "
+        "attempt_id IN (SELECT attempt_id FROM #DeleteAttempts) "
+        "OR question_id IN (SELECT question_id FROM #DeleteQuestions)",
+    )
+    remove(
+        "attempts",
+        "DELETE FROM dbo.GeneratedQuizAttempts WHERE attempt_id IN "
+        "(SELECT attempt_id FROM #DeleteAttempts)",
+    )
+    remove(
+        "moduleProgress",
+        "DELETE FROM dbo.EmployeeModuleProgress WHERE company_id = ? AND module_id IN "
+        "(SELECT module_id FROM #DeleteModules)",
+        company_id,
+    )
+    remove(
+        "trainingProgress",
+        "DELETE FROM dbo.EmployeeTrainingProgress WHERE company_id = ? "
+        "AND (doc_id = ? OR doc_title = ?)",
+        company_id, document_id, doc_title,
+    )
+    remove(
+        "questions",
+        "DELETE FROM dbo.GeneratedQuestions WHERE question_id IN "
+        "(SELECT question_id FROM #DeleteQuestions)",
+    )
+    remove(
+        "modules",
+        "DELETE FROM dbo.TrainingModules WHERE module_id IN "
+        "(SELECT module_id FROM #DeleteModules)",
+    )
+    remove(
+        "requirements",
+        "DELETE FROM dbo.RoleRequirements WHERE company_id = ? AND doc_title = ?",
+        company_id, doc_title,
+    )
+    remove(
+        "interests",
+        "DELETE FROM dbo.EmployeeSkillInterest WHERE company_id = ? AND doc_title = ?",
+        company_id, doc_title,
+    )
+    remove(
+        "jobs",
+        "DELETE FROM dbo.GenerationJobs WHERE company_id = ? AND doc_title = ?",
+        company_id, doc_title,
+    )
+    remove(
+        "sourceChunks",
+        "DELETE FROM dbo.SourceChunks WHERE company_id = ? AND doc_id = ?",
+        company_id, document_id,
+    )
+    if trusted_link_id is not None:
+        remove(
+            "trustedLinksRetired",
+            "UPDATE dbo.TrustedLinks SET is_active = 0 WHERE id = ? AND company_id = ?",
+            trusted_link_id, company_id,
+        )
+    remove(
+        "documents",
+        "DELETE FROM dbo.TrainingDocuments WHERE company_id = ? AND document_id = ?",
+        company_id, document_id,
+    )
+    return counts
+
+
+@app.route(route="documents/{documentId}/delete", methods=["POST"])
+def delete_document(req: func.HttpRequest) -> func.HttpResponse:
+    """Permanently delete a course owned by the caller, or any course for admin/executive."""
+    identity = get_current_employee(req)
+    forbidden = require_manager(identity)
+    if forbidden:
+        return forbidden
+
+    document_id = str(req.route_params.get("documentId", "")).strip()
+    if not document_id:
+        return _error(400, "Bad request", "documentId is required.")
+
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """SELECT TOP 1 source.doc_id, source.doc_title, registry.uploaded_by,
+                                  registry.trusted_link_id
+                     FROM dbo.SourceChunks AS source
+                     LEFT JOIN dbo.TrainingDocuments AS registry
+                       ON registry.company_id = source.company_id
+                      AND registry.document_id = source.doc_id
+                    WHERE source.company_id = ? AND source.doc_id = ?
+                      AND COALESCE(source.container, '') <> 'generated-lessons'""",
+                identity.company_id, document_id,
+            )
+            row = cur.fetchone()
+            if row is None:
+                return _error(404, "Document not found", document_id)
+
+            may_delete_any = (identity.access_role or "") in ("admin", "executive")
+            if not may_delete_any and row.uploaded_by != identity.employee_id:
+                return _error(
+                    403, "Forbidden",
+                    "Only the person who added this document, or an admin/executive, may delete it.",
+                )
+
+            cur.execute(
+                "SELECT COUNT(*) FROM dbo.GenerationJobs WHERE company_id = ? "
+                "AND doc_title = ? AND state = 'running'",
+                identity.company_id, row.doc_title,
+            )
+            if cur.fetchone()[0]:
+                return _error(
+                    409, "Generation still running",
+                    "Wait for generation to finish before permanently deleting this course.",
+                )
+
+            counts = _delete_training_document(
+                cur, identity.company_id, row.doc_id, row.doc_title, row.trusted_link_id)
+            c.commit()
+            return _json({
+                "deleted": True,
+                "documentId": row.doc_id,
+                "title": row.doc_title,
+                "removed": counts,
+            })
+    except Exception as exc:  # noqa: BLE001
+        logging.exception("DELETE document failed for %s", document_id)
+        return _error(500, "Delete failed", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
 
 
 @app.route(route="documents", methods=["POST"])
@@ -3619,6 +3860,7 @@ def _run_generation_job(
 ) -> None:
     """Author, validate and assess a course outside the request that queued it."""
     from shared.sqlbank import SqlBank, get_job, update_job
+    from quizgen.config import CONFIG
     from quizgen.coursegen import assessment_chunks, build_instructional_course
     from quizgen.pipeline import generate_questions
 
@@ -3674,7 +3916,10 @@ def _run_generation_job(
             for chunk in lesson_chunks:
                 module = next(item for item in course.ready_modules
                               if item.module_id == getattr(chunk, "module_id", ""))
-                target = max(20, min(30, len(module.learning_points) * 3))
+                target = (
+                    CONFIG.demo_fast_question_count if CONFIG.demo_fast
+                    else max(20, min(30, len(module.learning_points) * 3))
+                )
                 per_difficulty = int((target + 2) // 3)
                 result = generate_questions(
                     bank, [chunk], per_chunk=per_difficulty,
@@ -3843,11 +4088,13 @@ def add_trusted_link(req: func.HttpRequest) -> func.HttpResponse:
     # upload_document's chunks are considered "saved" -- before the AI role-mapping step,
     # so a manager can still see and re-confirm this link even if that step fails for
     # lack of model credentials.
+    trusted_link_id = None
     try:
         with _conn() as c:
             from shared.sqlbank import SqlBank
             bank = SqlBank(c, identity.company_id)
-            bank.add_trusted_link(identity.employee_id, scope, role_code, url)
+            trusted_link_id = bank.add_trusted_link(
+                identity.employee_id, scope, role_code, url)
     except Exception as exc:  # noqa: BLE001
         logging.exception("Failed to record trusted link row for %s", url)
         return _error(500, "Internal error", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
@@ -3855,6 +4102,7 @@ def add_trusted_link(req: func.HttpRequest) -> func.HttpResponse:
     return _ingest_and_propose(
         chunks, identity, label=url, retitle_suffix=host,
         extra_fields={"crawl": crawl_info},
+        source_kind="trusted_link", trusted_link_id=trusted_link_id,
     )
 
 

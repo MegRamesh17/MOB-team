@@ -10,6 +10,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -550,6 +552,33 @@ class TestGenerationPipeline(unittest.TestCase):
             self.assertEqual(seen[0].total, 1)
             self.assertEqual(result.written, len(bank.questions()))
             bank.close()
+
+    def test_demo_fast_requests_one_balanced_difficulty_batch(self):
+        from quizgen import config
+        from quizgen.pipeline import _generate_candidate_batch
+
+        class BalancedGenerator:
+            def __init__(self):
+                self.calls = []
+
+            def generate(self, chunk, count=2, difficulty=None):
+                self.calls.append((count, difficulty))
+                return [
+                    SimpleNamespace(
+                        difficulty=value,
+                        question_type=QuestionType.MULTIPLE_CHOICE,
+                    )
+                    for value in (Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD)
+                ]
+
+        generator = BalancedGenerator()
+        with patch.object(config.CONFIG, "demo_fast", True):
+            produced = _generate_candidate_batch(
+                generator, sample_chunk(), per_chunk=6, difficulty_ladder=True
+            )
+
+        self.assertEqual(generator.calls, [(18, None)])
+        self.assertEqual(len(produced), 3)
 
     def test_already_generated_chunks_are_skipped(self):
         """Re-running must not re-pay for work already done."""

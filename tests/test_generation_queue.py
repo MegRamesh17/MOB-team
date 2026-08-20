@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import function_app  # noqa: E402
 import shared.comms as comms  # noqa: E402
 import shared.sqlbank as sqlbank  # noqa: E402
+import quizgen.config as config  # noqa: E402
 import quizgen.pipeline as pipeline  # noqa: E402
 import quizgen.coursegen as coursegen  # noqa: E402
 
@@ -206,6 +207,36 @@ class TestGenerationQueueHandoff(unittest.TestCase):
         self.assertEqual(updates[-1]["state"], "done")
         self.assertEqual(updates[-1]["written"], 2)
         self.assertEqual(FakeBank.retire_stale_calls, 1)
+
+    def test_demo_fast_worker_requests_an_eighteen_question_bank(self):
+        chunk = SimpleNamespace(
+            topic="Capacity", chunk_id="chunk_1", doc_title="Capacity Planning",
+            container="source", role_scope="SWE_DIRECTOR",
+        )
+        lesson = SimpleNamespace(topic="Capacity", chunk_id="lesson_1", module_id="mod_1")
+        module = SimpleNamespace(
+            module_id="mod_1", heading="Capacity", learning_points=list(range(4))
+        )
+        course = SimpleNamespace(modules=[module], ready_modules=[module])
+        FakeBank.chunks = [chunk]
+
+        def generate(bank, chunks, **kwargs):
+            self.assertEqual(kwargs["per_chunk"], 6)
+            self.assertTrue(kwargs["difficulty_ladder"])
+            return SimpleNamespace(kept=list(range(18)), written=18, rejected=[])
+
+        with (
+            patch.object(config.CONFIG, "demo_fast", True),
+            patch.object(config.CONFIG, "demo_fast_question_count", 18),
+            patch.object(function_app, "_conn", return_value=FakeConnection()),
+            patch.object(sqlbank, "SqlBank", FakeBank),
+            patch.object(sqlbank, "get_job", return_value={"state": "running"}),
+            patch.object(sqlbank, "update_job"),
+            patch.object(coursegen, "build_instructional_course", return_value=course),
+            patch.object(coursegen, "assessment_chunks", return_value=[lesson]),
+            patch.object(pipeline, "generate_questions", side_effect=generate),
+        ):
+            function_app._run_generation_job("job_demo", 7, "Capacity Planning")
 
     def test_failed_replacement_keeps_previous_question_bank(self):
         connection = FakeConnection()

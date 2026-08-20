@@ -251,6 +251,9 @@ export const addRole = ({ roleCode, title, description }) =>
 export const removeRole = (roleCode) =>
   call(`/roles/${encodeURIComponent(roleCode)}/delete`, { method: "POST" });
 
+export const deleteDocument = (documentId) =>
+  call(`/documents/${encodeURIComponent(documentId)}/delete`, { method: "POST" });
+
 export const trustedLinks = () => call("/links");
 /**
  * Submits a trusted URL. Response shape matches uploadDocument's exactly (file, title,

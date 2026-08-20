@@ -1,0 +1,78 @@
+Engineering Intern Safe Change Delivery
+
+Audience: Engineering Intern (INTERN)
+
+Safe Change Delivery
+
+An engineering intern should deliver changes that are easy to understand, test,
+review, deploy, and reverse. Before editing code, restate the requested behavior and
+identify the normal case, an important boundary case, and the expected failure
+behavior. Read the surrounding module and its tests so the implementation follows
+existing patterns. Ask for clarification when a requirement conflicts with current
+behavior instead of making a user-impacting assumption.
+
+Keep each pull request focused on one purpose. Do not combine a feature with unrelated
+refactoring, dependency upgrades, or broad formatting. Work on a short-lived branch
+created from the latest main branch, never directly on main. Review the complete diff
+before requesting review and remove debugging output, temporary files, generated
+artifacts, commented-out code, and unrelated changes.
+
+Treat external input as untrusted. Validate required fields, types, ranges, and allowed
+values at the system boundary. Use parameterized database queries instead of
+concatenating user-controlled strings. Preserve backend authentication and
+authorization checks even when the frontend hides a control, because callers can
+invoke an API without using the frontend. Never commit passwords, tokens, API keys,
+connection strings, or private customer data. Load credentials from approved
+environment configuration or a secret store. If a secret is exposed, notify the owner
+and rotate it; deleting a line does not remove it from git history.
+
+Handle expected failures explicitly. Give network and database operations timeouts.
+Retry only transient failures and only when repeating the operation is safe. Retried
+writes should be idempotent or use a stable request identifier so a timeout cannot
+create duplicate records. Log enough context to diagnose a failure, such as an
+operation and correlation identifier, but never log tokens or sensitive payloads. Do
+not catch an exception and report success when required work failed.
+
+Tests must prove behavior rather than merely execute code. Add a unit test for the
+normal case and the most important boundary or failure case. Every bug fix needs a
+regression test that fails before the fix and passes afterward. Keep tests deterministic
+by controlling time, random values, and external services. For a user workflow, verify
+applicable loading, empty, success, and error states.
+
+Before requesting review, run the relevant tests, linter, type checker, and build. Read
+failures instead of repeatedly rerunning them. The pull request description should
+explain what changed, why it changed, how it was tested, and any known limitation.
+Address every review comment with a code change or a technical explanation. When
+resolving a merge conflict, read both versions and preserve both intended behaviors
+when compatible.
+
+Plan rollout before merging. A low-risk change has an observable success signal, an
+owner watching that signal, and a rollback or mitigation that can be used quickly.
+Prefer a staged release, feature flag, or small initial audience when the system
+supports one. Check logs and metrics after deployment, but also test the real user
+behavior because a healthy process does not prove the feature is correct. If an alert
+or report suggests harm, pause the rollout before investigating. Stabilizing the
+system is more important than proving the original change was right.
+
+Communicate uncertainty directly. In a review, distinguish facts observed in code or
+tests from assumptions that still need confirmation. When handing work to another
+engineer, include the branch, current state, commands already run, failures seen, and
+the next concrete action. A useful handoff lets the next person continue without
+repeating discovery or guessing whether an unfinished step was intentional.
+
+Before merging, confirm required checks are green, approvals are present, no conflict
+markers remain, and no secrets or unrelated files are included. After deployment,
+verify the real behavior in the deployed environment instead of trusting only a green
+pipeline. For an API or database change, confirm the expected contract or migration
+reached the correct environment. If behavior is wrong, stop further rollout,
+communicate the impact, and use the documented rollback or mitigation procedure before
+attempting a speculative fix.
+
+Escalation Quick Reference
+
+Ask a more experienced engineer for help when a change affects authentication,
+authorization, sensitive data, irreversible database operations, shared infrastructure,
+or an unfamiliar production system. Escalate when requirements remain contradictory,
+tests expose behavior outside the task, or the safe rollback path is unclear. Early
+escalation is responsible engineering because it gives the team time to choose a safe
+approach before customers are affected.
