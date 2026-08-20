@@ -18,28 +18,22 @@
 #      Website Contributor) on mob-functions-dev -- it no longer needs SQL admin
 #      login or Key Vault read, since this pipeline doesn't touch the database.
 #
-# Trigger: push to ai-retry, paths under api/. This project's active branch is
-# ai-retry -- work does not land on main (see CLAUDE.md) -- so the trigger targets
-# ai-retry, not main. Independent of GitHub Actions' migrate-database/seed-database
-# chain -- if you change db/migrations or db/seed AND api/ in the same push, let the
-# GitHub Actions chain finish (Actions tab) before trusting a deploy that ran in
-# parallel with it. NOTE: that chain (terraform.yml -> migrate-database.yml ->
-# seed-database.yml) is still gated to main as of this writing, so it will NOT
-# auto-run for a push to ai-retry -- a schema change merged into ai-retry needs a
-# manual `workflow_dispatch` of migrate-database.yml (and seed-database.yml if
-# relevant) until that chain is retargeted too.
+# Trigger: push to main, paths under api/. Independent of GitHub Actions'
+# migrate-database/seed-database chain -- if you change db/migrations or db/seed
+# AND api/ in the same push, let the GitHub Actions chain finish (Actions tab)
+# before trusting a deploy that ran in parallel with it.
 
 trigger:
   branches:
     include:
-      - ai-retry
+      - main
   paths:
     include:
       - api/*
       - azure-pipelines-backend.yml
 
 # Azure Pipelines' default, if this is omitted, is to ALSO run on every pull request
-# regardless of what files it touches -- not just pushes to ai-retry like the header
+# regardless of what files it touches -- not just pushes to main like the header
 # comment above describes. Without this, opening any PR against this repo silently
 # redeploys mob-functions-dev before merge, which is how PR #12 (the very fix for
 # this pipeline) ended up triggering a live run of itself. Explicit opt-out, not an
