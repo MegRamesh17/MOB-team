@@ -66,11 +66,15 @@ class TestDiagnostic(unittest.TestCase):
         self.assertEqual(missing, [])
         self.assertTrue(all(q["question_type"] in CHOICE_TYPES for q in selected))
 
-    def test_missing_difficulty_is_reported_instead_of_silently_substituted(self):
+    def test_missing_difficulty_is_skipped_rather_than_blocking_the_diagnostic(self):
         thin = [q for q in pool() if not (
             q["topic"] == "Review" and q["difficulty"] == "Hard")]
-        _, missing = diagnostic_questions(thin, modules(), "learner")
-        self.assertIn(("m2", "Hard"), missing)
+        chosen, missing = diagnostic_questions(thin, modules(), "learner")
+        self.assertEqual(missing, [])
+        self.assertFalse(any(
+            q["module_id"] == "m2" and q["difficulty"] == "Hard" for q in chosen))
+        self.assertTrue(any(
+            q["module_id"] == "m2" and q["difficulty"] == "Easy" for q in chosen))
 
     def test_diagnostic_changes_order_but_never_skips_content(self):
         scores = {

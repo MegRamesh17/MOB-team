@@ -1446,9 +1446,19 @@ def _pathway_state(cur, identity, learner: str, training: str) -> Optional[Dict[
         })
 
     all_passed = diagnostic_done and all(module["status"] == "passed" for module in output_modules)
-    diagnostic_ready = all(
-        all(module["choiceDifficultyCounts"].get(difficulty, 0) > 0
+    # Was requiring every module to have all three of Easy/Medium/Hard before the
+    # diagnostic could start at all -- one module short a single tier blocked every
+    # other module's diagnostic too. Now only requires each module to have SOME
+    # choice question, at any difficulty; diagnostic_questions picks whatever tiers
+    # actually exist per module (see pathway.py).
+    diagnostic_ready = bool(output_modules) and all(
+        any(module["choiceDifficultyCounts"].get(difficulty, 0) > 0
             for difficulty in DIFFICULTIES)
+        for module in output_modules
+    )
+    diagnostic_question_count = sum(
+        sum(1 for difficulty in DIFFICULTIES
+            if module["choiceDifficultyCounts"].get(difficulty, 0) > 0)
         for module in output_modules
     )
     return {
@@ -1457,7 +1467,7 @@ def _pathway_state(cur, identity, learner: str, training: str) -> Optional[Dict[
         "diagnostic": {
             "completed": diagnostic_done,
             "ready": diagnostic_ready,
-            "questionCount": len(output_modules) * 3,
+            "questionCount": diagnostic_question_count,
             "attemptId": progress.get("diagnostic_attempt_id"),
         },
         "modules": output_modules,

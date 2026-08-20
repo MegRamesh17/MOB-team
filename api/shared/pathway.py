@@ -53,7 +53,17 @@ def diagnostic_pathway(
 def diagnostic_questions(
     pool: Sequence[Dict[str, Any]], modules: Sequence[Dict[str, Any]], seed: str
 ) -> Tuple[List[Dict[str, Any]], List[Tuple[str, str]]]:
-    """Choose one choice-only Easy, Medium and Hard question for each module."""
+    """
+    Choose one choice-only question per difficulty tier a module actually has.
+
+    A module missing a tier (say, no Hard question survived generation) no longer
+    blocks the whole diagnostic -- it used to require exactly Easy+Medium+Hard for
+    EVERY module before the diagnostic could start at all, which meant one module
+    short one difficulty locked every other module's diagnostic too, with no way to
+    recover short of a full regeneration. Take whatever tiers exist; a module with
+    zero choice questions of any difficulty just contributes nothing to the
+    diagnostic and falls back to default ordering, same as ties do already.
+    """
     chosen: List[Dict[str, Any]] = []
     missing: List[Tuple[str, str]] = []
     used = set()
@@ -68,7 +78,6 @@ def diagnostic_questions(
                 and q.get("question_id") not in used
             ]
             if not candidates:
-                missing.append((module["module_id"], difficulty))
                 continue
             candidates.sort(key=lambda q: _stable_rank(seed, q["question_id"]))
             pick = candidates[0]
