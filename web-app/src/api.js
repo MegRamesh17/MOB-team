@@ -184,6 +184,13 @@ export const team = () => call("/team");
 export const teamCompletion = () => call("/team/completion");
 
 /**
+ * Everyone in your department, ranked by points earned (real, derived from trainings
+ * actually completed -- see api/shared/pet_shop.py). Department-wide, not just the
+ * peers team() returns.
+ */
+export const teamLeaderboard = () => call("/team/leaderboard");
+
+/**
  * Nudge one person in your reporting subtree about their outstanding training. Real
  * endpoint, real computed missing/expired list -- whether it actually sends an email
  * depends on RESEND_API_KEY being configured for this environment, reflected honestly

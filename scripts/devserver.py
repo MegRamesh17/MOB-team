@@ -400,6 +400,8 @@ class Handler(BaseHTTPRequestHandler):
 
             if route == "/api/team":
                 return self._team()
+            if route == "/api/team/leaderboard":
+                return self._team_leaderboard()
             if route == "/api/team/completion":
                 return self._team_completion()
             if route == "/api/settings":
@@ -601,6 +603,42 @@ class Handler(BaseHTTPRequestHandler):
             "uploadTargets": sorted(
                 targets.values(), key=lambda t: (not t["direct"], t["title"])),
         })
+
+    def _team_leaderboard(self):
+        """
+        Everyone in the caller's department, ranked by points earned. Deliberately
+        department-wide rather than just GET /team's peers -- a leaderboard of two or
+        three people sharing one manager isn't much of a competition.
+
+        Ranked by pointsEarned (100 per training actually completed), not
+        pointsBalance -- balance falls when someone spends it in the shop, and
+        standing should reward finishing training, not hoarding points.
+        """
+        from quizgen import pet_shop
+
+        identity = self._require()
+        if identity is None:
+            return None
+
+        members = [p for p in devauth.directory() if p.get("department") == identity.department]
+
+        with Bank(DB, self._company()) as bank:
+            board = []
+            for m in members:
+                completed = bank.trainings_completed_count(m.get("email", ""))
+                equipped = [row["item_id"] for row in bank.pet_purchases(m.get("email", ""))
+                            if row["equipped"]]
+                board.append({
+                    "employeeId": m["employee_id"],
+                    "name": m.get("name", ""),
+                    "title": m.get("title", ""),
+                    "isYou": m["employee_id"] == identity.employee_id,
+                    "trainingsCompleted": completed,
+                    "pointsEarned": pet_shop.points_earned(completed),
+                    "equippedItemIds": equipped,
+                })
+        board.sort(key=lambda x: (-x["pointsEarned"], x["name"]))
+        return self._send({"departmentName": identity.department, "leaderboard": board})
 
     def _team_completion(self):
         """

@@ -2593,6 +2593,77 @@ def get_team(req: func.HttpRequest) -> func.HttpResponse:
         return _error(500, "Internal error", type(exc).__name__)
 
 
+@app.route(route="team/leaderboard", methods=["GET"])
+def get_team_leaderboard(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Everyone in the caller's department, ranked by points earned. Deliberately
+    department-wide rather than just the peers GET /team returns -- a leaderboard of
+    two or three people sharing one manager isn't much of a competition.
+
+    Ranked by pointsEarned (100 per training actually completed), not pointsBalance --
+    balance falls when someone spends it in the shop, and standing should reward
+    finishing training, not hoarding points.
+    """
+    identity = get_current_employee(req)
+    if identity is None:
+        return _unauthorized()
+    try:
+        with _conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                """SELECT e.id, e.name, r.title
+                     FROM dbo.Employees e
+                     JOIN dbo.Roles r ON r.id = e.role_id
+                     JOIN dbo.Teams t ON t.id = r.team_id
+                     JOIN dbo.Departments d ON d.id = t.department_id
+                    WHERE e.company_id = ? AND d.name = ?
+                    ORDER BY e.name""",
+                identity.company_id, identity.department,
+            )
+            members = _rows(cur)
+            member_ids = [m["id"] for m in members]
+
+            completed_by_employee: Dict[int, int] = {}
+            equipped_by_employee: Dict[int, List[str]] = {}
+            if member_ids:
+                placeholders = ",".join("?" for _ in member_ids)
+                cur.execute(
+                    "SELECT employee_id, COUNT(DISTINCT doc_title) AS n FROM dbo.Certificates "
+                    "WHERE company_id = ? AND employee_id IN ({}) "
+                    "GROUP BY employee_id".format(placeholders),
+                    identity.company_id, *member_ids,
+                )
+                for r in _rows(cur):
+                    completed_by_employee[r["employee_id"]] = r["n"]
+
+                cur.execute(
+                    "SELECT employee_id, item_id FROM dbo.PetPurchases "
+                    "WHERE company_id = ? AND equipped = 1 AND employee_id IN ({})".format(
+                        placeholders),
+                    identity.company_id, *member_ids,
+                )
+                for r in _rows(cur):
+                    equipped_by_employee.setdefault(r["employee_id"], []).append(r["item_id"])
+
+        board = []
+        for m in members:
+            completed = completed_by_employee.get(m["id"], 0)
+            board.append({
+                "employeeId": m["id"],
+                "name": m["name"],
+                "title": m.get("title"),
+                "isYou": m["id"] == identity.employee_id,
+                "trainingsCompleted": completed,
+                "pointsEarned": pet_shop.points_earned(completed),
+                "equippedItemIds": equipped_by_employee.get(m["id"], []),
+            })
+        board.sort(key=lambda x: (-x["pointsEarned"], x["name"]))
+
+        return _json({"departmentName": identity.department, "leaderboard": board})
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "Internal error", type(exc).__name__)
+
+
 # --------------------------------------------------------------------------
 # certificates, requirements and Q Score
 # --------------------------------------------------------------------------
