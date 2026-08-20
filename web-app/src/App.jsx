@@ -979,12 +979,12 @@ function TrainingDetail({ training, onBack, onStartDiagnostic, onOpenModule, onS
             <div className="min-w-0 flex-1">
               <h2 style={{ ...display, color: C.ink }} className="text-sm font-bold mb-1">Start with a diagnostic</h2>
               <p style={{ color: C.sub }} className="text-sm mb-4">
-                {path.diagnostic.questionCount} questions: one Easy, Medium, and Hard check for every module.
+                {path.diagnostic.questionCount} questions: a quick check for every module.
                 Your results set the order, but every module remains required.
               </p>
               {!path.diagnostic.ready && (
                 <p style={{ color: C.amber }} className="text-xs font-semibold mb-3">
-                  This document still needs a complete Easy, Medium, and Hard question set.
+                  This document still needs at least one question per module.
                 </p>
               )}
               <Button onClick={onStartDiagnostic} disabled={!path.diagnostic.ready}>Take diagnostic</Button>
