@@ -129,6 +129,27 @@ UPDATE Employees
         'intern07@quizrant.com', 'intern08@quizrant.com', 'intern09@quizrant.com',
         'intern10@quizrant.com');
 
+-- Intentionally public presentation credentials: intern01 uses password1 through
+-- intern10 using password10. Store only bcrypt hashes and scope the update to both the
+-- ten explicit emails and the low-privilege INTERN role so no real account can be reset.
+UPDATE employee
+   SET password_hash = credential.password_hash
+  FROM dbo.Employees AS employee
+  JOIN dbo.Roles AS role ON role.id = employee.role_id
+  JOIN (VALUES
+    ('intern01@quizrant.com', '$2b$12$TXbSHNi.JK3hYUtMMMuS0uxh4FbJWXlgaFb9tR7CjjLKA79JKV4xy'),
+    ('intern02@quizrant.com', '$2b$12$I32leJi/xUDP1v2SiO6b/e5fTVOnznEvWIAHJckBULWPmza6l1v8O'),
+    ('intern03@quizrant.com', '$2b$12$C0VolDjo68j/ed9EifFEv.Ie8NzwwJ.U7bv5s6hyVuEO/.7J7/hTK'),
+    ('intern04@quizrant.com', '$2b$12$bmaeWZ9j6LY8MLXIwfyuSeH4yUDbvgU7msOr0sm2qvBUCnppwMhwS'),
+    ('intern05@quizrant.com', '$2b$12$NlqMUi82bMGmJ1/dCDYl7OiC2aMy7bsxw69mObMuWYqSaNBeMA78G'),
+    ('intern06@quizrant.com', '$2b$12$sB5uw4sCHqzbQTF5qIT/n.ERGwZ.WOm6mrYUXrfrJB1Xy.Mg/pkk2'),
+    ('intern07@quizrant.com', '$2b$12$UlRoUoljfi.C4bf52A9x8OHQuYm.qTtmfSQ8bnEvBCxMqSoNYuFsK'),
+    ('intern08@quizrant.com', '$2b$12$vXjaYGEvIoZLwqlqrOcwK.56oPCyZsWJtQbNd8IBW4szMaUU0nFcq'),
+    ('intern09@quizrant.com', '$2b$12$vTjqw4kbVEd46iO1CHJ36e3JfI7IYqM3O8ObrW.wyyfO38bjiAchS'),
+    ('intern10@quizrant.com', '$2b$12$SvzVZSQH4K5LbrOIMtWRUuNU3YXmDraBQclNUZ5n872qK3UGJnfIq')
+  ) AS credential(email, password_hash) ON credential.email = employee.email
+ WHERE role.role_code = 'INTERN';
+
 -- =========================================================
 -- 2. COURSES
 -- =========================================================

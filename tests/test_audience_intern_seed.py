@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
+import re
+import subprocess
+import sys
 import unittest
 from pathlib import Path
-import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,11 +15,27 @@ from set_passwords import _demo_intern_password  # noqa: E402
 
 
 class TestAudienceInternSeed(unittest.TestCase):
-    def test_ten_low_privilege_intern_accounts_are_seeded_without_passwords(self):
+    def test_ten_low_privilege_intern_accounts_are_seeded(self):
         seed = (ROOT / "db" / "seed" / "seed_data.sql").read_text()
         for index in range(1, 11):
             self.assertIn("intern{:02d}@quizrant.com".format(index), seed)
-        self.assertNotIn("password_hash", seed)
+
+    def test_seeded_demo_hashes_match_the_numbered_passwords(self):
+        seed = (ROOT / "db" / "seed" / "seed_data.sql").read_text()
+        credentials = dict(re.findall(
+            r"\('(intern\d{2}@quizrant\.com)', '(\$2b\$12\$[^']+)'\)", seed
+        ))
+        self.assertEqual(len(credentials), 10)
+        verifier = subprocess.run(
+            [sys.executable, "-c", (
+                "import bcrypt,json,sys; c=json.loads(sys.stdin.read()); "
+                "sys.exit(0 if all(bcrypt.checkpw(('password'+str(i)).encode(), "
+                "c[('intern%02d@quizrant.com' % i)].encode()) for i in range(1,11)) else 1)"
+            )],
+            input=json.dumps(credentials), text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(verifier.returncode, 0, verifier.stderr)
+        self.assertIn("WHERE role.role_code = 'INTERN'", seed)
 
     def test_numbered_demo_password_setup_is_explicit_and_intern_only(self):
         script = (ROOT / "scripts" / "set_passwords.py").read_text()
