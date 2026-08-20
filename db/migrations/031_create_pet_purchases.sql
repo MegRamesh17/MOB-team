@@ -1,4 +1,4 @@
--- 030_create_pet_purchases.sql
+-- 031_create_pet_purchases.sql
 --
 -- The floating pet's shop. One row per item an employee owns; `equipped` marks which
 -- owned item (at most one per catalog slot -- head/eyes/neck/back -- enforced in code by

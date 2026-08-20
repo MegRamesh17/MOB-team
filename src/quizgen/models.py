@@ -181,6 +181,12 @@ class Question:
     role_requirement: str = ""
     checked_against_chunk_ids: List[str] = field(default_factory=list)
 
+    # Populated for questions generated from a finalized instructional course. Legacy
+    # questions remain valid with these fields empty.
+    module_id: str = ""
+    lesson_page_id: str = ""
+    learning_point_id: str = ""
+
     # Empirical difficulty, filled in from real responses. A model's guess at whether a
     # question is hard is unreliable; the observed pass rate is not.
     times_served: int = 0

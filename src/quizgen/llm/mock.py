@@ -20,7 +20,9 @@ import random
 import re
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from ..models import Chunk, Difficulty, Option, Question, QuestionType, stable_id
+from ..models import (
+    Chunk, Difficulty, Option, ProvenanceClass, Question, QuestionType, stable_id,
+)
 
 # --- patterns in policy prose -------------------------------------------------
 
@@ -353,6 +355,28 @@ class MockGenerator:
                 if question and question.question_id not in seen_ids:
                     if difficulty is not None:
                         question.difficulty = difficulty
+                    if chunk.container == "generated-lessons":
+                        # The ordinary mock generator is intentionally deterministic,
+                        # so three difficulty-ladder calls would otherwise produce the
+                        # same ids and only the first set would persist. Course-mode ids
+                        # include difficulty and carry the same normalized provenance as
+                        # Azure-generated questions.
+                        question.question_id = stable_id(
+                            "q", question.question_id, question.difficulty.value)
+                        for option in question.options:
+                            option.option_id = stable_id(
+                                "opt", question.question_id, option.text)
+                        point_ids = list(getattr(chunk, "learning_point_ids", []) or [])
+                        point_id = point_ids[len(produced) % len(point_ids)] if point_ids else ""
+                        question.module_id = str(getattr(chunk, "module_id", "") or "")
+                        question.learning_point_id = point_id
+                        question.lesson_page_id = (
+                            getattr(chunk, "lesson_page_by_learning_point", {}) or {}
+                        ).get(point_id, "")
+                    if chunk.source_type == "web":
+                        question.provenance_class = ProvenanceClass.EXTERNAL
+                        question.source_url = chunk.source_url
+                        question.source_fetched_at = chunk.fetched_at
                     seen_ids.add(question.question_id)
                     produced.append(question)
             if len(produced) >= count:
