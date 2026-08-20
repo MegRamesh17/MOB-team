@@ -247,8 +247,20 @@ class AzureOpenAIGenerator:
         # and the question is dropped. In augmented mode the model is expected to go
         # beyond the passage, so an unverifiable quote is simply discarded rather than
         # taking the question with it — a false citation is worse than no citation.
+        #
+        # Lesson chunks get the same tolerance regardless of mode: this passage is
+        # gpt-5's OWN synthesized, Khan-Academy-style lesson prose (see coursegen.py's
+        # assessment_chunks), not the original source document, so holding a second
+        # gpt-5 call to an exact verbatim substring match against the first call's own
+        # paraphrase is an unreasonably strict bar. In practice this was discarding
+        # ~90% of generated questions with no rejection ever surfaced to the pipeline
+        # (this check runs before validators.py's rejection bookkeeping even sees the
+        # item) -- a course would finish "done" with 2-3 approved questions per module
+        # against a 20-30 target, and every module would be silently withheld for
+        # "assessment bank incomplete" with no visible cause.
+        quote_required = not augmented and chunk.container != "generated-lessons"
         if quote and _normalise(quote) not in _normalise(chunk.text):
-            if not augmented:
+            if quote_required:
                 return None
             quote = ""
 
